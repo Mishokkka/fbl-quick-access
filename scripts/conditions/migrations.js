@@ -9,6 +9,7 @@ import {
   flagUpdatePath
 } from "./constants.js";
 import { localize, normalizeCustomConditionList } from "./utils.js";
+import { getActiveGM } from "../integration/socket-api.js";
 import {
   buildSpecialCounterMigrationUpdate,
   getAddictionState,
@@ -230,20 +231,34 @@ export async function migrateActorData(actor) {
 }
 
 export async function runWorldMigration() {
-  if (!game.user.isGM) return;
+  const activeGM = getActiveGM();
+  if (!game.user?.isGM || activeGM?.id !== game.user.id) return;
 
   const current = Number(game.settings.get(MODULE_ID, SETTINGS.MIGRATION_VERSION) || 0);
   if (current >= MIGRATION_VERSION) return;
 
-  await migrateLegacyWorldSettings();
-
+  let failures = 0;
   let changedActors = 0;
+
+  try {
+    await migrateLegacyWorldSettings();
+  } catch (error) {
+    failures += 1;
+    console.error(`${MODULE_ID} | Failed to migrate expanded condition world settings`, error);
+  }
+
   for (const actor of game.actors) {
     try {
       if (await migrateActorData(actor)) changedActors += 1;
-    } catch (err) {
-      console.warn(`${MODULE_ID} | Failed to migrate expanded condition data for actor ${actor?.name}`, err);
+    } catch (error) {
+      failures += 1;
+      console.warn(`${MODULE_ID} | Failed to migrate expanded condition data for actor ${actor?.name}`, error);
     }
+  }
+
+  if (failures > 0) {
+    ui.notifications.error(localize("Notifications.MigrationFailed", "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load.", { count: failures }));
+    return;
   }
 
   await game.settings.set(MODULE_ID, SETTINGS.MIGRATION_VERSION, MIGRATION_VERSION);

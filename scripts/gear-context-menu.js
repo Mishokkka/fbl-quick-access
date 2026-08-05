@@ -263,7 +263,15 @@ async function deleteGearItem(app, actor, item, row) {
   const confirmed = await confirmDeleteGearItem(item);
   if (!confirmed) return;
 
-  const deleteControl = findNativeActionControl(row, [
+  const liveItem = actor.items?.get?.(item.id);
+  if (!liveItem) return;
+
+  const appRoot = extractElement(app?.element ?? app?._element);
+  const liveRow = (row?.isConnected ? row : null)
+    ?? collectItemRows(appRoot ?? document).find((candidate) => resolveItemFromRow(actor, candidate)?.id === liveItem.id)
+    ?? null;
+
+  const deleteControl = findNativeActionControl(liveRow, [
     ".item-delete",
     "[data-action='delete']",
     "[data-action='itemDelete']",
@@ -278,7 +286,7 @@ async function deleteGearItem(app, actor, item, row) {
   }
 
   try {
-    await item.delete();
+    await liveItem.delete();
     rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | could not delete item`, error);
@@ -302,6 +310,7 @@ async function confirmDeleteGearItem(item) {
 
 
 function findNativeActionControl(row, selectors) {
+  if (!(row instanceof HTMLElement)) return null;
   for (const selector of selectors) {
     const control = row.querySelector?.(selector);
     if (control instanceof HTMLElement) return control;
@@ -333,7 +342,12 @@ async function transferGearItem(actor, item) {
 
   if (typeof api.requestTrade === "function") {
     ui.notifications?.info(qaLocalize("GearMenu.GiveItemUnavailable", "В этой версии Item Piles нет giveItem(item); открыт обычный запрос обмена без предвыбранного предмета."));
-    await api.requestTrade();
+    try {
+      await api.requestTrade();
+    } catch (error) {
+      console.error(`${MODULE_ID} | Item Piles requestTrade failed`, error);
+      ui.notifications?.error(qaLocalize("GearMenu.TransferFailed", "Не удалось передать предмет через Item Piles."));
+    }
     return;
   }
 
@@ -348,4 +362,11 @@ function getItemPilesApi() {
     ?? game.itempiles?.api
     ?? itemPilesModule?.api
     ?? null;
+}
+
+function extractElement(value) {
+  if (value instanceof HTMLElement) return value;
+  if (value?.[0] instanceof HTMLElement) return value[0];
+  if (value?.element instanceof HTMLElement) return value.element;
+  return null;
 }

@@ -1,6 +1,6 @@
 import { CURRENCIES, MODULE_ID } from "./constants.js";
 import { buildActorCurrencyUpdate } from "./actor-data.js";
-import { getCurrencyValue } from "./currency.js";
+import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback, rerenderSheet } from "./utils.js";
@@ -589,7 +589,7 @@ function buildMoneyTransferDialogContent(sourceActor, targets) {
     const available = getCurrencyValue(sourceActor, currency.key);
     return `
       <label class="fblqa-money-transfer-row" data-currency="${currency.key}">
-        <span class="fblqa-money-transfer-abbr">${escapeHtml(currency.abbr)}</span>
+        <span class="fblqa-money-transfer-abbr">${escapeHtml(getCurrencyAbbreviation(currency))}</span>
         <span class="fblqa-money-transfer-name">${escapeHtml(localizeOrFallback(currency.label, currency.key))}</span>
         <input type="number" name="amount-${currency.key}" min="0" max="${available}" step="1" value="0">
         <small>${escapeHtml(qaLocalize("Wallet.Transfer.Available", "Доступно: {amount}", { amount: available }))}</small>
@@ -687,7 +687,7 @@ function formatTransferAmounts(amounts) {
   return CURRENCIES
     .map((currency) => ({ currency, value: Math.max(0, Math.floor(Number(amounts?.[currency.key]) || 0)) }))
     .filter(({ value }) => value > 0)
-    .map(({ currency, value }) => `${value} ${currency.abbr}`)
+    .map(({ currency, value }) => `${value} ${getCurrencyAbbreviation(currency)}`)
     .join(", ") || qaLocalize("Wallet.Transfer.Nothing", "ничего");
 }
 

@@ -82,11 +82,15 @@ export function setupDecorativeBorderToggle(app, actor, mainTab) {
       return;
     }
 
-    const enabled = event.currentTarget.checked;
+    const control = event.currentTarget;
+    const enabled = control.checked;
     try {
       await actor.setFlag(MODULE_ID, FLAG_COMPACT_BORDERS, enabled);
     } catch (error) {
       console.error(`${MODULE_ID} | failed to save decorative border preference`, error);
+      control.checked = isDecorativeBordersCompact(actor);
+      ui.notifications?.error(qaLocalize("MainTab.BorderToggleSaveFailed", "Не удалось сохранить режим декоративных рамок."));
+      return;
     }
     rerenderSheet(app);
   });

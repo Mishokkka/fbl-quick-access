@@ -117,6 +117,9 @@ export function setupReputationManager(app, actor, root) {
   } else if (labelCell instanceof HTMLElement) {
     labelCell.classList.add("fblqa-reputation-label-cell");
     labelCell.title = qaLocalize("Reputation.OpenTitle", "Открыть журнал репутации");
+    labelCell.setAttribute("role", "button");
+    labelCell.setAttribute("tabindex", "0");
+    labelCell.setAttribute("aria-haspopup", "dialog");
     bindReputationTrigger(labelCell, app, actor);
   }
 }

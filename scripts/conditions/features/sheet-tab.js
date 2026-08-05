@@ -5,14 +5,18 @@ function getRoot(html) {
   return findActorSheetRoot(html);
 }
 
+function asJQuery(html) {
+  return html instanceof jQuery ? html : $(html);
+}
+
 function findSheetTabNav(html) {
   const nav = findPrimaryTabNavigation(getRoot(html));
-  return nav ? $(nav) : html.find(".sheet-tabs.tabs, .sheet-tabs").first();
+  return nav ? $(nav) : asJQuery(html).find(".sheet-tabs.tabs, .sheet-tabs").first();
 }
 
 function findSheetBody(html) {
   const body = adapterFindSheetBody(getRoot(html));
-  return body ? $(body) : html.find(".sheet-body").first();
+  return body ? $(body) : asJQuery(html).find(".sheet-body").first();
 }
 
 export function getSheetTabGroup(html, nav) {

@@ -240,7 +240,7 @@ async function moveQuickSlot(app, actor, slots, data, targetIndex) {
   }
 
   const sourceIndex = Number(data.slotIndex);
-  if (!Number.isInteger(sourceIndex) || sourceIndex < 0) return;
+  if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= slots.length) return;
 
   const movingItemId = slots[sourceIndex] ?? data.itemId;
   if (!movingItemId || !actor.items.get(movingItemId)) return;

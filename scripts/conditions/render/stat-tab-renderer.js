@@ -41,11 +41,11 @@ function buildLethalHtml(item, editable) {
   return `
     <div class="injury-lethal-wrapper">
       <div class="injury-lethal">${escapeHTML(localize("Injury.Lethal", "LETHAL"))}:</div>
-      <button class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>
+      <button type="button" class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>
       <input class="lethal-limit-input" value="${limit}" readonly>
-      <button class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>
+      <button type="button" class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>
       <span class="lethal-limit-caption">${escapeHTML(localize("Injury.RemainingShort", "left"))}</span>
-      <button class="toggle-lethal-btn" data-item-id="${itemId}" title="${escapeHTML(localize("Injury.StabilizeTitle", "Stabilize injury"))}">
+      <button type="button" class="toggle-lethal-btn" data-item-id="${itemId}" title="${escapeHTML(localize("Injury.StabilizeTitle", "Stabilize injury"))}">
         <i class="fas fa-heartbeat"></i> ${escapeHTML(localize("Injury.Stabilize", "Stabilize"))}
       </button>
     </div>`;
@@ -62,9 +62,9 @@ function buildTimeControlsHtml(item, editable) {
   }
 
   return `<span class="injury-healing-label">${escapeHTML(localize("Injury.Remaining", "Remaining"))}:</span>
-          <button class="heal-btn heal-minus">-</button>
+          <button type="button" class="heal-btn heal-minus">-</button>
           <input type="text" value="${value}" class="healing-time-input" readonly>
-          <button class="heal-btn heal-plus">+</button>`;
+          <button type="button" class="heal-btn heal-plus">+</button>`;
 }
 
 function isTreatmentEligible(item, editable, isNormalInjury) {
@@ -78,14 +78,14 @@ function buildTreatmentBadgeHtml(item, editable, isNormalInjury) {
   if (!isTreatmentEligible(item, editable, isNormalInjury)) return "";
 
   const treatmentStatus = item.getFlag(MODULE_ID, FLAGS.TREATMENT_STATUS);
-  if (!treatmentStatus || treatmentStatus === "none") return "";
+  if (!treatmentStatus) return "";
 
   const label = escapeHTML(getTreatmentLabel(treatmentStatus));
   return `
     <div class="treatment-badge" title="${escapeHTML(localize("Treatment.Label", "Treatment"))}: ${label}">
       <i class="fas fa-plus-square"></i>
       <span>${label}</span>
-      <button class="treatment-reset-btn" title="${escapeHTML(localize("Treatment.ResetTitle", "Reset treatment and restore original healing time"))}">↺</button>
+      <button type="button" class="treatment-reset-btn" title="${escapeHTML(localize("Treatment.ResetTitle", "Reset treatment and restore original healing time"))}">↺</button>
     </div>`;
 }
 
@@ -96,10 +96,10 @@ function buildTreatmentHtml(item, editable, isNormalInjury) {
   return `
     <div class="treatment-wrapper">
       <span class="treatment-label">${escapeHTML(localize("Treatment.Label", "Treatment"))}:</span>
-      <button class="treatment-btn" data-action="fail">${escapeHTML(localize("Treatment.Fail", "Failed"))}</button>
-      <button class="treatment-btn" data-action="normal">${escapeHTML(localize("Treatment.Normal", "Treated"))}</button>
-      <button class="treatment-btn" data-action="prof">${escapeHTML(localize("Treatment.Professional", "Professional"))}</button>
-      <button class="treatment-btn" data-action="none">${escapeHTML(localize("Treatment.NotRequired", "Not required"))}</button>
+      <button type="button" class="treatment-btn" data-action="fail">${escapeHTML(localize("Treatment.Fail", "Failed"))}</button>
+      <button type="button" class="treatment-btn" data-action="normal">${escapeHTML(localize("Treatment.Normal", "Treated"))}</button>
+      <button type="button" class="treatment-btn" data-action="prof">${escapeHTML(localize("Treatment.Professional", "Professional"))}</button>
+      <button type="button" class="treatment-btn" data-action="none">${escapeHTML(localize("Treatment.NotRequired", "Not required"))}</button>
     </div>`;
 }
 
@@ -110,7 +110,7 @@ async function enrichEffect(item) {
   });
 }
 
-async function renderCustomCondition(condition, editable) {
+async function renderCustomCondition(condition, editable, orderOverride = null) {
   const rawName = condition.name || "";
   const isArc = isArcName(rawName);
   const time = String(condition.time || "0");
@@ -118,7 +118,7 @@ async function renderCustomCondition(condition, editable) {
   if (isArc) {
     return renderTemplate(TEMPLATE_PATHS.customArc, {
       id: condition.id,
-      order: Number(condition.order || 0),
+      order: Number(orderOverride ?? condition.order ?? 0),
       title: toUpperTitle(rawName),
       desc: condition.desc || "",
       editable
@@ -127,7 +127,7 @@ async function renderCustomCondition(condition, editable) {
 
   return renderTemplate(TEMPLATE_PATHS.customCondition, {
     id: condition.id,
-    order: Number(condition.order || 0),
+    order: Number(orderOverride ?? condition.order ?? 0),
     name: rawName,
     time,
     notes: condition.notes || "",
@@ -151,12 +151,12 @@ function getAddictionStatusTitle(state) {
   return localize("Addiction.Stage", "Current stage");
 }
 
-async function renderInjury(item, editable) {
+async function renderInjury(item, editable, orderOverride = null) {
   const name = item.name || "";
   const effect = await enrichEffect(item);
   const common = {
     itemId: item.id,
-    order: Number(item.getFlag(MODULE_ID, FLAGS.ORDER) ?? item.sort ?? 0),
+    order: Number(orderOverride ?? item.getFlag(MODULE_ID, FLAGS.ORDER) ?? item.sort ?? 0),
     name,
     img: item.img || "",
     effect,
@@ -233,18 +233,20 @@ export async function renderConditionsRows({ customConditions, injuries, editabl
 
   for (let index = 0; index < customConditions.length; index += 1) {
     const condition = customConditions[index];
-    const rendered = await renderCustomCondition(condition, editable);
-    const entry = { html: rendered, order: Number(condition.order ?? index * 10) };
+    const order = Number(condition.order ?? index * 10);
+    const rendered = await renderCustomCondition(condition, editable, order);
+    const entry = { html: rendered, order };
     if (isArcName(condition.name)) arcRows.push(entry);
     else normalRows.push(entry);
   }
 
   for (let index = 0; index < injuries.length; index += 1) {
     const injury = injuries[index];
-    const rendered = await renderInjury(injury, editable);
     const explicitOrder = injury.getFlag(MODULE_ID, FLAGS.ORDER);
     const fallbackOrder = Number(injury.sort ?? 10000 + index * 10);
-    const entry = { html: rendered, order: Number(explicitOrder ?? fallbackOrder) };
+    const order = Number(explicitOrder ?? fallbackOrder);
+    const rendered = await renderInjury(injury, editable, order);
+    const entry = { html: rendered, order };
     if (isArcName(injury.name)) arcRows.push(entry);
     else normalRows.push(entry);
   }

@@ -22,15 +22,23 @@ export function removeChargenButton(root) {
   if (!(root instanceof HTMLElement)) return 0;
 
   const appRoot = findApplicationRoot(root) ?? root;
-  const header = appRoot.querySelector?.(".window-header") ?? appRoot;
+  const header = appRoot.matches?.(".window-header")
+    ? appRoot
+    : appRoot.querySelector?.(".window-header");
+
   const matches = new Set();
 
+  // Exact selectors are safe across the application root. The broad text-label
+  // heuristic is deliberately restricted to the actual window header so it
+  // cannot remove similarly named controls from sheet content.
   for (const selector of CHARGEN_SELECTORS) {
-    for (const element of header.querySelectorAll?.(selector) ?? []) matches.add(element);
+    for (const element of appRoot.querySelectorAll?.(selector) ?? []) matches.add(element);
   }
 
-  for (const element of header.querySelectorAll?.("a, button, [role='button']") ?? []) {
-    if (isChargenControl(element)) matches.add(element);
+  if (header instanceof HTMLElement) {
+    for (const element of header.querySelectorAll?.("a, button, [role='button']") ?? []) {
+      if (isChargenControl(element)) matches.add(element);
+    }
   }
 
   for (const element of matches) element.remove();

@@ -7,17 +7,17 @@
       <span class="condition-name heat-name-display">{{name}}</span>
     </div>
     <div class="heat-controls">
-      {{#if editable}}<button class="heat-btn heat-minus" title="{{localize 'FBLEC.Heat.Minus'}}">-</button>{{/if}}
+      {{#if editable}}<button type="button" class="heat-btn heat-minus" title="{{localize 'FBLEC.Heat.Minus'}}">-</button>{{/if}}
       <div class="heat-meter" title="{{localize 'FBLEC.Heat.Level'}}">{{{dots}}}</div>
       <input class="heat-input" type="text" value="{{value}}/{{max}}" readonly>
       {{#if editable}}
-        <button class="heat-btn heat-plus" title="{{localize 'FBLEC.Heat.Plus'}}">+</button>
-        <button class="heat-btn heat-exposure" title="{{localize 'FBLEC.Heat.Exposure'}}"><i class="fas fa-sun"></i></button>
-        <button class="heat-btn heat-rest" title="{{localize 'FBLEC.Heat.Rest'}}"><i class="fas fa-campground"></i></button>
+        <button type="button" class="heat-btn heat-plus" title="{{localize 'FBLEC.Heat.Plus'}}">+</button>
+        <button type="button" class="heat-btn heat-exposure" title="{{localize 'FBLEC.Heat.Exposure'}}"><i class="fas fa-sun"></i></button>
+        <button type="button" class="heat-btn heat-rest" title="{{localize 'FBLEC.Heat.Rest'}}"><i class="fas fa-campground"></i></button>
       {{/if}}
-      <button class="heat-btn heat-check" title="{{localize 'FBLEC.Heat.Check'}}"><i class="fas fa-dice-d6"></i></button>
+      <button type="button" class="heat-btn heat-check" title="{{localize 'FBLEC.Heat.Check'}}"><i class="fas fa-dice-d6"></i></button>
     </div>
-    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Heat.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
+    {{#if editable}}<button type="button" class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Heat.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
   <div class="heat-summary">
     <span class="heat-summary-title">{{levelLabel}}:</span>

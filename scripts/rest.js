@@ -153,7 +153,7 @@ export async function openRestDialog(app, actor, root = null) {
     };
 
     dialog = new Dialog({
-      title: " ",
+      title: qaLocalize("Rest.Title", "Отдых: {actor}", { actor: actor?.name ?? "" }),
       content,
       buttons: {
         apply: {
@@ -420,7 +420,10 @@ async function applyRest(app, actor, options, context = {}) {
 
   try {
     if (Object.keys(result.updates).length) await actor.update(result.updates);
-    for (const effect of result.effectsToDelete) await effect.delete?.();
+    const effectIds = result.effectsToDelete
+      .map((effect) => effect?.id ?? effect?._id)
+      .filter(Boolean);
+    if (effectIds.length) await actor.deleteEmbeddedDocuments("ActiveEffect", effectIds);
     if (result.flagValue !== undefined) await actor.setFlag(MODULE_ID, FLAG_SHORT_REST_RECOVERY, result.flagValue);
     if (result.clearShortRestFlag) await actor.unsetFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY);
 
@@ -722,7 +725,7 @@ function findConditionEffects(actor, condition) {
   const aliases = new Set(condition.aliases.map((value) => normalizeAlias(value)));
   aliases.add(normalizeAlias(condition.key));
   const statusEffect = globalThis.CONFIG?.statusEffects?.find?.((entry) => normalizeAlias(entry?.id) === normalizeAlias(condition.key));
-  const statusIcon = statusEffect?.icon ?? null;
+  const statusIcon = statusEffect?.img ?? statusEffect?.icon ?? null;
 
   return effects.filter((effect) => {
     const statusIds = new Set([...(effect.statuses ?? []), ...(effect.flags?.core?.statusId ? [effect.flags.core.statusId] : [])].map(normalizeAlias));

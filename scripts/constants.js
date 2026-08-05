@@ -16,13 +16,11 @@ export const SETTINGS = Object.freeze({
 export const MAX_SLOTS = 10;
 export const MAX_QUICK_WEIGHT = 1;
 export const ITEM_TOOLTIP_DELAY_MS = 1000;
-export const INSUFFICIENT_FUNDS_MESSAGE = "НЕДОСТАТОЧНО СРЕДСТВ";
-
 // Forbidden Lands denominations, normalized to copper for wallet arithmetic.
 export const CURRENCIES = [
-  { key: "gold", abbr: "ЗМ", label: "CURRENCY.GOLD", unit: 100 },
-  { key: "silver", abbr: "СМ", label: "CURRENCY.SILVER", unit: 10 },
-  { key: "copper", abbr: "ММ", label: "CURRENCY.COPPER", unit: 1 }
+  { key: "gold", abbrKey: "Wallet.CurrencyAbbr.Gold", abbrFallback: "GP", label: "CURRENCY.GOLD", unit: 100 },
+  { key: "silver", abbrKey: "Wallet.CurrencyAbbr.Silver", abbrFallback: "SP", label: "CURRENCY.SILVER", unit: 10 },
+  { key: "copper", abbrKey: "Wallet.CurrencyAbbr.Copper", abbrFallback: "CP", label: "CURRENCY.COPPER", unit: 1 }
 ];
 
 export const CURRENCY_BY_KEY = Object.fromEntries(

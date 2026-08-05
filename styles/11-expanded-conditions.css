@@ -12,6 +12,11 @@ flex-grow: 1;
   padding: 10px;
 }
 
+.fblec-stat-tab .conditions-rows {
+  min-width: 0;
+}
+
+
 .fblec-stat-tab .conditions-controls {
 padding: 5px 10px 10px 10px;
   display: flex;
@@ -1037,7 +1042,7 @@ color: #7a1600 !important;
 }
 
 /* 1.2.3: compact masonry-like two-column layout. */
-.fblec-stat-tab.fblec-columns-2 .conditions-list {
+.fblec-stat-tab.fblec-columns-2 .conditions-rows {
   display: block !important;
   column-count: 2;
   column-gap: 8px;
@@ -1180,7 +1185,7 @@ color: #7a1600 !important;
 }
 
 @media (max-width: 650px) {
-  .fblec-stat-tab.fblec-columns-2 .conditions-list {
+  .fblec-stat-tab.fblec-columns-2 .conditions-rows {
     column-count: 1;
   }
 }

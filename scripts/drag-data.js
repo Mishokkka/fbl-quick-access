@@ -10,7 +10,8 @@ export function readDropData(event, { warn = true } = {}) {
     if (!raw) continue;
 
     try {
-      return normalizeDropData(JSON.parse(raw));
+      const normalized = normalizeDropData(JSON.parse(raw));
+      if (normalized) return normalized;
     } catch (error) {
       if (warn) console.warn(`${MODULE_ID} | could not parse ${type} drop data`, raw, error);
     }
@@ -62,11 +63,15 @@ export async function resolveDroppedItem(actor, data, { sameActorOnly = true, wa
   if (!isItemDropData(data)) return null;
 
   if (data.uuid) {
-    const document = await fromUuid(data.uuid);
-    if (document?.documentName === "Item") {
-      if (!sameActorOnly || document.parent?.uuid === actor?.uuid) return document;
-      if (warn) ui.notifications?.warn(qaLocalize("Drag.SameActorOnly", "Перетащи предмет из инвентаря этого же персонажа."));
-      return null;
+    try {
+      const document = await fromUuid(data.uuid);
+      if (document?.documentName === "Item") {
+        if (!sameActorOnly || document.parent?.uuid === actor?.uuid) return document;
+        if (warn) ui.notifications?.warn(qaLocalize("Drag.SameActorOnly", "Перетащи предмет из инвентаря этого же персонажа."));
+        return null;
+      }
+    } catch (error) {
+      if (warn) console.warn(`${MODULE_ID} | could not resolve dropped item UUID`, data.uuid, error);
     }
   }
 

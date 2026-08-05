@@ -210,6 +210,11 @@
   background: rgba(255, 255, 255, 0.92);
 }
 
+.fblqa-round-checkbox:has(input:focus-visible) {
+  outline: 2px solid var(--color-shadow-primary, #ff6400);
+  outline-offset: 2px;
+}
+
 .fblqa-round-checkbox input {
   position: absolute;
   opacity: 0;

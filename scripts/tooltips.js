@@ -5,6 +5,7 @@ import { findPrimaryGearContainer } from "./sheet-adapter/forbidden-lands-v1.js"
 
 let itemTooltipElement = null;
 let itemTooltipTimer = null;
+let itemTooltipHideTimer = null;
 let itemTooltipAnchor = null;
 let itemTooltipPointer = { x: 0, y: 0 };
 
@@ -18,7 +19,10 @@ export function registerTooltipListeners() {
     positionItemTooltip();
   }, true);
 
-  document.addEventListener("scroll", hideItemTooltip, true);
+  document.addEventListener("scroll", (event) => {
+    if (itemTooltipElement?.contains?.(event.target)) return;
+    hideItemTooltip();
+  }, true);
   window.addEventListener("blur", hideItemTooltip);
 }
 
@@ -70,9 +74,9 @@ function attachTooltipToRow(actor, row) {
   for (const anchor of anchors) {
     anchor.classList.add("fblqa-tooltip-anchor");
     anchor.addEventListener("mouseenter", (event) => scheduleItemTooltip(actor, row, anchor, event));
-    anchor.addEventListener("mouseleave", hideItemTooltip);
+    anchor.addEventListener("mouseleave", scheduleItemTooltipHide);
     anchor.addEventListener("focus", (event) => scheduleItemTooltip(actor, row, anchor, event));
-    anchor.addEventListener("blur", hideItemTooltip);
+    anchor.addEventListener("blur", scheduleItemTooltipHide);
   }
 }
 
@@ -147,8 +151,15 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   }, ITEM_TOOLTIP_DELAY_MS);
 }
 
+function scheduleItemTooltipHide() {
+  clearTimeout(itemTooltipHideTimer);
+  itemTooltipHideTimer = window.setTimeout(hideItemTooltip, 120);
+}
+
 export function hideItemTooltip() {
   clearTimeout(itemTooltipTimer);
+  clearTimeout(itemTooltipHideTimer);
+  itemTooltipHideTimer = null;
   itemTooltipTimer = null;
   itemTooltipAnchor = null;
 
@@ -164,6 +175,8 @@ function ensureItemTooltipElement() {
   itemTooltipElement = document.createElement("aside");
   itemTooltipElement.classList.add("fblqa-item-tooltip");
   itemTooltipElement.setAttribute("role", "tooltip");
+  itemTooltipElement.addEventListener("mouseenter", () => clearTimeout(itemTooltipHideTimer));
+  itemTooltipElement.addEventListener("mouseleave", scheduleItemTooltipHide);
   document.body.append(itemTooltipElement);
   return itemTooltipElement;
 }
