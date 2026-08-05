@@ -119,19 +119,31 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.5.7:
+Available methods in 1.6.2:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
+- `registerStatProvider(definition)`
+- `registerNewDayProvider(definition)`
+- `refreshStat(appOrActor)`
+- `getActiveGM(users?)`
+- `executeAsActiveGM(operation, payload?, options?)`
+- `registerSocketHandler(operation, handler)`
 - `getQuickAccessSlots(actor)`
 - `setQuickAccessSlots(actor, slots)`
 - `openRestDialog(app, actor, root?)`
 - `openNewDayDialog(app, actor)`
 - `buildNewDayPlan(actor)`
+- `buildNewDayPlanWithProviders(actor)`
 - `openMoneyTransferDialog(app, actor)`
+- `getReputationEntries(actor)`
+- `saveReputationEntries(actor, entries, options?)`
+- `openReputationDialog(app, actor)`
+- `getWillpowerTalents(actor)`
+- `saveWillpowerTalents(actor, talents, options?)`
 - `pruneActorReferences(actor)`
 - `pruneWorldActorReferences()`
 
-Only `refreshGearPresentation` accepts sheet DOM context. The other methods operate on documents and data so macros and companion modules do not need to parse the sheet.
+Use `api.capabilities` to detect provider, active-GM, and character-import support. Data helpers operate on Actor documents and plain data; the `open*` and presentation helpers also accept Foundry application or sheet context. The full provider and importer contracts are documented in `INTEGRATION_API.md`.
 
 ## Known limitations
 

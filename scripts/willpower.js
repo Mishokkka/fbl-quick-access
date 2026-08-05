@@ -89,18 +89,26 @@ export function setupStartWillpowerButton(app, actor, root) {
   label.insertAdjacentElement("afterend", button);
 }
 
+/**
+ * Calculates the session-start Willpower value for an actor.
+ * Half-point results are rounded toward the actor's Willpower threshold, as
+ * required by the Reforged Power rule.
+ *
+ * @param {Actor} actor - The Forbidden Lands character actor.
+ * @returns {{value: number, raw: number, base: number, empathyMax: number, currentWp: number, professionalRank: number, kinRank: number, notes: string[]}}
+ */
 export function calculateStartWillpower(actor) {
   const empathyMax = readNumber(actor.system?.attribute?.empathy?.max, 0);
   const currentWp = readNumber(actor.system?.bio?.willpower?.value, 0);
   const wpMax = readNumber(actor.system?.bio?.willpower?.max, Number.POSITIVE_INFINITY);
 
-  const selected = getSavedWillpowerTalents(actor);
+  const selected = getWillpowerTalents(actor);
   const professional = readSelectedTalentRank(actor, selected.professionalTalentId, "Professional Talent");
   const kin = readSelectedTalentRank(actor, selected.kinTalentId, "Kin Talent");
 
   const base = (empathyMax + professional.rank + kin.rank) / 2;
   const raw = (base + currentWp) / 2;
-  const rounded = Math.round(raw);
+  const rounded = roundNearestToward(raw, base);
   const value = clamp(rounded, 0, wpMax);
 
   return {
@@ -231,11 +239,28 @@ function buildTalentOptions(talents, selectedId) {
   return options.join("");
 }
 
+/**
+ * Returns the actor's selected Kin and Professional talent item ids.
+ *
+ * @param {Actor} actor - The actor whose module flag should be read.
+ * @returns {{kinTalentId: string, professionalTalentId: string}}
+ */
 export function getWillpowerTalents(actor) {
   const raw = actor?.getFlag?.(MODULE_ID, WP_TALENTS_FLAG) ?? {};
   return normalizeWillpowerTalents(raw);
 }
 
+/**
+ * Saves the embedded talent item ids used by the start-Willpower rule.
+ * Empty ids clear a selection. Non-empty ids must point to distinct embedded
+ * talent Items on the same actor.
+ *
+ * @param {Actor} actor - The actor whose module flag should be updated.
+ * @param {{kinTalentId?: string|null, professionalTalentId?: string|null}} value - Selected embedded Item ids.
+ * @param {{render?: boolean}} [options] - Foundry update options.
+ * @returns {Promise<boolean>} Whether the values were persisted.
+ * @throws {TypeError} If a non-empty id is missing, is not a talent, or duplicates the other selection.
+ */
 export async function saveWillpowerTalents(actor, value, { render = false } = {}) {
   if (!canModifyActor(actor)) {
     warnCannotModifyActor();
@@ -248,6 +273,9 @@ export async function saveWillpowerTalents(actor, value, { render = false } = {}
     throw new TypeError("Kin Talent and Professional Talent must be different items.");
   }
 
+  validateTalentSelection(actor, normalized.kinTalentId, "Kin Talent");
+  validateTalentSelection(actor, normalized.professionalTalentId, "Professional Talent");
+
   await actor.update({
     [`flags.${MODULE_ID}.${WP_TALENTS_FLAG}`]: {
       kinTalentId: normalized.kinTalentId || null,
@@ -257,8 +285,14 @@ export async function saveWillpowerTalents(actor, value, { render = false } = {}
   return true;
 }
 
+/**
+ * Normalizes the persisted Willpower talent selection shape.
+ *
+ * @param {unknown} value - Raw flag or importer input.
+ * @returns {{kinTalentId: string, professionalTalentId: string}}
+ */
 function normalizeWillpowerTalents(value) {
-  const raw = value ?? {};
+  const raw = value && typeof value === "object" ? value : {};
   return {
     kinTalentId: raw.kinTalentId ? String(raw.kinTalentId).trim() : "",
     professionalTalentId: raw.professionalTalentId ? String(raw.professionalTalentId).trim() : ""
@@ -266,15 +300,41 @@ function normalizeWillpowerTalents(value) {
 }
 
 function getActorTalents(actor) {
-  return [...(actor.items ?? [])]
+  return getActorItems(actor)
     .filter((item) => String(item.type ?? "").toLowerCase() === "talent")
     .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), game.i18n?.lang ?? undefined));
+}
+
+function getActorItems(actor) {
+  const items = actor?.items;
+  if (!items) return [];
+  if (Array.isArray(items)) return items;
+  if (typeof items.values === "function") return [...items.values()];
+  if (typeof items[Symbol.iterator] === "function") return [...items];
+  return [];
+}
+
+function findActorItem(actor, itemId) {
+  if (!itemId) return null;
+  const normalizedId = String(itemId);
+  return actor?.items?.get?.(normalizedId)
+    ?? getActorItems(actor).find((candidate) => String(candidate.id ?? candidate._id ?? "") === normalizedId)
+    ?? null;
+}
+
+function validateTalentSelection(actor, itemId, label) {
+  if (!itemId) return;
+  const item = findActorItem(actor, itemId);
+  if (!item) throw new TypeError(`${label} must reference an embedded Item on the actor.`);
+  if (String(item.type ?? "").toLowerCase() !== "talent") {
+    throw new TypeError(`${label} must reference an embedded talent Item.`);
+  }
 }
 
 function readSelectedTalentRank(actor, itemId, label) {
   if (!itemId) return { rank: DEFAULT_TALENT_RANK, notes: [] };
 
-  const item = actor.items?.get?.(itemId) ?? [...(actor.items ?? [])].find((candidate) => String(candidate.id ?? candidate._id) === String(itemId));
+  const item = findActorItem(actor, itemId);
   if (!item) {
     return {
       rank: DEFAULT_TALENT_RANK,
@@ -296,6 +356,18 @@ function readNumber(value, fallback = 0) {
 
 function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
+}
+
+function roundNearestToward(value, target) {
+  const lower = Math.floor(value);
+  const upper = Math.ceil(value);
+  if (lower === upper) return lower;
+
+  const distanceToLower = value - lower;
+  const distanceToUpper = upper - value;
+  if (distanceToLower < distanceToUpper) return lower;
+  if (distanceToUpper < distanceToLower) return upper;
+  return target >= value ? upper : lower;
 }
 
 function positionPopover(popover, anchor) {

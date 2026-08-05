@@ -5,6 +5,7 @@ import {
   WALLET_EXPANDED_STORAGE_PREFIX
 } from "./constants.js";
 import {
+  getCurrencyAbbreviation,
   getCurrencyValue,
   getWalletCopperTotal,
   parseCurrencyExpression
