@@ -88,12 +88,32 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
     return { changed: false, reason: "source-missing", previousName: getWashDisplayName(currentName), nextName };
   }
 
-  const oldItems = actor.items.filter(i => i.type === "criticalInjury" && normalizeConditionName(i.name) === normalizeConditionName(currentName));
   const itemData = newItemSource.toObject();
   delete itemData._id;
 
-  if (oldItems.length) await actor.deleteEmbeddedDocuments("Item", oldItems.map(i => i.id), documentOptions);
-  await actor.createEmbeddedDocuments("Item", [itemData], documentOptions);
+  let createdItems;
+  try {
+    createdItems = await actor.createEmbeddedDocuments("Item", [itemData], documentOptions);
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not create replacement wash state`, error);
+    ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
+    return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
+  }
+
+  const createdIds = new Set((createdItems ?? []).map((item) => item.id));
+  const staleIds = actor.items
+    .filter((item) => item.type === "criticalInjury" && isWashCondition(item) && !createdIds.has(item.id))
+    .map((item) => item.id);
+
+  if (staleIds.length) {
+    try {
+      await actor.deleteEmbeddedDocuments("Item", staleIds, documentOptions);
+    } catch (error) {
+      console.error(`${MODULE_ID} | could not remove stale wash states`, error);
+      ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
+    }
+  }
+
   ui.notifications.info(localize("Notifications.WashChanged", "Wash state changed: {previous} ➔ {next}.", { previous: escapeHTML(getWashDisplayName(currentName)), next: escapeHTML(nextName) }));
   return { changed: true, previousName: getWashDisplayName(currentName), nextName };
 }

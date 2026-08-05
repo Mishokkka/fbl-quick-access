@@ -1,7 +1,6 @@
 import {
   CURRENCIES,
   CURRENCY_BY_KEY,
-  INSUFFICIENT_FUNDS_MESSAGE,
   ITEM_TOOLTIP_DELAY_MS,
   WALLET_EXPANDED_STORAGE_PREFIX
 } from "./constants.js";
@@ -167,7 +166,8 @@ function buildCurrencyRow(app, actor, currency, mode = "popover") {
   minus.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    await runWalletOperation(actor, event.currentTarget, () => changeCurrency(app, actor, currency.key, -1, event.currentTarget));
+    const control = event.currentTarget;
+    await runWalletOperation(actor, control, () => changeCurrency(app, actor, currency.key, -1, control));
   });
 
   const input = document.createElement("input");
@@ -178,7 +178,7 @@ function buildCurrencyRow(app, actor, currency, mode = "popover") {
   input.spellcheck = false;
   input.value = String(getCurrencyValue(actor, currency.key));
   input.title = qaLocalize("Wallet.InputTitle", "{currency}. Можно писать числа, например 8, выражения 10-2, или относительные операции +5 / -117.", { currency: localizeOrFallback(currency.label, currency.key) });
-  input.setAttribute("aria-label", `${currency.abbr}: ${localizeOrFallback(currency.label, currency.key)}`);
+  input.setAttribute("aria-label", `${getCurrencyAbbreviation(currency)}: ${localizeOrFallback(currency.label, currency.key)}`);
   input.disabled = !canModify;
   input.addEventListener("focus", (event) => {
     event.currentTarget.select();
@@ -187,8 +187,9 @@ function buildCurrencyRow(app, actor, currency, mode = "popover") {
   input.addEventListener("change", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    const rawValue = event.currentTarget.value;
-    await runWalletOperation(actor, event.currentTarget, () => applyCurrencyInput(app, actor, currency.key, rawValue, event.currentTarget));
+    const control = event.currentTarget;
+    const rawValue = control.value;
+    await runWalletOperation(actor, control, () => applyCurrencyInput(app, actor, currency.key, rawValue, control));
   });
   input.addEventListener("keydown", (event) => {
     if (event.key === "Enter") event.currentTarget.blur();
@@ -207,12 +208,13 @@ function buildCurrencyRow(app, actor, currency, mode = "popover") {
   plus.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    await runWalletOperation(actor, event.currentTarget, () => changeCurrency(app, actor, currency.key, 1, event.currentTarget));
+    const control = event.currentTarget;
+    await runWalletOperation(actor, control, () => changeCurrency(app, actor, currency.key, 1, control));
   });
 
   const label = document.createElement("span");
   label.classList.add("fblqa-currency-abbr", `fblqa-currency-abbr-${currency.key}`);
-  label.textContent = currency.abbr;
+  label.textContent = getCurrencyAbbreviation(currency);
   label.title = localizeOrFallback(currency.label, currency.key);
 
   row.append(minus, input, plus, label);
@@ -590,7 +592,7 @@ function resetCurrencyInput(actor, key, input) {
 }
 
 function showInsufficientFunds(input) {
-  showWalletMessage(input, qaLocalize("Wallet.InsufficientFunds", INSUFFICIENT_FUNDS_MESSAGE), true);
+  showWalletMessage(input, qaLocalize("Wallet.InsufficientFunds", "INSUFFICIENT FUNDS"), true);
 }
 
 function showWalletMessage(input, message, isError = false) {

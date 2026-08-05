@@ -109,7 +109,11 @@ export function findRestButton(root) {
     if (button instanceof HTMLElement) return button;
   }
 
-  for (const candidate of root.querySelectorAll?.("a.header-button, button.header-button, a.control, button.control") ?? []) {
+  const appRoot = findApplicationRoot(root) ?? root;
+  const headerScope = root.matches?.(".window-header, .sheet-header, header")
+    ? root
+    : appRoot.querySelector?.(".window-header, .sheet-header, header");
+  for (const candidate of headerScope?.querySelectorAll?.("a, button, [role='button']") ?? []) {
     if (!(candidate instanceof HTMLElement)) continue;
     const text = `${candidate.textContent ?? ""} ${candidate.title ?? ""} ${candidate.getAttribute("aria-label") ?? ""}`.toLowerCase();
     if (/\brest\b|отдых|передыш/.test(text)) return candidate;
@@ -136,7 +140,7 @@ export function findConditionHeader(mainTab) {
 
   const candidates = mainTab.querySelectorAll("h1, h2, h3, h4, .section-title, .title, header, legend");
   for (const candidate of candidates) {
-    const text = directText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
+    const text = descendantText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
     if (text === "conditions" || text === "состояния") return candidate;
   }
 
@@ -144,7 +148,7 @@ export function findConditionHeader(mainTab) {
   for (const candidate of mainTab.querySelectorAll("*")) {
     if (!(candidate instanceof HTMLElement)) continue;
     if (candidate.children.length > 6) continue;
-    const text = directText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
+    const text = ownText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
     if (text === "conditions" || text === "состояния") return candidate;
   }
 
@@ -182,12 +186,16 @@ export function findSheetHeaderCandidates(root) {
   return [...candidates];
 }
 
-function directText(element) {
+function ownText(element) {
   let text = "";
   for (const node of element.childNodes) {
     if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? "";
   }
-  return text || element.textContent || "";
+  return text;
+}
+
+function descendantText(element) {
+  return element?.textContent ?? "";
 }
 
 function looksLikeSheetHeader(element) {

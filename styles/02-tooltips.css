@@ -16,9 +16,9 @@
   border: 1px solid var(--color-border-dark, #4b3d2a);
   border-radius: 5px;
   box-shadow: 0 5px 18px rgba(0, 0, 0, 0.34);
-  background: var(--fblqa-bg-paper);
+  background: var(--fblqa-bg-paper, #f1eee6);
   color: var(--color-text-primary, #191813);
-  pointer-events: none;
+  pointer-events: auto;
   font-size: 0.82rem;
   line-height: 1.18;
 }

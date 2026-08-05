@@ -244,8 +244,11 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds) {
       const nextConditions = getCustomConditions(actor).flatMap((condition) => {
         const action = byId.get(condition.id);
         if (!action) return [condition];
-        if (action.kind === "custom-condition-expire") return [];
-        return [{ ...condition, time: action.afterText }];
+
+        const timer = decrementFirstInteger(condition.time, 1);
+        if (!timer || isPermanentTime(condition.time) || timer.beforeNumber <= 0) return [condition];
+        if (timer.afterNumber === 0) return [];
+        return [{ ...condition, time: timer.afterText }];
       });
       await actor.setFlag(MODULE_ID, CONDITION_FLAGS.LIST, nextConditions);
       for (const action of customActions) results.push(successResult(action));

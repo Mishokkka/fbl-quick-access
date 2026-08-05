@@ -75,6 +75,16 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
 
   const requestId = makeRequestId();
   const timeoutMs = Math.max(1_000, Number(options?.timeoutMs) || DEFAULT_TIMEOUT_MS);
+  const message = {
+    type: REQUEST_TYPE,
+    requestId,
+    operation: key,
+    payload: cloneForSocket(payload),
+    requesterId: game.user.id,
+    activeGMId: activeGM.id,
+    createdAt: Date.now()
+  };
+
   const response = new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
       pendingRequests.delete(requestId);
@@ -83,15 +93,16 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
     pendingRequests.set(requestId, { resolve, reject, timeout, operation: key });
   });
 
-  game.socket.emit(SOCKET_CHANNEL, {
-    type: REQUEST_TYPE,
-    requestId,
-    operation: key,
-    payload: cloneForSocket(payload),
-    requesterId: game.user.id,
-    activeGMId: activeGM.id,
-    createdAt: Date.now()
-  });
+  try {
+    game.socket.emit(SOCKET_CHANNEL, message);
+  } catch (error) {
+    const pending = pendingRequests.get(requestId);
+    pendingRequests.delete(requestId);
+    if (pending) {
+      globalThis.clearTimeout(pending.timeout);
+      pending.reject(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
+    }
+  }
 
   return response;
 }

@@ -208,9 +208,16 @@
   text-align: center;
 }
 
+.fblqa-currency-input {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+
 .fblqa-currency-input::-webkit-outer-spin-button,
 .fblqa-currency-input::-webkit-inner-spin-button {
   margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
 }
 
 .fblqa-currency-abbr {

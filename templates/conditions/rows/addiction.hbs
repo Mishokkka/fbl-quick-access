@@ -16,12 +16,12 @@
       {{/if}}
       <span class="addiction-status" title="{{statusTitle}}">{{statusText}}</span>
       {{#if editable}}
-        <button class="addiction-btn addiction-morning" title="{{localize 'FBLEC.Addiction.Morning'}}"><i class="fas fa-sun"></i></button>
-        <button class="addiction-btn addiction-advance" title="{{localize 'FBLEC.Addiction.Advance'}}"><i class="fas fa-step-forward"></i></button>
-        <button class="addiction-btn addiction-relapse" title="{{localize 'FBLEC.Addiction.Relapse'}}"><i class="fas fa-syringe"></i></button>
+        <button type="button" class="addiction-btn addiction-morning" title="{{localize 'FBLEC.Addiction.Morning'}}"><i class="fas fa-sun"></i></button>
+        <button type="button" class="addiction-btn addiction-advance" title="{{localize 'FBLEC.Addiction.Advance'}}"><i class="fas fa-step-forward"></i></button>
+        <button type="button" class="addiction-btn addiction-relapse" title="{{localize 'FBLEC.Addiction.Relapse'}}"><i class="fas fa-syringe"></i></button>
       {{/if}}
     </div>
-    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Addiction.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
+    {{#if editable}}<button type="button" class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Addiction.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
   <div class="injury-desc">{{{effect}}}</div>
 </div>

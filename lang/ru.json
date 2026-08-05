@@ -26,7 +26,8 @@
     },
     "MainTab": {
       "BorderToggleAria": "Компактный режим без декоративных рамок листа",
-      "BorderToggleTitle": "Включено: компактный режим без декоративных рамок. Выключено: штатные декоративные рамки."
+      "BorderToggleTitle": "Включено: компактный режим без декоративных рамок. Выключено: штатные декоративные рамки.",
+      "BorderToggleSaveFailed": "Не удалось сохранить режим декоративных рамок."
     },
     "Panel": {
       "Aria": "Вес, быстрый доступ и валюта. Быстрый доступ: {capacity}/{maxSlots} слотов, Agility {agilityMax} + Sleight of Hand {sleightOfHand}",
@@ -128,6 +129,11 @@
         "RecipientDialogUnavailable": "Получатель не смог открыть окно подтверждения.",
         "RecipientTimeout": "Получатель не ответил вовремя.",
         "InvalidRequest": "Запрос на перевод не прошёл проверку."
+      },
+      "CurrencyAbbr": {
+        "Gold": "ЗМ",
+        "Silver": "СМ",
+        "Copper": "ММ"
       }
     },
     "Willpower": {
@@ -473,5 +479,8 @@
   "FBLEC.Heat.Level4.Summary": "Провал Endurance наносит 1 урон по Силе и 1 урон по Смекалке.",
   "FBLEC.Heat.Level4.Consequence": "Дальше идти днём без воды, тени или магии нельзя без серьёзного риска.",
   "FBLEC.Chat.Addiction.ControlledAutomatic": "Тяга под контролем. Проверка Endurance сегодня не требуется; цикл зависимости продвинут автоматически.",
-  "FBLEC.Chat.Addiction.ControlledCured": "Тяга под контролем. Цикл зависимости продвинут автоматически, зависимость преодолена."
+  "FBLEC.Chat.Addiction.ControlledCured": "Тяга под контролем. Цикл зависимости продвинут автоматически, зависимость преодолена.",
+  "FBLEC.Notifications.WashTransitionFailed": "Не удалось изменить состояние помытости на «{name}». Предыдущее состояние сохранено.",
+  "FBLEC.Notifications.WashCleanupFailed": "Новое состояние помытости создано, но старое состояние удалить не удалось.",
+  "FBLEC.Notifications.MigrationFailed": "Миграция расширенных состояний не завершена. Ошибок: {count}. При следующей загрузке будет выполнена повторная попытка."
 }

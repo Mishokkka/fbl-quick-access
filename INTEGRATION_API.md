@@ -50,7 +50,7 @@ const unregister = qa.registerStatProvider({
 
 Contract:
 
-- `id`: unique stable id matching `[a-z0-9._-]+`.
+- `id`: unique stable id matching `^[a-z0-9][a-z0-9._-]*$` (case-insensitive).
 - `order`: numeric provider order. Default is `500`.
 - `render(context)`: required, returns an HTML string.
 - `activateListeners(context)`: optional. `root` is the provider-owned wrapper only.
@@ -166,7 +166,7 @@ qa.executeAsActiveGM(operation, payload, options);
 
 Rules:
 
-- Operation ids must match `[a-z0-9._:-]+`.
+- Operation ids must match `^[a-z0-9][a-z0-9._:-]*$` (case-insensitive).
 - Duplicate operation ids throw instead of replacing another module's handler.
 - Payloads and results must be JSON-serializable plain data.
 - Registered handlers are privileged code. Each handler must validate the requesting user, document permission, ids, and expected payload shape.

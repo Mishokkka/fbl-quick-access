@@ -38,11 +38,17 @@
   border-bottom: 1px dotted rgba(0, 0, 0, 0.42);
 }
 
-.fblqa-wp-label-anchor:hover,
+.fblqa-wp-label-anchor:hover {
+  color: #263f3b;
+  border-bottom-color: rgba(0, 0, 0, 0.72);
+}
+
 .fblqa-wp-label-anchor:focus-visible {
   color: #263f3b;
   border-bottom-color: rgba(0, 0, 0, 0.72);
-  outline: none;
+  border-radius: 2px;
+  outline: 2px solid var(--color-shadow-primary, #ff6400);
+  outline-offset: 2px;
 }
 
 .fblqa-wp-popover {

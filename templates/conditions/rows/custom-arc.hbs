@@ -4,6 +4,7 @@
       <i class="fas fa-chevron-down collapse-icon arc-icon"></i>
       <span class="arc-title-text">{{title}}</span>
     </div>
+    {{#if editable}}<button type="button" class="delete-condition" title="{{localize 'FBLEC.UI.DeleteCondition'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
   <div class="condition-desc">
     {{#if editable}}

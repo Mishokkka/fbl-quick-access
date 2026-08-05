@@ -26,7 +26,8 @@
     },
     "MainTab": {
       "BorderToggleAria": "Compact sheet layout without decorative borders",
-      "BorderToggleTitle": "On: compact layout without decorative borders. Off: native decorative borders."
+      "BorderToggleTitle": "On: compact layout without decorative borders. Off: native decorative borders.",
+      "BorderToggleSaveFailed": "Could not save the decorative border mode."
     },
     "Panel": {
       "Aria": "Weight, quick access, and currency. Quick Access: {capacity}/{maxSlots} slots, Agility {agilityMax} + Sleight of Hand {sleightOfHand}",
@@ -128,6 +129,11 @@
         "RecipientDialogUnavailable": "The recipient could not open the confirmation dialog.",
         "RecipientTimeout": "The recipient did not answer in time.",
         "InvalidRequest": "The transfer request failed validation."
+      },
+      "CurrencyAbbr": {
+        "Gold": "GP",
+        "Silver": "SP",
+        "Copper": "CP"
       }
     },
     "Willpower": {
@@ -473,5 +479,8 @@
   "FBLEC.Heat.Level4.Summary": "A failed Endurance roll deals 1 Strength damage and 1 Wits damage.",
   "FBLEC.Heat.Level4.Consequence": "Daytime travel without water, shade, or magic carries severe risk.",
   "FBLEC.Chat.Addiction.ControlledAutomatic": "The craving is controlled. No Endurance roll is required today; the addiction cycle advances automatically.",
-  "FBLEC.Chat.Addiction.ControlledCured": "The craving is controlled. The addiction cycle advances automatically and the condition is cured."
+  "FBLEC.Chat.Addiction.ControlledCured": "The craving is controlled. The addiction cycle advances automatically and the condition is cured.",
+  "FBLEC.Notifications.WashTransitionFailed": "Could not change wash state to “{name}”. The previous state was kept.",
+  "FBLEC.Notifications.WashCleanupFailed": "The new wash state was created, but an older wash state could not be removed.",
+  "FBLEC.Notifications.MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load."
 }

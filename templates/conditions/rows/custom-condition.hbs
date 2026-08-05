@@ -10,15 +10,15 @@
       {{/if}}
     </div>
     <div class="condition-time-inline">
-      {{#if editable}}{{#if showTimeButtons}}<button class="time-btn time-minus">-</button>{{/if}}{{/if}}
+      {{#if editable}}{{#if showTimeButtons}}<button type="button" class="time-btn time-minus">-</button>{{/if}}{{/if}}
       {{#if editable}}
         <input class="condition-time {{permanentClass}}" type="text" value="{{time}}" placeholder="{{localize 'FBLEC.UI.Time'}}">
       {{else}}
         <span class="condition-time condition-time-static {{permanentClass}}">{{time}}</span>
       {{/if}}
-      {{#if editable}}{{#if showTimeButtons}}<button class="time-btn time-plus">+</button>{{/if}}{{/if}}
+      {{#if editable}}{{#if showTimeButtons}}<button type="button" class="time-btn time-plus">+</button>{{/if}}{{/if}}
     </div>
-    {{#if editable}}<button class="delete-condition addiction-delete-btn" title="{{localize 'FBLEC.UI.DeleteCondition'}}"><i class="fas fa-trash"></i></button>{{/if}}
+    {{#if editable}}<button type="button" class="delete-condition addiction-delete-btn" title="{{localize 'FBLEC.UI.DeleteCondition'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
   <div class="notes-wrapper">
     {{#if editable}}

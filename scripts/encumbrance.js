@@ -26,9 +26,10 @@ export function getEncumbrance(actor) {
 
   const strengthMax = getActorAttributeMaximum(actor, "strength");
 
-  const carryingModifiers = typeof actor.getRollModifierOptions === "function"
+  const modifierOptions = typeof actor.getRollModifierOptions === "function"
     ? actor.getRollModifierOptions("carryingCapacity")
     : [];
+  const carryingModifiers = Array.isArray(modifierOptions) ? modifierOptions : [];
 
   const modifierTotal = carryingModifiers.reduce((sum, modifier) => {
     return sum + (Number.parseInt(modifier?.value ?? 0, 10) || 0);

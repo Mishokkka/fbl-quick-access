@@ -1,3 +1,5 @@
+import { CURRENCIES } from "./constants.js";
+
 /**
  * Shared accessors for Forbidden Lands actor data paths.
  *
@@ -9,6 +11,7 @@ const ATTRIBUTE_VALUE_FIELDS = Object.freeze(["value", "current"]);
 const ATTRIBUTE_MAX_FIELDS = Object.freeze(["max", "valueMax"]);
 const ATTRIBUTE_CONTAINERS = Object.freeze(["attribute", "attributes"]);
 const CURRENCY_CONTAINERS = Object.freeze(["currency", "currencies"]);
+const CURRENCY_KEYS = new Set(CURRENCIES.map((currency) => currency.key));
 
 export function getActorAttributeState(actor, attributeKey) {
   const key = normalizeKey(attributeKey);
@@ -61,8 +64,22 @@ export function getActorCurrencyValue(actor, currencyKey) {
 
 export function buildActorCurrencyUpdate(actor, values = {}) {
   const update = {};
-  for (const [key, rawValue] of Object.entries(values)) {
-    update[getActorCurrencyPath(actor, key)] = Math.max(0, Math.floor(Number(rawValue) || 0));
+  for (const [rawKey, rawValue] of Object.entries(values)) {
+    const key = normalizeKey(rawKey);
+    if (!CURRENCY_KEYS.has(key)) throw new TypeError(`Unknown currency key: ${rawKey}`);
+
+    const primitive = typeof rawValue === "number" || typeof rawValue === "string";
+    const emptyString = typeof rawValue === "string" && rawValue.trim() === "";
+    if (!primitive || emptyString) {
+      throw new TypeError(`Currency value must be numeric: ${rawKey}`);
+    }
+
+    const value = Number(rawValue);
+    if (!Number.isFinite(value) || !Number.isSafeInteger(Math.floor(value))) {
+      throw new RangeError(`Currency value must be a finite safe integer: ${rawKey}`);
+    }
+
+    update[getActorCurrencyPath(actor, key)] = Math.max(0, Math.floor(value));
   }
   return update;
 }

@@ -110,7 +110,7 @@ export async function renderExpandedConditions(app, html) {
   async function refreshRows() {
     captureScroll();
     const rowsHtml = await buildRows();
-    html.find(".conditions-list").html(rowsHtml);
+    html.find(".conditions-rows").html(rowsHtml);
     restoreScroll();
   }
 
@@ -152,7 +152,7 @@ export async function renderExpandedConditions(app, html) {
 
     const rowsById = new Map();
 
-    html.find(".conditions-list > .condition-row[data-condition-id]").each((i, el) => {
+    html.find(".conditions-rows > .condition-row[data-condition-id]").each((i, el) => {
       const row = $(el);
       const id = String(row.data("condition-id") || "");
       const previous = foundry.utils.deepClone(customConditions.find(condition => condition.id === id) || { id });
@@ -186,7 +186,7 @@ export async function renderExpandedConditions(app, html) {
     const customMap = new Map(customConditions.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
     const itemUpdates = [];
 
-    html.find(".conditions-list > [data-row-kind]").each((i, el) => {
+    html.find(".conditions-rows > [data-row-kind]").each((i, el) => {
       const row = $(el);
       const order = i * 10;
       row.attr("data-order", order).data("order", order);
@@ -220,7 +220,7 @@ export async function renderExpandedConditions(app, html) {
       ? rowHint
       : rowHint instanceof HTMLElement
         ? $(rowHint)
-        : html.find(`.conditions-list > [data-item-id="${item.id}"]`).first();
+        : html.find(`.conditions-rows > [data-item-id="${item.id}"]`).first();
     if (!current?.length) {
       await refreshRows();
       return null;
@@ -662,7 +662,7 @@ export async function renderExpandedConditions(app, html) {
   function getSortableRowFromPoint(clientX, clientY) {
     const element = document.elementFromPoint(clientX, clientY);
     const row = $(element).closest(".condition-row:not(.arc-row), .injury-row:not(.arc-row)")[0];
-    const list = html.find(".conditions-list")[0];
+    const list = html.find(".conditions-rows")[0];
     if (!row || !list?.contains(row) || row === pointerDrag?.row) return null;
     return row;
   }

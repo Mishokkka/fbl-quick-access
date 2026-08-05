@@ -4,7 +4,7 @@ import { findConsumablesRow, findPrimaryGearContainer } from "./sheet-adapter/fo
 import { qaLocalize } from "./i18n.js";
 import { getItemWeightValue } from "./item-utils.js";
 import { canModifyActor } from "./permissions.js";
-import { escapeHtml, formatNumber, rerenderSheet } from "./utils.js";
+import { formatNumber, rerenderSheet } from "./utils.js";
 
 /**
  * Client-side view preference. It is intentionally not stored on the actor:
@@ -248,7 +248,7 @@ function getItemBonus(item) {
   const value = item.system?.bonus?.value ?? item.system?.bonus ?? 0;
   const number = Number(value);
   if (Number.isFinite(number)) return formatNumber(number);
-  return escapeHtml(String(value || 0));
+  return String(value || 0);
 }
 
 function getProstheticsExtensionMeta(row) {

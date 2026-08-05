@@ -158,42 +158,18 @@
   border-color: rgba(0, 0, 0, 0.62);
 }
 
+.fblqa-border-toggle input:focus-visible + .fblqa-border-toggle-slider {
+  outline: 2px solid var(--color-shadow-primary, #ff6400);
+  outline-offset: 2px;
+}
+
 .fblqa-border-toggle input:checked + .fblqa-border-toggle-slider::after {
   transform: translateX(18px);
 }
 
-.fblqa-native-borders .fblqa-main-compact .border,
-.fblqa-native-borders .fblqa-main-compact [class~="border"],
-.fblqa-native-borders .fblqa-sheet-head-compact,
-.fblqa-native-borders .fblqa-sheet-head-compact.border,
-.fblqa-native-borders .fblqa-sheet-head-compact[class~="border"] {
-  border: revert-layer !important;
-  border-image: revert-layer !important;
-  border-image-source: revert-layer !important;
-  border-image-slice: revert-layer !important;
-  border-image-width: revert-layer !important;
-  border-image-outset: revert-layer !important;
-  border-image-repeat: revert-layer !important;
-  border-radius: revert-layer !important;
-  box-shadow: revert-layer !important;
-  outline: revert-layer !important;
-  background: revert-layer !important;
-  background-image: revert-layer !important;
-  margin: revert-layer !important;
-  padding: revert-layer !important;
-}
-
-.fblqa-native-borders .fblqa-main-compact .border::before,
-.fblqa-native-borders .fblqa-main-compact .border::after,
-.fblqa-native-borders .fblqa-sheet-head-compact::before,
-.fblqa-native-borders .fblqa-sheet-head-compact::after,
-.fblqa-native-borders .fblqa-sheet-head-compact *::before,
-.fblqa-native-borders .fblqa-sheet-head-compact *::after {
-  border-image: revert-layer !important;
-  border-image-source: revert-layer !important;
-  background-image: revert-layer !important;
-  box-shadow: revert-layer !important;
-}
+/* Native mode is restored by removing all compact-mode classes in JavaScript.
+ * Do not add a second author-level override here: removing the module classes
+ * lets the Forbidden Lands sheet styles take effect again. */
 
 .fblqa-item-no-borders .border,
 .fblqa-item-no-borders [class~="border"],
