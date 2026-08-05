@@ -22,6 +22,7 @@ Hooks.once("fblQuickAccess.apiReady", (qa) => {
 qa.capabilities.statProviders;
 qa.capabilities.newDayProviders;
 qa.capabilities.activeGmExecution;
+qa.capabilities.characterImport;
 ```
 
 ## STAT providers
@@ -201,3 +202,6 @@ qa.getWillpowerTalents(actor);
 
 `qa.capabilities.characterImport` is `true` when these helpers are available.
 The talent ids are Actor Embedded Item ids, not compendium ids or catalog ids.
+Each non-empty id must resolve to a `talent` Item embedded in the same Actor, and
+the Kin and Professional selections must be different. Invalid selections reject
+with a `TypeError`; pass `null` or an empty string to clear a selection.
