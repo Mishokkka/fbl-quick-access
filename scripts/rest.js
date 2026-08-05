@@ -731,7 +731,7 @@ function findConditionEffects(actor, condition) {
     const statusIds = new Set([...(effect.statuses ?? []), ...(effect.flags?.core?.statusId ? [effect.flags.core.statusId] : [])].map(normalizeAlias));
     for (const status of statusIds) if (aliases.has(status)) return true;
 
-    if (statusIcon && effect?.icon === statusIcon) return true;
+    if (statusIcon && (effect?.img === statusIcon || effect?.icon === statusIcon)) return true;
 
     const label = normalizeAlias(effect.name ?? effect.label ?? effect.title ?? "");
     return aliases.has(label);

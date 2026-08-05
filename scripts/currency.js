@@ -10,7 +10,9 @@ export function getCurrencyValue(actor, key) {
 }
 
 export function getCurrencyAbbreviation(currency) {
-  return qaLocalize(currency?.abbrKey, currency?.abbrFallback ?? currency?.key ?? "");
+  const fallback = currency?.abbrFallback ?? currency?.key ?? "";
+  if (!currency?.abbrKey) return fallback;
+  return qaLocalize(currency.abbrKey, fallback);
 }
 
 export function parseCurrencyExpression(rawValue) {

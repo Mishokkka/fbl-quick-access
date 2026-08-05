@@ -128,6 +128,8 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   const item = findItemForTooltip(actor, row);
   if (!item) return;
 
+  clearTimeout(itemTooltipHideTimer);
+  itemTooltipHideTimer = null;
   clearTimeout(itemTooltipTimer);
   itemTooltipAnchor = anchor;
 

@@ -144,11 +144,14 @@ export function findConditionHeader(mainTab) {
     if (text === "conditions" || text === "состояния") return candidate;
   }
 
-  // Fallback: find the smallest visible element whose own label is CONDITIONS.
+  // Fallback for the nested heading markup used by the Forbidden Lands v13
+  // character sheet. The visible CONDITIONS label can live in a child span, so
+  // matching direct text only makes the decorative-border toggle disappear.
+  // The child-count guard keeps this from selecting broad sheet containers.
   for (const candidate of mainTab.querySelectorAll("*")) {
     if (!(candidate instanceof HTMLElement)) continue;
     if (candidate.children.length > 6) continue;
-    const text = ownText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
+    const text = descendantText(candidate).replace(/\s+/g, " ").trim().toLowerCase();
     if (text === "conditions" || text === "состояния") return candidate;
   }
 
@@ -184,14 +187,6 @@ export function findSheetHeaderCandidates(root) {
   }
 
   return [...candidates];
-}
-
-function ownText(element) {
-  let text = "";
-  for (const node of element.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) text += node.textContent ?? "";
-  }
-  return text;
 }
 
 function descendantText(element) {

@@ -52,13 +52,13 @@ test("compact Gear keeps a scrollable middle track and pinned consumables", () =
 
   assert.match(
     core,
-    /grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*!important/,
+    /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*!important/,
     "compact Gear must preserve the flexible system middle track"
   );
   assert.doesNotMatch(core, /grid-template-rows:\s*repeat\(3,\s*max-content\)/, "content-sized rows push consumables below short windows");
-  assert.match(core, />\s*\.gears\s*>\s*\.item-list[\s\S]*?flex:\s*1\s+1\s+auto\s*!important/, "Gear item-list should fill and shrink inside the middle track");
-  assert.match(core, />\s*\.gears\s*>\s*\.item-list[\s\S]*?padding-bottom:\s*0\s*!important/, "Gear item-list should not leave a residual bottom strip");
-  assert.match(core, />\s*\.item-list\s*>\s*\.items[\s\S]*?overflow-y:\s*auto\s*!important/, "Gear items should scroll when the sheet is short");
-  assert.match(core, />\s*\.consumables[\s\S]*?align-self:\s*end\s*!important/, "consumables should remain anchored to the final grid track");
-  assert.match(borders, /fblqa-compacted\s*>\s*\.consumables\.border[\s\S]*?padding-bottom:\s*0\s*!important/, "borderless compact consumables should sit flush with the bottom edge");
+  assert.match(core, />\s*\.gears\s*>\s*\.item-list[^{}]*\{[^}]*flex:\s*1\s+1\s+auto\s*!important/, "Gear item-list should fill and shrink inside the middle track");
+  assert.match(core, />\s*\.gears\s*>\s*\.item-list[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/, "Gear item-list should not leave a residual bottom strip");
+  assert.match(core, />\s*\.item-list\s*>\s*\.items[^{}]*\{[^}]*overflow-y:\s*auto\s*!important/, "Gear items should scroll when the sheet is short");
+  assert.match(core, />\s*\.consumables[^{}]*\{[^}]*align-self:\s*end\s*!important/, "consumables should remain anchored to the final grid track");
+  assert.match(borders, /fblqa-compacted\s*>\s*\.consumables\.border[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/, "borderless compact consumables should sit flush with the bottom edge");
 });
