@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findCssRules, hasExactDeclaration } from "./helpers/css-rules.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const moduleJsonPath = join(root, "module.json");
@@ -81,11 +82,16 @@ test("STAT template keeps its CSS scope and read-only state classes", () => {
 
 test("compact Gear removes gaps without losing the pinned consumables track", () => {
   const css = readFileSync(join(root, "styles/01-core.css"), "utf8");
-  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*gap:\s*0\s*!important/);
-  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*!important/);
-  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*align-content:\s*stretch\s*!important/);
-  assert.match(css, /fblqa-compacted\s*>\s*\.gears[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/);
-  assert.match(css, /fblqa-compacted\s*>\s*\.consumables[^{}]*\{[^}]*align-self:\s*end\s*!important/);
+  const compactRootRules = findCssRules(css, (selector) => /^\.gear-tab\.fblqa-compacted$/.test(selector));
+  assert.ok(compactRootRules.some((rule) => hasExactDeclaration(rule, "gap", "0 !important")));
+  assert.ok(compactRootRules.some((rule) => hasExactDeclaration(rule, "grid-template-rows", "auto minmax(0, 1fr) auto !important")));
+  assert.ok(compactRootRules.some((rule) => hasExactDeclaration(rule, "align-content", "stretch !important")));
+
+  const compactGearRules = findCssRules(css, (selector) => /\.fblqa-compacted\s*>\s*(?:section\.)?gears$/.test(selector));
+  assert.ok(compactGearRules.some((rule) => hasExactDeclaration(rule, "padding-bottom", "0 !important")));
+
+  const compactConsumableRules = findCssRules(css, (selector) => /\.fblqa-compacted\s*>\s*\.consumables$/.test(selector));
+  assert.ok(compactConsumableRules.some((rule) => hasExactDeclaration(rule, "align-self", "end !important")));
 });
 
 test("wallet summary is tooltip-only and does not occupy wallet layout", () => {

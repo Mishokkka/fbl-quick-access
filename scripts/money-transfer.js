@@ -219,17 +219,25 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
     pendingRequests.set(requestId, { resolve, timeout });
   });
 
-  await sendSocketMessage({
-    type: OFFER_TYPE,
-    requestId,
-    requesterId: game.user.id,
-    recipientUserId: recipient.id,
-    primaryGmId: primaryGm.id,
-    sourceActorId,
-    targetActorId,
-    amounts,
-    createdAt: Date.now()
-  });
+  try {
+    await sendSocketMessage({
+      type: OFFER_TYPE,
+      requestId,
+      requesterId: game.user.id,
+      recipientUserId: recipient.id,
+      primaryGmId: primaryGm.id,
+      sourceActorId,
+      targetActorId,
+      amounts,
+      createdAt: Date.now()
+    });
+  } catch (error) {
+    const pending = pendingRequests.get(requestId);
+    pendingRequests.delete(requestId);
+    if (pending) globalThis.clearTimeout(pending.timeout);
+    console.error(`${MODULE_ID} | money transfer offer could not be sent`, error);
+    return { ok: false, error: "socket-unavailable" };
+  }
 
   return response;
 }

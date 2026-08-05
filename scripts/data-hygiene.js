@@ -1,4 +1,5 @@
 import { FLAG_GEAR_ORDER, FLAG_SLOTS, MODULE_ID } from "./constants.js";
+import { getActiveGM } from "./integration/socket-api.js";
 
 export function pruneQuickAccessReferences(slots, existingIds) {
   const ids = existingIds instanceof Set ? existingIds : new Set(existingIds || []);
@@ -35,7 +36,10 @@ export async function pruneActorReferences(actor) {
 }
 
 export async function pruneWorldActorReferences() {
-  if (!game.user?.isGM) return { actorsChecked: 0, actorsChanged: 0 };
+  const activeGM = getActiveGM();
+  if (!game.user?.isGM || activeGM?.id !== game.user.id) {
+    return { actorsChecked: 0, actorsChanged: 0 };
+  }
 
   let actorsChecked = 0;
   let actorsChanged = 0;
