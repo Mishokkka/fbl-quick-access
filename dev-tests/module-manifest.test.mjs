@@ -81,11 +81,11 @@ test("STAT template keeps its CSS scope and read-only state classes", () => {
 
 test("compact Gear removes gaps without losing the pinned consumables track", () => {
   const css = readFileSync(join(root, "styles/01-core.css"), "utf8");
-  assert.match(css, /\.gear-tab\.fblqa-compacted[\s\S]*?gap:\s*0\s*!important/);
-  assert.match(css, /\.gear-tab\.fblqa-compacted[\s\S]*?grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*!important/);
-  assert.match(css, /\.gear-tab\.fblqa-compacted[\s\S]*?align-content:\s*stretch\s*!important/);
-  assert.match(css, /fblqa-compacted\s*>\s*\.gears[\s\S]*?padding-bottom:\s*0\s*!important/);
-  assert.match(css, /fblqa-compacted\s*>\s*\.consumables[\s\S]*?align-self:\s*end\s*!important/);
+  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*gap:\s*0\s*!important/);
+  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*grid-template-rows:\s*auto\s+minmax\(0,\s*1fr\)\s+auto\s*!important/);
+  assert.match(css, /\.gear-tab\.fblqa-compacted[^{}]*\{[^}]*align-content:\s*stretch\s*!important/);
+  assert.match(css, /fblqa-compacted\s*>\s*\.gears[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/);
+  assert.match(css, /fblqa-compacted\s*>\s*\.consumables[^{}]*\{[^}]*align-self:\s*end\s*!important/);
 });
 
 test("wallet summary is tooltip-only and does not occupy wallet layout", () => {

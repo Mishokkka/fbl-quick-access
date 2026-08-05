@@ -7,6 +7,12 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const read = (...parts) => readFileSync(join(root, ...parts), "utf8");
 
+function findButtonsMissingTypeButton(source) {
+  return [...source.matchAll(/<button\b[^>]*>/gi)]
+    .map((match) => match[0])
+    .filter((tag) => !/\btype\s*=\s*(?:"button"|'button')/i.test(tag));
+}
+
 test("currency actor updates accept only known finite safe values", async () => {
   const { buildActorCurrencyUpdate } = await import("../scripts/actor-data.js");
   const actor = {
@@ -44,20 +50,48 @@ test("currency expressions reject values outside Number safe-integer range", asy
   assert.equal(parseCurrencyExpression("9007199254740991+1").ok, false);
 });
 
-test("condition refresh owns only the row container and preserves provider sections", () => {
+test("condition refresh owns only the row container and preserves provider sections", async () => {
   const template = read("templates", "conditions", "stat-tab.hbs");
-  const main = read("scripts", "conditions", "main.js");
   const css = read("styles", "11-expanded-conditions.css");
+  const { refreshConditionsRows } = await import("../scripts/conditions/render/refresh-rows.js");
 
+  const rows = {
+    value: "<div>old row</div>",
+    html(value) { this.value = value; }
+  };
+  const providers = {
+    value: "<section>provider</section>",
+    html(value) { this.value = value; }
+  };
+  const events = [];
+  const html = {
+    find(selector) {
+      if (selector === ".conditions-rows") return rows;
+      if (selector === ".fblqa-stat-provider-sections") return providers;
+      throw new Error(`Unexpected selector: ${selector}`);
+    }
+  };
+
+  await refreshConditionsRows({
+    html,
+    buildRows: async () => {
+      events.push("build");
+      return "<div>new row</div>";
+    },
+    captureScroll: () => events.push("capture"),
+    restoreScroll: () => events.push("restore")
+  });
+
+  assert.equal(rows.value, "<div>new row</div>");
+  assert.equal(providers.value, "<section>provider</section>");
+  assert.deepEqual(events, ["capture", "build", "restore"]);
   assert.match(template, /conditions-list[\s\S]*conditions-rows[\s\S]*rowsHtml[\s\S]*providerSectionsHtml/);
-  assert.match(main, /html\.find\("\.conditions-rows"\)\.html\(rowsHtml\)/);
-  assert.doesNotMatch(main, /html\.find\("\.conditions-list"\)\.html\(rowsHtml\)/);
-  assert.match(css, /\.conditions-rows\s*\{[\s\S]*column-count:/);
+  assert.match(css, /\.conditions-rows\s*\{[^}]*column-count:/);
 });
 
 test("condition controls inside actor forms are non-submit buttons", () => {
   const renderer = read("scripts", "conditions", "render", "stat-tab-renderer.js");
-  assert.doesNotMatch(renderer, /<button(?!\s+type="button")/);
+  assert.deepEqual(findButtonsMissingTypeButton(renderer), []);
 
   for (const template of [
     "addiction.hbs",
@@ -67,9 +101,9 @@ test("condition controls inside actor forms are non-submit buttons", () => {
     "injury.hbs",
     "mor.hbs"
   ]) {
-    assert.doesNotMatch(
-      read("templates", "conditions", "rows", template),
-      /<button(?!\s+type="button")/,
+    assert.deepEqual(
+      findButtonsMissingTypeButton(read("templates", "conditions", "rows", template)),
+      [],
       `${template} must not submit the actor sheet form`
     );
   }
@@ -156,4 +190,45 @@ test("rest deletes ActiveEffects in one embedded-document batch", () => {
   assert.match(source, /deleteEmbeddedDocuments\("ActiveEffect", effectIds\)/);
   assert.doesNotMatch(source, /for \(const effect of result\.effectsToDelete\) await effect\.delete/);
   assert.match(source, /statusEffect\?\.img \?\? statusEffect\?\.icon/);
+});
+
+test("nested CONDITIONS headings remain discoverable for the decorative-border toggle", async () => {
+  const previousHTMLElement = globalThis.HTMLElement;
+
+  class FakeElement {
+    constructor(text = "", children = []) {
+      this._text = text;
+      this.children = children;
+    }
+
+    get textContent() {
+      return `${this._text}${this.children.map((child) => child.textContent).join("")}`;
+    }
+
+    querySelectorAll(selector) {
+      if (selector !== "*") return [];
+      const result = [];
+      const visit = (element) => {
+        for (const child of element.children) {
+          result.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return result;
+    }
+  }
+
+  globalThis.HTMLElement = FakeElement;
+  try {
+    const { findConditionHeader } = await import(`../scripts/sheet-adapter/forbidden-lands-v1.js?nested-condition-heading=${Date.now()}`);
+    const label = new FakeElement("CONDITIONS");
+    const heading = new FakeElement("", [label]);
+    const mainTab = new FakeElement("", [heading]);
+
+    assert.equal(findConditionHeader(mainTab), heading);
+  } finally {
+    if (previousHTMLElement === undefined) delete globalThis.HTMLElement;
+    else globalThis.HTMLElement = previousHTMLElement;
+  }
 });

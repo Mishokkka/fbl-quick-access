@@ -267,9 +267,12 @@ async function deleteGearItem(app, actor, item, row) {
   if (!liveItem) return;
 
   const appRoot = extractElement(app?.element ?? app?._element);
-  const liveRow = (row?.isConnected ? row : null)
-    ?? collectItemRows(appRoot ?? document).find((candidate) => resolveItemFromRow(actor, candidate)?.id === liveItem.id)
-    ?? null;
+  const liveRow = resolveLiveItemRow(
+    actor,
+    liveItem,
+    row,
+    collectItemRows(appRoot ?? document)
+  );
 
   const deleteControl = findNativeActionControl(liveRow, [
     ".item-delete",
@@ -308,6 +311,16 @@ async function confirmDeleteGearItem(item) {
 }
 
 
+
+export function resolveLiveItemRow(actor, liveItem, suppliedRow, candidateRows = []) {
+  const matchesLiveItem = (candidate) => Boolean(
+    candidate?.isConnected
+    && resolveItemFromRow(actor, candidate)?.id === liveItem?.id
+  );
+
+  if (matchesLiveItem(suppliedRow)) return suppliedRow;
+  return candidateRows.find(matchesLiveItem) ?? null;
+}
 
 function findNativeActionControl(row, selectors) {
   if (!(row instanceof HTMLElement)) return null;

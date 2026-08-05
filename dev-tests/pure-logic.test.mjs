@@ -26,6 +26,7 @@ const itemUtils = await import("../scripts/item-utils.js");
 const quickAccess = await import("../scripts/quick-access.js");
 const willpower = await import("../scripts/willpower.js");
 const dragData = await import("../scripts/drag-data.js");
+const gearContextMenu = await import("../scripts/gear-context-menu.js");
 
 test("currency expressions accept direct and relative arithmetic", () => {
   assert.deepEqual(currency.parseCurrencyExpression("15"), { ok: true, value: 15, relative: false });
@@ -40,6 +41,13 @@ test("currency expressions reject unsafe or ambiguous input", () => {
   assert.equal(currency.parseCurrencyExpression("1g").ok, false);
   assert.equal(currency.parseCurrencyExpression("1*2").ok, false);
   assert.equal(currency.parseCurrencyExpression("1 + two").ok, false);
+});
+
+
+test("currency abbreviations fall back safely when no localization key exists", () => {
+  assert.equal(currency.getCurrencyAbbreviation(null), "");
+  assert.equal(currency.getCurrencyAbbreviation({ key: "copper" }), "copper");
+  assert.equal(currency.getCurrencyAbbreviation({ abbrFallback: "C" }), "C");
 });
 
 test("wallet total keeps Forbidden Lands denomination scale", () => {
@@ -129,6 +137,24 @@ test("drop data normalization supports item aliases and fblqa marker", () => {
   );
 
   assert.equal(dragData.normalizeDropData(null), null);
+});
+
+
+test("gear deletion ignores a connected row that belongs to another live item", () => {
+  const liveItem = { id: "live" };
+  const otherItem = { id: "other" };
+  const actor = { items: new Map([[liveItem.id, liveItem], [otherItem.id, otherItem]]) };
+  const staleRow = { isConnected: true, dataset: { itemId: otherItem.id } };
+  const matchingRow = { isConnected: true, dataset: { itemId: liveItem.id } };
+
+  assert.equal(
+    gearContextMenu.resolveLiveItemRow(actor, liveItem, staleRow, [staleRow, matchingRow]),
+    matchingRow
+  );
+  assert.equal(
+    gearContextMenu.resolveLiveItemRow(actor, liveItem, staleRow, [staleRow]),
+    null
+  );
 });
 
 const rest = await import("../scripts/rest.js");
@@ -230,74 +256,78 @@ test("short rest condition blockers match house-rule mapping", () => {
 });
 
 test("rest condition detection can fall back to Forbidden Lands data-condition controls", () => {
-  const PreviousHTMLElement = globalThis.HTMLElement;
+  const previousHTMLElement = globalThis.HTMLElement;
   globalThis.HTMLElement = class HTMLElementMock {};
 
-  class ElementMock extends globalThis.HTMLElement {
-    constructor(condition, classes = []) {
-      super();
-      this.dataset = { condition };
-      this.classList = { contains: (className) => classes.includes(className) };
+  try {
+    class ElementMock extends globalThis.HTMLElement {
+      constructor(condition, classes = []) {
+        super();
+        this.dataset = { condition };
+        this.classList = { contains: (className) => classes.includes(className) };
+      }
+      getAttribute(name) {
+        return name === "data-active" ? "true" : null;
+      }
+      querySelector() {
+        return null;
+      }
     }
-    getAttribute(name) {
-      return name === "data-active" ? "true" : null;
-    }
-    querySelector() {
-      return null;
-    }
+
+    const root = {
+      querySelectorAll: () => [new ElementMock("sleepy", ["condition"])]
+    };
+
+    const state = rest.getRestConditionState({ system: {} }, { root });
+    assert.equal(state.sleepy, true);
+    assert.equal(state.hungry, false);
+  } finally {
+    if (previousHTMLElement === undefined) delete globalThis.HTMLElement;
+    else globalThis.HTMLElement = previousHTMLElement;
   }
-
-  const root = {
-    querySelectorAll: () => [new ElementMock("sleepy", ["condition"])]
-  };
-
-  const state = rest.getRestConditionState({ system: {} }, { root });
-  assert.equal(state.sleepy, true);
-  assert.equal(state.hungry, false);
-
-  if (PreviousHTMLElement === undefined) delete globalThis.HTMLElement;
-  else globalThis.HTMLElement = PreviousHTMLElement;
 });
 
 
 test("long rest clears conditions detected only from the sheet DOM fallback", () => {
-  const PreviousHTMLElement = globalThis.HTMLElement;
+  const previousHTMLElement = globalThis.HTMLElement;
   globalThis.HTMLElement = class HTMLElementMock {};
 
-  class ElementMock extends globalThis.HTMLElement {
-    constructor(condition) {
-      super();
-      this.dataset = { condition };
-      this.classList = { contains: (className) => className === "condition" };
-    }
-    getAttribute(name) {
-      return name === "data-active" ? "true" : null;
-    }
-    querySelector() {
-      return null;
-    }
-  }
-
-  const root = {
-    querySelectorAll: () => [new ElementMock("sleepy"), new ElementMock("cold")]
-  };
-  const actor = {
-    system: {
-      attribute: {
-        strength: { value: 3, max: 4 },
-        wits: { value: 2, max: 3 }
+  try {
+    class ElementMock extends globalThis.HTMLElement {
+      constructor(condition) {
+        super();
+        this.dataset = { condition };
+        this.classList = { contains: (className) => className === "condition" };
       }
-    },
-    getFlag: () => null
-  };
+      getAttribute(name) {
+        return name === "data-active" ? "true" : null;
+      }
+      querySelector() {
+        return null;
+      }
+    }
 
-  const result = rest.calculateLongRestChanges(actor, { hasHeatSource: true }, { root });
-  assert.equal(result.updates["system.condition.sleepy.value"], false);
-  assert.equal(result.updates["system.condition.cold.value"], false);
-  assert.deepEqual(result.clearedConditions.sort(), ["cold", "sleepy"]);
+    const root = {
+      querySelectorAll: () => [new ElementMock("sleepy"), new ElementMock("cold")]
+    };
+    const actor = {
+      system: {
+        attribute: {
+          strength: { value: 3, max: 4 },
+          wits: { value: 2, max: 3 }
+        }
+      },
+      getFlag: () => null
+    };
 
-  if (PreviousHTMLElement === undefined) delete globalThis.HTMLElement;
-  else globalThis.HTMLElement = PreviousHTMLElement;
+    const result = rest.calculateLongRestChanges(actor, { hasHeatSource: true }, { root });
+    assert.equal(result.updates["system.condition.sleepy.value"], false);
+    assert.equal(result.updates["system.condition.cold.value"], false);
+    assert.deepEqual(result.clearedConditions.sort(), ["cold", "sleepy"]);
+  } finally {
+    if (previousHTMLElement === undefined) delete globalThis.HTMLElement;
+    else globalThis.HTMLElement = previousHTMLElement;
+  }
 });
 
 
@@ -337,6 +367,38 @@ test("long rest clears Forbidden Lands condition ActiveEffects as well as system
   assert.deepEqual(result.clearedConditions.sort(), ["cold", "sleepy"]);
 });
 
+
+test("long rest recognizes Foundry v13 ActiveEffects by img", () => {
+  const previousStatusEffects = globalThis.CONFIG.statusEffects;
+  globalThis.CONFIG.statusEffects = [{ id: "sleepy", img: "icons/svg/sleep.svg" }];
+
+  try {
+    const imgOnlyEffect = {
+      id: "img-only-sleepy",
+      img: "icons/svg/sleep.svg",
+      statuses: new Set(),
+      flags: {}
+    };
+    const actor = {
+      system: {
+        attribute: {
+          strength: { value: 3, max: 4 },
+          wits: { value: 2, max: 3 }
+        },
+        condition: { sleepy: { value: true } }
+      },
+      effects: [imgOnlyEffect],
+      getFlag: () => null
+    };
+
+    const result = rest.calculateLongRestChanges(actor, { hasHeatSource: true });
+    assert.deepEqual(result.effectsToDelete.map((effect) => effect.id), ["img-only-sleepy"]);
+  } finally {
+    if (previousStatusEffects === undefined) delete globalThis.CONFIG.statusEffects;
+    else globalThis.CONFIG.statusEffects = previousStatusEffects;
+  }
+});
+
 test("rest quarter keys prefer Calendaria date-time when available", () => {
   const previousCalendaria = globalThis.CALENDARIA;
   globalThis.CALENDARIA = {
@@ -346,10 +408,12 @@ test("rest quarter keys prefer Calendaria date-time when available", () => {
     }
   };
 
-  const info = rest.getCurrentQuarterInfo();
-  assert.equal(info.source, "calendaria");
-  assert.equal(info.key, "calendaria:1165:3:5:q2");
-
-  if (previousCalendaria === undefined) delete globalThis.CALENDARIA;
-  else globalThis.CALENDARIA = previousCalendaria;
+  try {
+    const info = rest.getCurrentQuarterInfo();
+    assert.equal(info.source, "calendaria");
+    assert.equal(info.key, "calendaria:1165:3:5:q2");
+  } finally {
+    if (previousCalendaria === undefined) delete globalThis.CALENDARIA;
+    else globalThis.CALENDARIA = previousCalendaria;
+  }
 });

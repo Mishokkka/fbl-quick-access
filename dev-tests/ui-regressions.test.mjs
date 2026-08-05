@@ -6,13 +6,31 @@ import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
+function getCssRuleBody(source, selectorPattern, message) {
+  const match = source.match(new RegExp(`${selectorPattern}[^{}]*\\{([^}]*)\\}`, "m"));
+  assert.ok(match, message);
+  return match[1];
+}
+
+function getCssDeclaration(ruleBody, property) {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return ruleBody.match(new RegExp(`(?:^|;)\\s*${escaped}\\s*:\\s*([^;]+)`, "m"))?.[1]?.trim() ?? null;
+}
+
 test("Gear context menu uses a light palette and a red Delete icon", () => {
   const tokens = readFileSync(join(root, "styles", "00-tokens.css"), "utf8");
   const gearCss = readFileSync(join(root, "styles", "04-gear-cards.css"), "utf8");
 
-  assert.match(tokens, /--fblqa-context-bg:\s*rgba\(255,\s*255,\s*255/);
-  assert.match(tokens, /--fblqa-context-text:\s*#111111/);
-  assert.match(gearCss, /fblqa-gear-menu-button-danger\s+\.fblqa-gear-menu-icon[\s\S]*?color:\s*#b00020/);
+  const tokenBody = getCssRuleBody(tokens, ":root", "token variables must remain in :root");
+  const dangerIconBody = getCssRuleBody(
+    gearCss,
+    "\\.fblqa-gear-menu-button-danger\\s+\\.fblqa-gear-menu-icon",
+    "Delete icon rule must exist"
+  );
+
+  assert.match(getCssDeclaration(tokenBody, "--fblqa-context-bg") ?? "", /^rgba\(255,\s*255,\s*255/);
+  assert.equal(getCssDeclaration(tokenBody, "--fblqa-context-text"), "#111111");
+  assert.equal(getCssDeclaration(dangerIconBody, "color"), "#b00020");
 });
 
 test("character-sheet render removes the Chargen header control", () => {

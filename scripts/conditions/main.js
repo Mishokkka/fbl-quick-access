@@ -34,6 +34,7 @@ import {
   syncConditionsTabChrome
 } from "./features/sheet-tab.js";
 import { renderConditionItemRow, renderConditionsRows, renderStatTab } from "./render/stat-tab-renderer.js";
+import { refreshConditionsRows } from "./render/refresh-rows.js";
 import {
   buildAddictionRelapseMessage,
   buildHeatChangeMessage,
@@ -108,10 +109,7 @@ export async function renderExpandedConditions(app, html) {
   }
 
   async function refreshRows() {
-    captureScroll();
-    const rowsHtml = await buildRows();
-    html.find(".conditions-rows").html(rowsHtml);
-    restoreScroll();
+    return refreshConditionsRows({ html, buildRows, captureScroll, restoreScroll });
   }
 
   const rowsHtml = await buildRows();
