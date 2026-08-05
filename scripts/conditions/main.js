@@ -69,6 +69,13 @@ export async function handleExpandedConditionsCreateItem(item, options, userId) 
   await removeOtherWashStates(actor, item);
 }
 
+
+export async function persistNormalizedCustomConditions(actor, customConditions, { changed, editable } = {}) {
+  if (!editable || !changed) return false;
+  await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
+  return true;
+}
+
 export async function renderExpandedConditions(app, html) {
   if (app.actor?.type !== "character") return;
 
@@ -91,7 +98,10 @@ export async function renderExpandedConditions(app, html) {
 
   const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(app.actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
   let customConditions = customNormalization.list;
-  if (customNormalization.changed) await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
+  await persistNormalizedCustomConditions(app.actor, customConditions, {
+    changed: customNormalization.changed,
+    editable
+  });
 
   let layoutColumns = Number(app.actor.getFlag(MODULE_ID, FLAGS.LAYOUT_COLUMNS)) === 2 ? 2 : 1;
   const scrollKey = getStatScrollKey(app);

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { findCssRules, hasExactDeclaration } from "./helpers/css-rules.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const moduleJson = JSON.parse(readFileSync(join(root, "module.json"), "utf8"));
@@ -56,9 +57,15 @@ test("compact Gear keeps a scrollable middle track and pinned consumables", () =
     "compact Gear must preserve the flexible system middle track"
   );
   assert.doesNotMatch(core, /grid-template-rows:\s*repeat\(3,\s*max-content\)/, "content-sized rows push consumables below short windows");
-  assert.match(core, />\s*\.gears\s*>\s*\.item-list[^{}]*\{[^}]*flex:\s*1\s+1\s+auto\s*!important/, "Gear item-list should fill and shrink inside the middle track");
-  assert.match(core, />\s*\.gears\s*>\s*\.item-list[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/, "Gear item-list should not leave a residual bottom strip");
-  assert.match(core, />\s*\.item-list\s*>\s*\.items[^{}]*\{[^}]*overflow-y:\s*auto\s*!important/, "Gear items should scroll when the sheet is short");
-  assert.match(core, />\s*\.consumables[^{}]*\{[^}]*align-self:\s*end\s*!important/, "consumables should remain anchored to the final grid track");
+  assertCompactGearDeclaration(core, />\s*(?:section\.)?gears\s*>\s*\.item-list\s*$/, "flex", "1 1 auto !important", "Gear item-list should fill and shrink inside the middle track");
+  assertCompactGearDeclaration(core, />\s*(?:section\.)?gears\s*>\s*\.item-list\s*$/, "padding-bottom", "0 !important", "Gear item-list should not leave a residual bottom strip");
+  assertCompactGearDeclaration(core, />\s*(?:section\.)?gears\s*>\s*\.item-list\s*>\s*\.items\s*$/, "overflow-y", "auto !important", "Gear items should scroll when the sheet is short");
+  assertCompactGearDeclaration(core, />\s*\.consumables\s*$/, "align-self", "end !important", "consumables should remain anchored to the final grid track");
   assert.match(borders, /fblqa-compacted\s*>\s*\.consumables\.border[^{}]*\{[^}]*padding-bottom:\s*0\s*!important/, "borderless compact consumables should sit flush with the bottom edge");
 });
+
+function assertCompactGearDeclaration(source, tailPattern, property, expectedValue, message) {
+  const compactAncestor = /(?:\.gear-tab|\.tab\[data-tab=["']gear["']\])\.fblqa-compacted/;
+  const rules = findCssRules(source, (selector) => compactAncestor.test(selector) && tailPattern.test(selector));
+  assert.ok(rules.some((rule) => hasExactDeclaration(rule, property, expectedValue)), message);
+}
