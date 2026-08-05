@@ -1,5 +1,12 @@
 # Forbidden Lands Quick Access Gear
 
+
+## 1.6.2
+
+- Added public import helpers for structured Reputation entries.
+- Added public import helpers for the selected Kin and Professional talents used by the start-Willpower rule.
+- Published `capabilities.characterImport` for feature detection.
+
 Small quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility

@@ -4,7 +4,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
 
 const WP_PATH = "system.bio.willpower.value";
-const WP_TALENTS_FLAG = "willpowerTalents";
+export const WP_TALENTS_FLAG = "willpowerTalents";
 const DEFAULT_TALENT_RANK = 1;
 const WILLPOWER_LABEL_PATTERN = /(Willpower|Сила\s+воли)/i;
 
@@ -127,7 +127,7 @@ function toggleWillpowerTalentPopover(app, actor, anchor) {
 function openWillpowerTalentPopover(app, actor, anchor) {
   closeWillpowerTalentPopover();
 
-  const saved = getSavedWillpowerTalents(actor);
+  const saved = getWillpowerTalents(actor);
   const talents = getActorTalents(actor);
   const popover = document.createElement("div");
   popover.classList.add("fblqa-wp-popover");
@@ -180,10 +180,7 @@ function openWillpowerTalentPopover(app, actor, anchor) {
     }
 
     try {
-      await actor.setFlag(MODULE_ID, WP_TALENTS_FLAG, {
-        kinTalentId: kinTalentId || null,
-        professionalTalentId: professionalTalentId || null
-      });
+      await saveWillpowerTalents(actor, { kinTalentId, professionalTalentId }, { render: false });
       ui.notifications?.info?.(qaLocalize("Willpower.TalentsSaved", "Таланты для расчёта Willpower сохранены."));
       closeWillpowerTalentPopover();
       rerenderSheet(app);
@@ -234,11 +231,37 @@ function buildTalentOptions(talents, selectedId) {
   return options.join("");
 }
 
-function getSavedWillpowerTalents(actor) {
-  const raw = actor.getFlag(MODULE_ID, WP_TALENTS_FLAG) ?? {};
+export function getWillpowerTalents(actor) {
+  const raw = actor?.getFlag?.(MODULE_ID, WP_TALENTS_FLAG) ?? {};
+  return normalizeWillpowerTalents(raw);
+}
+
+export async function saveWillpowerTalents(actor, value, { render = false } = {}) {
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return false;
+  }
+
+  const normalized = normalizeWillpowerTalents(value);
+  if (normalized.kinTalentId && normalized.professionalTalentId
+    && normalized.kinTalentId === normalized.professionalTalentId) {
+    throw new TypeError("Kin Talent and Professional Talent must be different items.");
+  }
+
+  await actor.update({
+    [`flags.${MODULE_ID}.${WP_TALENTS_FLAG}`]: {
+      kinTalentId: normalized.kinTalentId || null,
+      professionalTalentId: normalized.professionalTalentId || null
+    }
+  }, { render });
+  return true;
+}
+
+function normalizeWillpowerTalents(value) {
+  const raw = value ?? {};
   return {
-    kinTalentId: raw.kinTalentId ? String(raw.kinTalentId) : "",
-    professionalTalentId: raw.professionalTalentId ? String(raw.professionalTalentId) : ""
+    kinTalentId: raw.kinTalentId ? String(raw.kinTalentId).trim() : "",
+    professionalTalentId: raw.professionalTalentId ? String(raw.professionalTalentId).trim() : ""
   };
 }
 
