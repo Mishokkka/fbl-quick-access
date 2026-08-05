@@ -1,0 +1,15 @@
+<div class="condition-row arc-row" data-row-kind="custom" data-condition-id="{{id}}" data-order="{{order}}">
+  <div class="condition-header arc-header">
+    <div class="arc-title-container">
+      <i class="fas fa-chevron-down collapse-icon arc-icon"></i>
+      <span class="arc-title-text">{{title}}</span>
+    </div>
+  </div>
+  <div class="condition-desc">
+    {{#if editable}}
+      <textarea class="condition-desc-input" placeholder="{{localize 'FBLEC.UI.ConditionDescription'}}">{{desc}}</textarea>
+    {{else}}
+      <div class="condition-desc-static">{{desc}}</div>
+    {{/if}}
+  </div>
+</div>

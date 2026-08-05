@@ -1,0 +1,37 @@
+<div class="condition-row" data-row-kind="custom" data-condition-id="{{id}}" data-order="{{order}}">
+  <div class="condition-header">
+    {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
+    <div class="condition-title-block">
+      <i class="fas fa-chevron-down collapse-icon"></i>
+      {{#if editable}}
+        <input class="condition-name" type="text" value="{{name}}" placeholder="{{localize 'FBLEC.UI.ConditionName'}}">
+      {{else}}
+        <span class="condition-name condition-name-static">{{name}}</span>
+      {{/if}}
+    </div>
+    <div class="condition-time-inline">
+      {{#if editable}}{{#if showTimeButtons}}<button class="time-btn time-minus">-</button>{{/if}}{{/if}}
+      {{#if editable}}
+        <input class="condition-time {{permanentClass}}" type="text" value="{{time}}" placeholder="{{localize 'FBLEC.UI.Time'}}">
+      {{else}}
+        <span class="condition-time condition-time-static {{permanentClass}}">{{time}}</span>
+      {{/if}}
+      {{#if editable}}{{#if showTimeButtons}}<button class="time-btn time-plus">+</button>{{/if}}{{/if}}
+    </div>
+    {{#if editable}}<button class="delete-condition addiction-delete-btn" title="{{localize 'FBLEC.UI.DeleteCondition'}}"><i class="fas fa-trash"></i></button>{{/if}}
+  </div>
+  <div class="notes-wrapper">
+    {{#if editable}}
+      <input class="notes-input condition-notes" type="text" placeholder="{{localize 'FBLEC.UI.ShortNote'}}" value="{{notes}}">
+    {{else}}
+      {{#if notes}}<div class="notes-input notes-static">{{notes}}</div>{{/if}}
+    {{/if}}
+  </div>
+  <div class="condition-desc">
+    {{#if editable}}
+      <textarea class="condition-desc-input" placeholder="{{localize 'FBLEC.UI.ConditionDescription'}}">{{desc}}</textarea>
+    {{else}}
+      <div class="condition-desc-static">{{desc}}</div>
+    {{/if}}
+  </div>
+</div>

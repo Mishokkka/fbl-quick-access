@@ -1,0 +1,57 @@
+{
+  "id": "fbl-quick-access",
+  "title": "Forbidden Lands Quick Access Gear",
+  "description": "Forbidden Lands character-sheet quality-of-life suite with Quick Access gear, wallet, Reputation ledger, tooltips, Rest/New Day workflows, integrated STAT conditions, and a public provider API for extension modules.",
+  "version": "1.6.1",
+  "authors": [
+    {
+      "name": "vmisha007 + ChatGPT"
+    }
+  ],
+  "compatibility": {
+    "minimum": "13",
+    "verified": "13.351"
+  },
+  "relationships": {
+    "systems": [
+      {
+        "id": "forbidden-lands",
+        "type": "system",
+        "compatibility": {
+          "minimum": "13.0.5",
+          "verified": "13.0.5"
+        }
+      }
+    ]
+  },
+  "esmodules": [
+    "scripts/main.js"
+  ],
+  "styles": [
+    "styles/00-tokens.css",
+    "styles/01-core.css",
+    "styles/02-tooltips.css",
+    "styles/03-main-tab.css",
+    "styles/04-gear-cards.css",
+    "styles/05-wallet.css",
+    "styles/06-sheet-borders.css",
+    "styles/08-willpower.css",
+    "styles/10-rest.css",
+    "styles/11-expanded-conditions.css",
+    "styles/09-compat-prosthetics.css",
+    "styles/12-reputation.css"
+  ],
+  "languages": [
+    {
+      "lang": "ru",
+      "name": "Русский",
+      "path": "lang/ru.json"
+    },
+    {
+      "lang": "en",
+      "name": "English",
+      "path": "lang/en.json"
+    }
+  ],
+  "socket": true
+}

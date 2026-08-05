@@ -1,0 +1,27 @@
+<div class="injury-row" data-row-kind="item" data-item-id="{{itemId}}" data-order="{{order}}">
+  <div class="injury-header">
+    {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
+    <div class="injury-title-block">
+      <i class="fas fa-chevron-down collapse-icon"></i>
+      <img class="injury-img" src="{{img}}" title="{{name}}" />
+      {{#if editable}}
+        <input class="condition-name injury-name-input" type="text" value="{{name}}" placeholder="{{localize 'FBLEC.UI.InjuryName'}}">
+      {{else}}
+        <span class="condition-name condition-name-static injury-name-static">{{name}}</span>
+      {{/if}}
+    </div>
+    <div class="injury-healing-inline">{{{timeControlsHtml}}}</div>
+    {{{treatmentBadgeHtml}}}
+    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.UI.DeleteInjury'}}"><i class="fas fa-trash"></i></button>{{/if}}
+  </div>
+  <div class="notes-wrapper">
+    {{#if editable}}
+      <input class="notes-input injury-notes" type="text" placeholder="{{localize 'FBLEC.UI.ShortNote'}}" value="{{notes}}">
+    {{else}}
+      {{#if notes}}<div class="notes-input notes-static">{{notes}}</div>{{/if}}
+    {{/if}}
+  </div>
+  {{{lethalHtml}}}
+  {{{treatmentHtml}}}
+  <div class="injury-desc">{{{effect}}}</div>
+</div>

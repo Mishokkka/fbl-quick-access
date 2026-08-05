@@ -1,0 +1,474 @@
+/* Reputation ledger and roll cards. */
+.fblqa-reputation-trigger {
+  cursor: pointer !important;
+}
+
+.fblqa-reputation-value {
+  font-weight: 900;
+  text-align: center;
+}
+
+.fblqa-reputation-label-cell {
+  cursor: pointer;
+}
+
+.fblqa-reputation-dialog .window-content,
+.app.fblqa-reputation-dialog .window-content {
+  padding: 10px;
+  overflow: auto;
+  background: var(--fblqa-rest-bg);
+  color: var(--fblqa-rest-text);
+}
+
+.fblqa-reputation-dialog .window-title,
+.app.fblqa-reputation-dialog .window-title {
+  color: var(--fblqa-rest-text);
+  font-weight: 900;
+}
+
+.fblqa-reputation-form {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  color: var(--fblqa-rest-text);
+}
+
+.fblqa-reputation-intro {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  align-items: center;
+  padding: 9px 10px;
+  border: 1px solid var(--fblqa-rest-border);
+  background: var(--fblqa-rest-bg-soft);
+}
+
+.fblqa-reputation-intro > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+
+.fblqa-reputation-intro strong {
+  font-size: 1.08rem;
+}
+
+.fblqa-reputation-intro span {
+  color: var(--fblqa-rest-muted);
+  font-size: 0.84rem;
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.fblqa-reputation-total-badge {
+  box-sizing: border-box;
+  min-width: 58px;
+  height: 40px;
+  padding: 0 10px;
+  border: 1px solid rgba(138, 94, 12, 0.44);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(214, 163, 36, 0.22);
+  color: #49330c;
+  font-size: 1.12rem;
+  font-weight: 900;
+}
+
+.fblqa-reputation-table-head,
+.fblqa-reputation-row {
+  display: grid;
+  grid-template-columns: 58px 88px minmax(190px, 1.4fr) minmax(160px, 1fr) 30px;
+  gap: 6px;
+  align-items: center;
+}
+
+.fblqa-reputation-table-head {
+  padding: 0 5px;
+  color: var(--fblqa-rest-muted);
+  font-size: 0.76rem;
+  font-weight: 900;
+  text-transform: uppercase;
+  letter-spacing: 0.035em;
+}
+
+.fblqa-reputation-table-head span:first-child,
+.fblqa-reputation-table-head span:nth-child(2) {
+  text-align: center;
+}
+
+.fblqa-reputation-rows {
+  display: grid;
+  gap: 4px;
+  max-height: min(420px, calc(100vh - 330px));
+  overflow-y: auto;
+  padding-right: 2px;
+}
+
+.fblqa-reputation-row {
+  min-height: 34px;
+  padding: 4px 5px;
+  border: 1px solid rgba(0, 0, 0, 0.14);
+  background: rgba(255, 255, 255, 0.42);
+}
+
+.fblqa-reputation-row.is-empty {
+  border-style: dashed;
+  background: rgba(255, 255, 255, 0.20);
+}
+
+.fblqa-reputation-row.is-invalid {
+  border-color: rgba(130, 56, 35, 0.48);
+  background: rgba(177, 74, 48, 0.08);
+}
+
+.fblqa-reputation-row input[type="number"],
+.fblqa-reputation-row input[type="text"] {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0 7px;
+  border: 1px solid rgba(0, 0, 0, 0.24);
+  background: rgba(255, 255, 255, 0.82);
+  color: #222020;
+}
+
+.fblqa-reputation-row input[type="number"] {
+  text-align: center;
+  font-weight: 900;
+}
+
+.fblqa-reputation-row input::placeholder {
+  color: rgba(34, 32, 30, 0.46);
+}
+
+.fblqa-reputation-check {
+  position: relative;
+  width: 24px;
+  height: 24px;
+  margin: 0 auto !important;
+  display: grid;
+  place-items: center;
+}
+
+.fblqa-reputation-check input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fblqa-reputation-check span {
+  box-sizing: border-box;
+  width: 19px;
+  height: 19px;
+  border: 1px solid rgba(0, 0, 0, 0.46);
+  display: grid;
+  place-items: center;
+  background: rgba(255, 255, 255, 0.72);
+}
+
+.fblqa-reputation-check input:checked + span::after {
+  content: "✓";
+  color: #4e3510;
+  font-size: 0.95rem;
+  font-weight: 900;
+  line-height: 1;
+}
+
+.fblqa-reputation-check input:focus-visible + span {
+  outline: 2px solid rgba(138, 94, 12, 0.58);
+  outline-offset: 1px;
+}
+
+.fblqa-reputation-check input:disabled + span {
+  opacity: 0.38;
+}
+
+.fblqa-reputation-remove {
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(120, 40, 35, 0.34);
+  background: rgba(120, 40, 35, 0.08);
+  color: rgba(120, 40, 35, 0.94);
+}
+
+.fblqa-reputation-remove:hover,
+.fblqa-reputation-remove:focus {
+  background: rgba(120, 40, 35, 0.18);
+  color: #6c160f;
+}
+
+.fblqa-reputation-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-height: 24px;
+  padding: 0 2px;
+}
+
+.fblqa-reputation-selection-summary {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 5px;
+  color: var(--fblqa-rest-muted);
+  font-size: 0.84rem;
+  font-weight: 700;
+}
+
+.fblqa-reputation-selection-summary strong {
+  color: var(--fblqa-rest-text);
+  font-size: 1rem;
+}
+
+.fblqa-reputation-save-status {
+  min-height: 18px;
+  color: var(--fblqa-rest-muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.fblqa-reputation-save-status.is-saved {
+  color: var(--fblqa-rest-good);
+}
+
+.fblqa-reputation-save-status.is-dirty,
+.fblqa-reputation-save-status.is-saving {
+  color: var(--fblqa-rest-warn);
+}
+
+.fblqa-reputation-save-status.is-error {
+  color: var(--fblqa-rest-bad);
+}
+
+.fblqa-reputation-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1.6fr;
+  gap: 7px;
+}
+
+.fblqa-reputation-actions button {
+  min-height: 34px;
+  margin: 0;
+  border: 1px solid rgba(0, 0, 0, 0.24);
+  background: rgba(255, 255, 255, 0.60);
+  color: #222020;
+  font-weight: 900;
+}
+
+.fblqa-reputation-actions button:hover,
+.fblqa-reputation-actions button:focus {
+  background: rgba(255, 255, 255, 0.88);
+}
+
+.fblqa-reputation-actions .fblqa-reputation-roll-button {
+  border-color: rgba(138, 94, 12, 0.52);
+  background: rgba(214, 163, 36, 0.30);
+}
+
+.fblqa-reputation-actions .fblqa-reputation-roll-button:hover,
+.fblqa-reputation-actions .fblqa-reputation-roll-button:focus {
+  background: rgba(214, 163, 36, 0.46);
+}
+
+.fblqa-reputation-form.is-readonly .fblqa-reputation-row input,
+.fblqa-reputation-form.is-readonly .fblqa-reputation-remove {
+  opacity: 0.72;
+}
+
+.fblqa-reputation-chat-card {
+  display: grid;
+  gap: 7px;
+  color: #222020;
+}
+
+.fblqa-reputation-chat-card header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+.fblqa-reputation-chat-card h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.fblqa-reputation-chat-card header > span {
+  color: rgba(34, 32, 30, 0.64);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.fblqa-reputation-chat-card ul {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fblqa-reputation-chat-card li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 5px;
+  align-items: baseline;
+  padding: 6px 7px;
+  border: 1px solid rgba(0, 0, 0, 0.16);
+  background: rgba(255, 255, 255, 0.34);
+}
+
+.fblqa-reputation-chat-card li.is-known {
+  border-color: rgba(66, 110, 75, 0.40);
+  background: rgba(66, 110, 75, 0.09);
+}
+
+.fblqa-reputation-chat-card li > strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fblqa-reputation-chat-outcome {
+  font-size: 0.80rem;
+  font-weight: 900;
+}
+
+.fblqa-reputation-chat-card li.is-known .fblqa-reputation-chat-outcome {
+  color: #315f3b;
+}
+
+.fblqa-reputation-chat-card li.is-unknown .fblqa-reputation-chat-outcome {
+  color: rgba(92, 50, 42, 0.84);
+}
+
+.fblqa-reputation-note-summary {
+  display: grid;
+  gap: 7px;
+  margin-top: 12px;
+  padding: 9px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  background: rgba(255, 255, 255, 0.28);
+  color: #24201d;
+}
+
+.fblqa-reputation-note-summary header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  padding-bottom: 5px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+.fblqa-reputation-note-summary h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.fblqa-reputation-note-summary header > strong {
+  font-size: 1.05rem;
+}
+
+.fblqa-reputation-note-summary ul {
+  display: grid;
+  gap: 4px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fblqa-reputation-note-summary li {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr);
+  gap: 7px;
+  align-items: start;
+  padding: 4px 0;
+}
+
+.fblqa-reputation-note-summary li > strong {
+  text-align: center;
+}
+
+.fblqa-reputation-note-summary li > span {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.fblqa-reputation-note-summary small {
+  display: block;
+  margin-top: 1px;
+  color: rgba(36, 32, 29, 0.65);
+  font-size: 0.76rem;
+  font-style: italic;
+}
+
+.fblqa-reputation-note-summary li.is-empty {
+  display: block;
+  color: rgba(36, 32, 29, 0.65);
+  font-style: italic;
+}
+
+@media (max-width: 760px) {
+  .fblqa-reputation-table-head {
+    display: none;
+  }
+
+  .fblqa-reputation-row {
+    grid-template-columns: 42px 72px minmax(0, 1fr) 30px;
+  }
+
+  .fblqa-reputation-row .fblqa-reputation-check {
+    grid-column: 1;
+    grid-row: 1;
+  }
+
+  .fblqa-reputation-row input[data-field="amount"] {
+    grid-column: 2;
+    grid-row: 1;
+  }
+
+  .fblqa-reputation-row input[data-field="description"] {
+    grid-column: 3;
+    grid-row: 1;
+  }
+
+  .fblqa-reputation-row .fblqa-reputation-remove {
+    grid-column: 4;
+    grid-row: 1;
+  }
+
+  .fblqa-reputation-row input[data-field="location"] {
+    grid-column: 2 / 5;
+    grid-row: 2;
+  }
+
+  .fblqa-reputation-actions {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .fblqa-reputation-actions .fblqa-reputation-roll-button {
+    grid-column: 1 / -1;
+  }
+}
+
+/* The system gives rich-text editors height: 100%. Make the Note tab itself
+   scrollable so the read-only Reputation reference remains reachable below it. */
+.fblqa-sheet-root .sheet-body > .tab.note[data-tab="note"].active {
+  min-height: 0;
+  height: 100%;
+  overflow-y: auto;
+}
+
+.fblqa-sheet-root .sheet-body > .tab.note[data-tab="note"].active > .editor,
+.fblqa-sheet-root .sheet-body > .tab.note[data-tab="note"].active > prose-mirror {
+  min-height: 220px;
+  height: auto;
+}

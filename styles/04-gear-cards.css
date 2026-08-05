@@ -1,0 +1,675 @@
+/* Gear card view, manual ordering markers and the card/table switch. */
+.fblqa-left-controls {
+  flex: 0 0 auto;
+  width: 58px;
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0;
+}
+
+.fblqa-left-controls .fblqa-encumbrance {
+  width: 100%;
+  min-width: 0;
+}
+
+.fblqa-view-toggle {
+  position: relative;
+  box-sizing: border-box;
+  width: 100%;
+  height: 14px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fblqa-view-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.fblqa-view-toggle-slider {
+  position: absolute;
+  inset: 0;
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.1);
+}
+
+.fblqa-view-toggle-slider::before {
+  content: "";
+  position: absolute;
+  top: 1px;
+  left: 2px;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.95);
+  border: 1px solid rgba(0, 0, 0, 0.22);
+  transition: transform 120ms ease-out;
+}
+
+.fblqa-view-toggle input:checked + .fblqa-view-toggle-slider {
+  background: rgba(75, 61, 42, 0.34);
+}
+
+.fblqa-view-toggle input:checked + .fblqa-view-toggle-slider::before {
+  transform: translateX(39px);
+}
+
+.fblqa-card-source-hidden {
+  display: none !important;
+}
+
+.fblqa-gear-card-grid-wrap,
+.fblqa-gear-card-grid-row > td {
+  margin: 0 !important;
+  padding: 1px 0 2px 0 !important;
+  list-style: none !important;
+}
+
+.fblqa-gear-card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 2px;
+  margin: 1px 0 2px 0;
+  padding: 0;
+}
+
+.fblqa-gear-card {
+  box-sizing: border-box;
+  height: 42px;
+  min-height: 42px;
+  max-height: 42px;
+  min-width: 0;
+  display: flex;
+  align-items: stretch;
+  overflow: hidden;
+  border: 1px solid var(--fblqa-card-border);
+  border-radius: 3px;
+  background: var(--fblqa-card-bg);
+}
+
+.fblqa-gear-card-icon-wrap {
+  box-sizing: border-box;
+  flex: 0 0 42px;
+  width: 42px;
+  min-width: 42px;
+  max-width: 42px;
+  height: 100%;
+  min-height: 0;
+  max-height: 42px;
+  overflow: hidden;
+  contain: paint;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+.fblqa-gear-card-icon-wrap > img.fblqa-gear-card-img,
+.fblqa-gear-card .fblqa-gear-card-icon-wrap > img.fblqa-gear-card-img,
+.gear-tab .fblqa-gear-card .fblqa-gear-card-icon-wrap > img.fblqa-gear-card-img,
+.tab[data-tab="gear"] .fblqa-gear-card .fblqa-gear-card-icon-wrap > img.fblqa-gear-card-img {
+  box-sizing: border-box !important;
+  position: static !important;
+  inset: auto !important;
+  float: none !important;
+  flex: 0 0 auto !important;
+  display: block !important;
+  width: 100% !important;
+  height: 100% !important;
+  min-width: 0 !important;
+  min-height: 0 !important;
+  max-width: 100% !important;
+  max-height: 100% !important;
+  object-fit: contain !important;
+  object-position: center center !important;
+  overflow: hidden !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  outline: 0 !important;
+  box-shadow: none !important;
+  transform: none !important;
+}
+
+.fblqa-gear-card-body {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-rows: 1fr 1fr;
+}
+
+.fblqa-gear-card-top,
+.fblqa-gear-card-bottom {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 0.18rem;
+  padding: 0 0.18rem;
+  line-height: 1;
+}
+
+.fblqa-gear-card-top {
+  position: relative;
+  justify-content: center;
+  padding: 0 18px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.fblqa-gear-card-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+  text-align: center;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.fblqa-gear-card-bottom,
+.gear-tab .fblqa-gear-card-bottom,
+.tab[data-tab="gear"] .fblqa-gear-card-bottom {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  align-items: stretch;
+  justify-items: stretch;
+  gap: 0;
+  padding: 0;
+  min-width: 0;
+  font-size: 0.68rem;
+  font-weight: 800;
+  opacity: 0.9;
+  white-space: nowrap;
+}
+
+.fblqa-gear-card-stat,
+.gear-tab .fblqa-gear-card-stat,
+.tab[data-tab="gear"] .fblqa-gear-card-stat {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  height: 100%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 2px;
+  overflow: hidden;
+  text-align: center;
+  white-space: nowrap;
+}
+
+.fblqa-gear-card-stat + .fblqa-gear-card-stat,
+.gear-tab .fblqa-gear-card-stat + .fblqa-gear-card-stat,
+.tab[data-tab="gear"] .fblqa-gear-card-stat + .fblqa-gear-card-stat {
+  border-left: 1px solid rgba(0, 0, 0, 0.08);
+}
+
+.fblqa-gear-card-stat-label,
+.gear-tab .fblqa-gear-card-stat-label,
+.tab[data-tab="gear"] .fblqa-gear-card-stat-label,
+.fblqa-gear-card strong.fblqa-gear-card-stat-label {
+  flex: 0 0 auto;
+  font-weight: 900;
+  font-style: italic;
+}
+
+.fblqa-gear-card-stat-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fblqa-gear-order-dragging {
+  opacity: 0.55;
+}
+
+.fblqa-drop-before,
+.fblqa-drop-after {
+  position: relative;
+}
+
+.fblqa-drop-before::before,
+.fblqa-drop-after::after {
+  content: "";
+  position: absolute;
+  z-index: 2;
+  pointer-events: none;
+  background: var(--color-shadow-primary, #ff6400);
+}
+
+.fblqa-drop-before::before {
+  left: 0;
+  right: 0;
+  top: -1px;
+  height: 2px;
+}
+
+.fblqa-drop-after::after {
+  left: 0;
+  right: 0;
+  bottom: -1px;
+  height: 2px;
+}
+
+.fblqa-gear-card.fblqa-drop-before::before,
+.fblqa-gear-card.fblqa-drop-after::after {
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  height: auto;
+}
+
+.fblqa-gear-card.fblqa-drop-before::before {
+  left: -1px;
+  right: auto;
+}
+
+.fblqa-gear-card.fblqa-drop-after::after {
+  right: -1px;
+  left: auto;
+}
+
+.gear-tab.fblqa-card-view-active .items-header .item-type,
+.gear-tab.fblqa-card-view-active .items-header .item-attribute,
+.gear-tab.fblqa-card-view-active .items-header .item-weight,
+.gear-tab.fblqa-card-view-active .items-header [data-sort="type"],
+.gear-tab.fblqa-card-view-active .items-header [data-sort="attribute"],
+.gear-tab.fblqa-card-view-active .items-header [data-sort="weight"],
+.gear-tab.fblqa-card-view-active .items-header .gear-type,
+.gear-tab.fblqa-card-view-active .items-header .gear-attribute,
+.gear-tab.fblqa-card-view-active .items-header .gear-weight,
+.gear-tab.fblqa-card-view-active .items-header .fblqa-card-column-hidden,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .item-type,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .item-attribute,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .item-weight,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header [data-sort="type"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header [data-sort="attribute"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header [data-sort="weight"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .gear-type,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .gear-attribute,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .gear-weight,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .fblqa-card-column-hidden {
+  display: none !important;
+}
+
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header,
+.gear-tab.fblqa-card-view-active .item-header.fblqa-card-header,
+.gear-tab.fblqa-card-view-active thead tr.fblqa-card-header,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header,
+.tab[data-tab="gear"].fblqa-card-view-active .item-header.fblqa-card-header,
+.tab[data-tab="gear"].fblqa-card-view-active thead tr.fblqa-card-header {
+  font-size: 0 !important;
+  grid-template-columns: minmax(0, 1fr) max-content !important;
+  column-gap: 0.15rem !important;
+}
+
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header > :first-child,
+.gear-tab.fblqa-card-view-active .item-header.fblqa-card-header > :first-child,
+.gear-tab.fblqa-card-view-active thead tr.fblqa-card-header > :first-child,
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header > :last-child,
+.gear-tab.fblqa-card-view-active .item-header.fblqa-card-header > :last-child,
+.gear-tab.fblqa-card-view-active thead tr.fblqa-card-header > :last-child,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header > :first-child,
+.tab[data-tab="gear"].fblqa-card-view-active .item-header.fblqa-card-header > :first-child,
+.tab[data-tab="gear"].fblqa-card-view-active thead tr.fblqa-card-header > :first-child,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header > :last-child,
+.tab[data-tab="gear"].fblqa-card-view-active .item-header.fblqa-card-header > :last-child,
+.tab[data-tab="gear"].fblqa-card-view-active thead tr.fblqa-card-header > :last-child {
+  font-size: var(--font-size-14, 14px) !important;
+}
+
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.gear-tab.fblqa-card-view-active .item-header.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.gear-tab.fblqa-card-view-active thead tr.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.gear-tab.fblqa-card-view-active .items-header .fblqa-card-column-hidden,
+.gear-tab.fblqa-card-view-active .item-header .fblqa-card-column-hidden,
+.gear-tab.fblqa-card-view-active thead tr .fblqa-card-column-hidden,
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.tab[data-tab="gear"].fblqa-card-view-active .item-header.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.tab[data-tab="gear"].fblqa-card-view-active thead tr.fblqa-card-header > :nth-child(n+2):not(:last-child),
+.tab[data-tab="gear"].fblqa-card-view-active .items-header .fblqa-card-column-hidden,
+.tab[data-tab="gear"].fblqa-card-view-active .item-header .fblqa-card-column-hidden,
+.tab[data-tab="gear"].fblqa-card-view-active thead tr .fblqa-card-column-hidden,
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="type"],
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="attribute"],
+.gear-tab.fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="weight"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="type"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="attribute"],
+.tab[data-tab="gear"].fblqa-card-view-active .items-header.fblqa-card-header [data-sort*="weight"] {
+  display: none !important;
+}
+
+.fblqa-consumable-toggle-slot {
+  box-sizing: border-box;
+  flex: 0 0 30px;
+  width: 30px;
+  min-width: 30px;
+  max-width: 30px;
+  height: 24px;
+  min-height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 0.45rem 0 0;
+  padding: 0;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.fblqa-card-view-checkbox {
+  box-sizing: border-box;
+  position: relative;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border: 2px solid var(--fblqa-border-strong);
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.72);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.22);
+  cursor: pointer;
+  user-select: none;
+  line-height: 1;
+  overflow: hidden;
+}
+
+.fblqa-card-view-checkbox:hover {
+  border-color: rgba(0, 0, 0, 0.78);
+  background: rgba(255, 255, 255, 0.9);
+}
+
+.fblqa-card-view-checkbox input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.fblqa-card-view-checkbox-mark {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  color: rgba(20, 20, 20, 0.88);
+  font-size: 10px;
+  line-height: 1;
+  text-align: center;
+  opacity: 0;
+  transform: scale(0.7);
+  transform-origin: center center;
+  transition: opacity 80ms ease-out, transform 80ms ease-out;
+}
+
+.fblqa-card-view-checkbox-mark::before {
+  display: block;
+  line-height: 1;
+  margin: 0;
+  padding: 0;
+}
+
+.fblqa-card-view-checkbox input:checked + .fblqa-card-view-checkbox-mark {
+  opacity: 1;
+  transform: scale(1) translateY(0);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* Gear right-click context menu. Native edit/delete controls are hidden;
+   their behavior is exposed through the styled menu instead. */
+.fblqa-gear-context-enabled .fblqa-gear-menu-row {
+  cursor: context-menu;
+}
+
+.fblqa-gear-context-enabled .fblqa-gear-menu-row .item-edit,
+.fblqa-gear-context-enabled .fblqa-gear-menu-row .item-delete,
+.fblqa-gear-context-enabled .item-controls .item-edit,
+.fblqa-gear-context-enabled .item-controls .item-delete,
+.fblqa-gear-context-enabled .fblqa-gear-menu-row [data-action="edit"],
+.fblqa-gear-context-enabled .fblqa-gear-menu-row [data-action="itemEdit"],
+.fblqa-gear-context-enabled .fblqa-gear-menu-row [data-action="delete"],
+.fblqa-gear-context-enabled .fblqa-gear-menu-row [data-action="itemDelete"],
+.fblqa-gear-context-enabled .item-controls [data-action="edit"],
+.fblqa-gear-context-enabled .item-controls [data-action="itemEdit"],
+.fblqa-gear-context-enabled .item-controls [data-action="delete"],
+.fblqa-gear-context-enabled .item-controls [data-action="itemDelete"],
+.fblqa-gear-context-enabled .item-controls a[title*="Edit"],
+.fblqa-gear-context-enabled .item-controls button[title*="Edit"],
+.fblqa-gear-context-enabled .item-controls a[title*="Delete"],
+.fblqa-gear-context-enabled .item-controls button[title*="Delete"],
+.fblqa-gear-context-enabled .item-controls a[title*="Редакт"],
+.fblqa-gear-context-enabled .item-controls button[title*="Редакт"],
+.fblqa-gear-context-enabled .item-controls a[title*="Удал"],
+.fblqa-gear-context-enabled .item-controls button[title*="Удал"] {
+  display: none !important;
+}
+
+.fblqa-gear-context-menu {
+  position: fixed;
+  z-index: 100000;
+  min-width: 150px;
+  padding: 3px;
+  border: 1px solid var(--fblqa-context-border);
+  border-radius: 4px;
+  background: var(--fblqa-context-bg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.38);
+  color: var(--fblqa-context-text);
+}
+
+.fblqa-gear-menu-button {
+  box-sizing: border-box;
+  width: 100%;
+  min-height: 26px;
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr);
+  align-items: center;
+  gap: 4px;
+  margin: 0;
+  padding: 3px 7px;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: inherit;
+  font-size: 0.78rem;
+  font-weight: 800;
+  line-height: 1.1;
+  text-align: left;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.fblqa-gear-menu-button:hover,
+.fblqa-gear-menu-button:focus {
+  outline: 0;
+  background: var(--fblqa-context-hover-bg);
+  color: var(--fblqa-context-hover-text);
+}
+
+.fblqa-gear-menu-button:disabled {
+  cursor: default;
+  opacity: 0.45;
+}
+
+.fblqa-gear-menu-button:disabled:hover,
+.fblqa-gear-menu-button:disabled:focus {
+  background: transparent;
+  color: inherit;
+}
+
+.fblqa-gear-menu-button-danger:hover,
+.fblqa-gear-menu-button-danger:focus {
+  background: var(--fblqa-context-danger-bg);
+}
+
+.fblqa-gear-menu-icon {
+  justify-self: center;
+  opacity: 0.86;
+}
+
+.fblqa-gear-menu-button-danger .fblqa-gear-menu-icon {
+  color: #b00020;
+  opacity: 1;
+}
+
+.fblqa-gear-menu-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Styled destructive confirmation dialog shared by Gear and STAT. */
+.fblqa-delete-dialog {
+  border: 1px solid rgba(0, 0, 0, 0.28);
+  box-shadow: 0 8px 26px rgba(0, 0, 0, 0.28);
+  font-family: "IM Fell Great Primer", var(--font-primary, serif);
+}
+
+.fblqa-delete-dialog .window-header {
+  min-height: 28px;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.28);
+  background: rgba(222, 218, 210, 0.98);
+  color: #222020;
+}
+
+.fblqa-delete-dialog .window-title {
+  color: #222020;
+  font-weight: 900;
+  letter-spacing: 0.01em;
+}
+
+.fblqa-delete-dialog .window-content {
+  padding: 0;
+  border: 0;
+  background: rgba(245, 242, 234, 0.98);
+  color: #222020;
+}
+
+.fblqa-delete-dialog .dialog-content {
+  margin: 0;
+  padding: 0;
+}
+
+.fblqa-delete-dialog-content {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr);
+  gap: 10px;
+  padding: 14px 14px 10px;
+}
+
+.fblqa-delete-dialog-icon {
+  width: 34px;
+  height: 34px;
+  border: 1px solid rgba(120, 40, 35, 0.38);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(120, 40, 35, 0.12);
+  color: rgba(120, 40, 35, 0.94);
+  font-size: 1rem;
+}
+
+.fblqa-delete-dialog-heading {
+  margin: 0 0 4px;
+  color: #222020;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.fblqa-delete-dialog-message {
+  margin: 0;
+  color: #222020;
+  font-size: 0.9rem;
+  line-height: 1.28;
+}
+
+.fblqa-delete-dialog-warning {
+  margin: 6px 0 0;
+  color: rgba(34, 32, 30, 0.68);
+  font-size: 0.78rem;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.fblqa-delete-dialog .dialog-buttons {
+  box-sizing: border-box;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin: 0;
+  padding: 0 12px 12px;
+}
+
+.fblqa-delete-dialog .dialog-button {
+  min-height: 30px;
+  margin: 0;
+  border: 1px solid rgba(0, 0, 0, 0.32);
+  border-radius: 4px;
+  background: rgba(238, 234, 223, 0.92);
+  color: #222020;
+  font-family: inherit;
+  font-size: 0.9rem;
+  font-weight: 900;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.fblqa-delete-dialog .dialog-button:hover,
+.fblqa-delete-dialog .dialog-button:focus {
+  outline: 0;
+  background: rgba(226, 219, 204, 0.98);
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.fblqa-delete-dialog .dialog-button.yes {
+  border-color: rgba(120, 40, 35, 0.68);
+  background: rgba(120, 40, 35, 0.14);
+  color: #222020;
+}
+
+.fblqa-delete-dialog .dialog-button.yes:hover,
+.fblqa-delete-dialog .dialog-button.yes:focus {
+  background: rgba(120, 40, 35, 0.22);
+}
+
+/* v1.5.6: every row action lives in the right-click menu. The now-empty
+ * controls column must collapse so the system information columns can use it. */
+.fblqa-gear-context-enabled .fblqa-gear-chat-control-hidden {
+  display: none !important;
+}
+
+.fblqa-gear-context-enabled .fblqa-gear-menu-row .item-controls.fblqa-gear-row-controls-collapsed {
+  flex: 0 0 0 !important;
+  width: 0 !important;
+  min-width: 0 !important;
+  max-width: 0 !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  gap: 0 !important;
+  overflow: hidden !important;
+}

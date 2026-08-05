@@ -1,0 +1,32 @@
+<div class="injury-row special-heat-row heat-level-{{value}}" data-row-kind="item" data-item-id="{{itemId}}" data-order="{{order}}" data-heat-level="{{value}}">
+  <div class="injury-header">
+    {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
+    <div class="injury-title-block heat-title-block">
+      <i class="fas fa-temperature-high collapse-icon heat-collapse-toggle" title="{{localize 'FBLEC.UI.ToggleDescription'}}"></i>
+      <img class="injury-img" src="{{img}}" title="{{name}}" />
+      <span class="condition-name heat-name-display">{{name}}</span>
+    </div>
+    <div class="heat-controls">
+      {{#if editable}}<button class="heat-btn heat-minus" title="{{localize 'FBLEC.Heat.Minus'}}">-</button>{{/if}}
+      <div class="heat-meter" title="{{localize 'FBLEC.Heat.Level'}}">{{{dots}}}</div>
+      <input class="heat-input" type="text" value="{{value}}/{{max}}" readonly>
+      {{#if editable}}
+        <button class="heat-btn heat-plus" title="{{localize 'FBLEC.Heat.Plus'}}">+</button>
+        <button class="heat-btn heat-exposure" title="{{localize 'FBLEC.Heat.Exposure'}}"><i class="fas fa-sun"></i></button>
+        <button class="heat-btn heat-rest" title="{{localize 'FBLEC.Heat.Rest'}}"><i class="fas fa-campground"></i></button>
+      {{/if}}
+      <button class="heat-btn heat-check" title="{{localize 'FBLEC.Heat.Check'}}"><i class="fas fa-dice-d6"></i></button>
+    </div>
+    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Heat.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
+  </div>
+  <div class="heat-summary">
+    <span class="heat-summary-title">{{levelLabel}}:</span>
+    <span>{{levelSummary}}</span>
+  </div>
+  <div class="injury-desc heat-desc">
+    <p><b>{{localize "FBLEC.Heat.Consequence"}}:</b> {{levelConsequence}}</p>
+    <p><b>{{localize "FBLEC.Heat.Increase"}}:</b> {{localize "FBLEC.Heat.IncreaseText"}}</p>
+    <p><b>{{localize "FBLEC.Heat.Decrease"}}:</b> {{localize "FBLEC.Heat.DecreaseText"}}</p>
+    {{#if effect}}<hr><div class="heat-source-effect">{{{effect}}}</div>{{/if}}
+  </div>
+</div>

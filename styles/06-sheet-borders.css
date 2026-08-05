@@ -1,0 +1,235 @@
+/* Visual cleanup for Forbidden Lands decorative border frames. Compact mode removes frames entirely. */
+.fblqa-sheet-head-compact,
+.fblqa-sheet-head-compact.border,
+.fblqa-sheet-head-compact[class~="border"] {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  border-image-slice: initial !important;
+  border-image-width: initial !important;
+  border-image-outset: initial !important;
+  border-image-repeat: initial !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+}
+
+.fblqa-sheet-head-compact::before,
+.fblqa-sheet-head-compact::after,
+.fblqa-sheet-head-compact *::before,
+.fblqa-sheet-head-compact *::after,
+.fblqa-sheet-head-compact .border,
+.fblqa-sheet-head-compact [class~="border"] {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.fblqa-borderless-sheet .border,
+.fblqa-borderless-sheet [class~="border"] {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  border-image-slice: initial !important;
+  border-image-width: initial !important;
+  border-image-outset: initial !important;
+  border-image-repeat: initial !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background-image: none !important;
+  margin-top: 0 !important;
+  margin-left: 0 !important;
+}
+
+.fblqa-borderless-sheet .border::before,
+.fblqa-borderless-sheet .border::after,
+.fblqa-borderless-sheet [class~="border"]::before,
+.fblqa-borderless-sheet [class~="border"]::after,
+.fblqa-borderless-sheet .border *::before,
+.fblqa-borderless-sheet .border *::after,
+.fblqa-borderless-sheet [class~="border"] *::before,
+.fblqa-borderless-sheet [class~="border"] *::after {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.fblqa-borderless-sheet .consumables.border,
+.fblqa-borderless-sheet .actions.border,
+.fblqa-borderless-sheet .combat-actions.border,
+.fblqa-borderless-sheet .action-list.border,
+.fblqa-borderless-sheet [data-tab="combat"] .border,
+.fblqa-borderless-sheet [data-tab="gear"] .consumables.border {
+  border: 0 !important;
+  border-image: none !important;
+  box-shadow: none !important;
+  background-image: none !important;
+  padding: 0.22rem 0.32rem !important;
+}
+
+/* Keep the fixed consumables bar flush with the sheet bottom in compact Gear mode. */
+.fblqa-borderless-sheet .gear-tab.fblqa-compacted > .consumables.border,
+.fblqa-borderless-sheet .tab[data-tab="gear"].fblqa-compacted > .consumables.border {
+  margin: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.fblqa-borderless-sheet .sheet-header,
+.fblqa-borderless-sheet header.sheet-header,
+.fblqa-borderless-sheet .fblqa-sheet-head-compact {
+  padding: 0.22rem 0.32rem !important;
+}
+
+.fblqa-conditions-heading-with-toggle {
+  position: relative;
+  min-height: 22px;
+}
+
+.fblqa-border-toggle-wrap {
+  position: absolute;
+  right: 0.2rem;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+}
+
+.fblqa-border-toggle {
+  position: relative;
+  box-sizing: border-box;
+  width: 34px;
+  height: 16px;
+  display: inline-block;
+  margin: 0;
+  padding: 0;
+  cursor: pointer;
+  user-select: none;
+}
+
+.fblqa-border-toggle input {
+  position: absolute;
+  opacity: 0;
+  width: 1px;
+  height: 1px;
+  pointer-events: none;
+}
+
+.fblqa-border-toggle-slider {
+  position: absolute;
+  inset: 0;
+  box-sizing: border-box;
+  border: 1px solid rgba(0, 0, 0, 0.46);
+  border-radius: 999px;
+  background: rgba(110, 110, 110, 0.28);
+  box-shadow: inset 0 0 2px rgba(0, 0, 0, 0.22);
+  transition: background 90ms ease-out, border-color 90ms ease-out;
+}
+
+.fblqa-border-toggle-slider::after {
+  content: "";
+  position: absolute;
+  box-sizing: border-box;
+  width: 12px;
+  height: 12px;
+  left: 1px;
+  top: 1px;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid rgba(0, 0, 0, 0.30);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.26);
+  transition: transform 90ms ease-out;
+}
+
+.fblqa-border-toggle input:checked + .fblqa-border-toggle-slider {
+  background: rgba(40, 96, 88, 0.58);
+  border-color: rgba(0, 0, 0, 0.62);
+}
+
+.fblqa-border-toggle input:checked + .fblqa-border-toggle-slider::after {
+  transform: translateX(18px);
+}
+
+.fblqa-native-borders .fblqa-main-compact .border,
+.fblqa-native-borders .fblqa-main-compact [class~="border"],
+.fblqa-native-borders .fblqa-sheet-head-compact,
+.fblqa-native-borders .fblqa-sheet-head-compact.border,
+.fblqa-native-borders .fblqa-sheet-head-compact[class~="border"] {
+  border: revert-layer !important;
+  border-image: revert-layer !important;
+  border-image-source: revert-layer !important;
+  border-image-slice: revert-layer !important;
+  border-image-width: revert-layer !important;
+  border-image-outset: revert-layer !important;
+  border-image-repeat: revert-layer !important;
+  border-radius: revert-layer !important;
+  box-shadow: revert-layer !important;
+  outline: revert-layer !important;
+  background: revert-layer !important;
+  background-image: revert-layer !important;
+  margin: revert-layer !important;
+  padding: revert-layer !important;
+}
+
+.fblqa-native-borders .fblqa-main-compact .border::before,
+.fblqa-native-borders .fblqa-main-compact .border::after,
+.fblqa-native-borders .fblqa-sheet-head-compact::before,
+.fblqa-native-borders .fblqa-sheet-head-compact::after,
+.fblqa-native-borders .fblqa-sheet-head-compact *::before,
+.fblqa-native-borders .fblqa-sheet-head-compact *::after {
+  border-image: revert-layer !important;
+  border-image-source: revert-layer !important;
+  background-image: revert-layer !important;
+  box-shadow: revert-layer !important;
+}
+
+.fblqa-item-no-borders .border,
+.fblqa-item-no-borders [class~="border"],
+.fblqa-item-borderless,
+.fblqa-item-borderless.border,
+.fblqa-item-borderless[class~="border"] {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  border-image-slice: initial !important;
+  border-image-width: initial !important;
+  border-image-outset: initial !important;
+  border-image-repeat: initial !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background-image: none !important;
+}
+
+.fblqa-item-no-borders .border::before,
+.fblqa-item-no-borders .border::after,
+.fblqa-item-no-borders [class~="border"]::before,
+.fblqa-item-no-borders [class~="border"]::after,
+.fblqa-item-no-borders .border *::before,
+.fblqa-item-no-borders .border *::after,
+.fblqa-item-no-borders [class~="border"] *::before,
+.fblqa-item-no-borders [class~="border"] *::after,
+.fblqa-item-borderless::before,
+.fblqa-item-borderless::after,
+.fblqa-item-borderless *::before,
+.fblqa-item-borderless *::after {
+  border: 0 !important;
+  border-image: none !important;
+  border-image-source: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}

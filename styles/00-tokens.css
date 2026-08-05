@@ -1,0 +1,35 @@
+:root {
+  --fblqa-border-soft: rgba(0, 0, 0, 0.16);
+  --fblqa-border-medium: rgba(0, 0, 0, 0.42);
+  --fblqa-border-strong: rgba(0, 0, 0, 0.58);
+  --fblqa-bg-paper: var(--color-bg, #f1eee6);
+  --fblqa-card-bg: rgba(210, 210, 210, 0.82);
+  --fblqa-card-border: rgba(0, 0, 0, 0.16);
+  --fblqa-gold-soft: rgba(214, 163, 36, 0.32);
+  --fblqa-gold-strong: rgba(214, 163, 36, 0.62);
+  --fblqa-silver-soft: rgba(118, 165, 196, 0.30);
+  --fblqa-silver-strong: rgba(118, 165, 196, 0.56);
+  --fblqa-copper-soft: rgba(190, 103, 55, 0.32);
+  --fblqa-copper-strong: rgba(190, 103, 55, 0.58);
+  --fblqa-context-bg: rgba(255, 255, 255, 0.99);
+  --fblqa-context-border: rgba(0, 0, 0, 0.28);
+  --fblqa-context-text: #111111;
+  --fblqa-context-hover-bg: rgba(0, 0, 0, 0.08);
+  --fblqa-context-hover-text: #000000;
+  --fblqa-context-danger-bg: rgba(178, 28, 28, 0.10);
+  --fblqa-dialog-bg: rgba(35, 31, 27, 0.98);
+  --fblqa-dialog-bg-soft: rgba(78, 60, 41, 0.38);
+  --fblqa-dialog-border: rgba(214, 163, 36, 0.46);
+  --fblqa-dialog-text: rgba(246, 238, 220, 0.98);
+  --fblqa-dialog-muted: rgba(230, 218, 190, 0.74);
+  --fblqa-dialog-danger: rgba(145, 36, 31, 0.92);
+  --fblqa-dialog-danger-soft: rgba(145, 36, 31, 0.28);
+  --fblqa-rest-bg: rgba(245, 242, 234, 0.98);
+  --fblqa-rest-bg-soft: rgba(238, 234, 223, 0.86);
+  --fblqa-rest-border: rgba(0, 0, 0, 0.22);
+  --fblqa-rest-text: #222020;
+  --fblqa-rest-muted: rgba(34, 32, 30, 0.68);
+  --fblqa-rest-good: rgba(66, 110, 75, 0.82);
+  --fblqa-rest-bad: rgba(120, 40, 35, 0.92);
+  --fblqa-rest-warn: rgba(130, 99, 35, 0.72);
+}
