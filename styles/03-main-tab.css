@@ -1,0 +1,140 @@
+/* Compact MAIN tab layout. These rules intentionally target system markup. */
+.fblqa-slots-balanced {
+  align-self: stretch;
+}
+
+.fblqa-main-compact {
+  gap: 0 !important;
+  row-gap: 0 !important;
+  column-gap: 0 !important;
+}
+
+.fblqa-main-compact > *,
+.fblqa-main-compact .grid,
+.fblqa-main-compact .flexcol,
+.fblqa-main-compact .flexrow {
+  gap: 0 !important;
+  row-gap: 0 !important;
+  column-gap: 0.1rem !important;
+}
+
+.fblqa-main-compact .border {
+  margin: 0 !important;
+  padding: 0.22rem 0.32rem !important;
+  border: 0 !important;
+  border-image: none !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+  outline: none !important;
+  background-image: none !important;
+}
+
+.fblqa-main-compact .border::before,
+.fblqa-main-compact .border::after,
+.fblqa-main-compact .border > ::before,
+.fblqa-main-compact .border > ::after {
+  border: 0 !important;
+  border-image: none !important;
+  outline: none !important;
+  background: transparent !important;
+  background-image: none !important;
+  box-shadow: none !important;
+}
+
+.fblqa-main-compact h1,
+.fblqa-main-compact h2,
+.fblqa-main-compact h3,
+.fblqa-main-compact h4,
+.fblqa-main-compact .section-title,
+.fblqa-main-compact .items-header {
+  margin-top: 0.08rem !important;
+  margin-bottom: 0.16rem !important;
+  line-height: 1.08 !important;
+}
+
+.fblqa-main-compact .border h1,
+.fblqa-main-compact .border h2,
+.fblqa-main-compact .border h3,
+.fblqa-main-compact .border h4 {
+  margin: 0 0 0.12rem 0 !important;
+  padding: 0 !important;
+  line-height: 1.02 !important;
+}
+
+.fblqa-main-compact .flexrow,
+.fblqa-main-compact .grid,
+.fblqa-main-compact .form-group,
+.fblqa-main-compact .resource,
+.fblqa-main-compact .attribute,
+.fblqa-main-compact .skill {
+  gap: 0.12rem 0.24rem !important;
+  margin-top: 0.08rem !important;
+  margin-bottom: 0.08rem !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}
+
+.fblqa-main-compact label,
+.fblqa-main-compact .label,
+.fblqa-main-compact span,
+.fblqa-main-compact p {
+  line-height: 1.12 !important;
+}
+
+.fblqa-main-compact input,
+.fblqa-main-compact select {
+  min-height: 22px !important;
+  height: 22px !important;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.fblqa-main-compact .dots,
+.fblqa-main-compact .pips,
+.fblqa-main-compact .resource-value {
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+}
+
+.fblqa-main-compact .skill,
+.fblqa-main-compact .skills .flexrow,
+.fblqa-main-compact [class*="skill"] .flexrow,
+.fblqa-main-compact .attribute,
+.fblqa-main-compact .attributes .flexrow,
+.fblqa-main-compact [class*="attribute"] .flexrow,
+.fblqa-main-compact .resource,
+.fblqa-main-compact .resources .flexrow {
+  min-height: 24px !important;
+  height: auto !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  align-items: center !important;
+  line-height: 1 !important;
+}
+
+.fblqa-main-compact .skill label,
+.fblqa-main-compact .skills label,
+.fblqa-main-compact [class*="skill"] label,
+.fblqa-main-compact .attribute label,
+.fblqa-main-compact .attributes label,
+.fblqa-main-compact [class*="attribute"] label,
+.fblqa-main-compact .resource label {
+  margin: 0 !important;
+  padding: 0 !important;
+  line-height: 1 !important;
+}
+
+.fblqa-main-compact .skill input,
+.fblqa-main-compact .skills input,
+.fblqa-main-compact [class*="skill"] input,
+.fblqa-main-compact .attribute input,
+.fblqa-main-compact .attributes input,
+.fblqa-main-compact [class*="attribute"] input,
+.fblqa-main-compact .resource input {
+  height: 20px !important;
+  min-height: 20px !important;
+  margin: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+}

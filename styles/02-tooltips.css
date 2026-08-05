@@ -1,0 +1,212 @@
+/* Compact rich item hover tooltip for Gear, Combat and Talent rows. */
+.fblqa-tooltip-anchor {
+  cursor: inherit;
+}
+
+.fblqa-item-tooltip {
+  position: fixed;
+  z-index: 99999;
+  display: none;
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 430px;
+  max-height: min(430px, calc(100vh - 24px));
+  overflow: auto;
+  padding: 0.36rem 0.42rem;
+  border: 1px solid var(--color-border-dark, #4b3d2a);
+  border-radius: 5px;
+  box-shadow: 0 5px 18px rgba(0, 0, 0, 0.34);
+  background: var(--fblqa-bg-paper);
+  color: var(--color-text-primary, #191813);
+  pointer-events: none;
+  font-size: 0.82rem;
+  line-height: 1.18;
+}
+
+.fblqa-item-tooltip.is-visible {
+  display: block;
+}
+
+.fblqa-item-tooltip-header {
+  display: flex;
+  align-items: center;
+  gap: 0.36rem;
+  padding-bottom: 0.22rem;
+  margin-bottom: 0.24rem;
+  border-bottom: 1px solid rgba(0, 0, 0, 0.18);
+}
+
+.fblqa-item-tooltip-img {
+  flex: 0 0 auto;
+  width: 30px;
+  height: 30px;
+  object-fit: cover;
+  border: 1px solid rgba(0, 0, 0, 0.25);
+  border-radius: 3px;
+}
+
+.fblqa-item-tooltip-title {
+  min-width: 0;
+  font-size: 1rem;
+  font-weight: 900;
+  line-height: 1.05;
+}
+
+.fblqa-item-tooltip-stats {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: flex-start;
+  gap: 0.12rem 0.14rem;
+  width: fit-content;
+  max-width: 100%;
+  margin: 0 0 0.28rem 0;
+}
+
+.fblqa-item-tooltip-stat {
+  box-sizing: border-box;
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.08rem 0.18rem;
+  border: 1px solid rgba(0, 0, 0, 0.12);
+  border-radius: 3px;
+  background: rgba(0, 0, 0, 0.035);
+  display: inline-grid;
+  grid-template-columns: max-content max-content;
+  gap: 0.16rem;
+  align-items: baseline;
+}
+
+.fblqa-item-tooltip-stat-label {
+  font-weight: 900;
+  opacity: 0.78;
+  white-space: nowrap;
+}
+
+.fblqa-item-tooltip-stat-value {
+  max-width: 150px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  text-align: left;
+}
+
+.fblqa-item-tooltip-section {
+  max-width: 430px;
+  margin-top: 0.32rem;
+  padding-top: 0.28rem;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.fblqa-item-tooltip-section h4 {
+  margin: 0 0 0.12rem 0;
+  font-size: 0.84rem;
+  font-weight: 900;
+  line-height: 1.1;
+}
+
+.fblqa-item-tooltip-description {
+  width: 100%;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text,
+.fblqa-item-tooltip .fblqa-rich-text * {
+  line-height: 1.18;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text p,
+.fblqa-item-tooltip .fblqa-rich-text div {
+  margin: 0 0 0.18rem 0;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text p:last-child,
+.fblqa-item-tooltip .fblqa-rich-text div:last-child {
+  margin-bottom: 0;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text ul,
+.fblqa-item-tooltip .fblqa-rich-text ol {
+  margin: 0.08rem 0 0.08rem 1.05rem;
+  padding: 0;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text li {
+  margin: 0.04rem 0;
+  padding: 0;
+}
+
+.fblqa-item-tooltip .fblqa-rich-text hr {
+  margin: 0.26rem 0;
+  border: 0;
+  border-top: 1px solid rgba(0, 0, 0, 0.14);
+}
+
+.fblqa-item-tooltip .fblqa-rich-text strong,
+.fblqa-item-tooltip .fblqa-rich-text b {
+  font-weight: 900;
+}
+
+.fblqa-description-only-tooltip,
+.fblqa-spell-tooltip-description {
+  max-width: 520px;
+  padding: 0.08rem 0.02rem;
+}
+
+.fblqa-spell-tooltip-stats {
+  margin-bottom: 0.28rem;
+}
+
+.fblqa-firearm-tooltip-section {
+  max-width: 430px;
+}
+
+.fblqa-firearm-fields,
+.fblqa-firearm-features {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.12rem 0.14rem;
+}
+
+.fblqa-firearm-fields {
+  margin: 0 0 0.18rem 0;
+}
+
+.fblqa-firearm-feature,
+.fblqa-firearm-field {
+  width: fit-content;
+  max-width: 100%;
+  padding: 0.08rem 0.18rem;
+  border: 1px solid rgba(126, 36, 27, 0.42);
+  border-radius: 3px;
+  background: rgba(126, 36, 27, 0.1);
+  color: #5f1e17;
+}
+
+.fblqa-firearm-field {
+  display: inline-grid;
+  grid-template-columns: max-content max-content;
+  gap: 0.16rem;
+  align-items: baseline;
+}
+
+.fblqa-firearm-field-label {
+  font-weight: 900;
+  opacity: 0.86;
+  white-space: nowrap;
+}
+
+.fblqa-firearm-field-value {
+  max-width: 150px;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.fblqa-firearm-feature-title {
+  font-weight: 900;
+  line-height: 1.12;
+}
+
+.fblqa-firearm-feature-value {
+  margin-left: 0.22rem;
+  font-weight: 800;
+  opacity: 0.9;
+}

@@ -1,0 +1,388 @@
+.fblqa-panel {
+  margin: 0 0 2px 0;
+  padding: 0.1rem 0 0 0;
+  border: 0;
+  background: transparent;
+}
+
+.fblqa-line {
+  display: flex;
+  align-items: center;
+  gap: 0.25rem;
+  width: 100%;
+  position: relative;
+  margin-bottom: 2px;
+}
+
+.fblqa-warning,
+.fblqa-zero {
+  margin: 0.15rem 0 0 0;
+  font-size: 0.72rem;
+  opacity: 0.78;
+}
+
+.fblqa-encumbrance {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  min-width: 54px;
+  height: 28px;
+  padding: 1px 0.42rem;
+  border: 1px solid var(--color-border-light-tertiary, #9a8a6a);
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.15rem;
+  font-size: 0.95rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fblqa-encumbrance-separator {
+  opacity: 0.72;
+}
+
+.fblqa-slots {
+  min-width: 0;
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: repeat(var(--fblqa-slot-columns, 1), minmax(0, 1fr));
+  gap: 0.2rem;
+  align-items: center;
+}
+
+.fblqa-slot {
+  position: relative;
+  box-sizing: border-box;
+  min-height: 28px;
+  height: 28px;
+  min-width: 78px;
+  padding: 1px 18px 1px 2px;
+  border: 1px dashed var(--color-border-light-tertiary, #9a8a6a);
+  border-radius: 4px;
+  display: inline-flex;
+  width: 100%;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.22rem;
+  overflow: hidden;
+  text-align: left;
+}
+
+.fblqa-filled {
+  border-style: solid;
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.fblqa-overweight {
+  outline: 1px solid rgba(130, 0, 0, 0.75);
+  outline-offset: -2px;
+}
+
+.fblqa-drop-target {
+  outline: 2px solid var(--color-shadow-primary, #ff6400);
+  outline-offset: 1px;
+}
+
+.fblqa-img {
+  flex: 0 0 auto;
+  width: 24px;
+  height: 24px;
+  object-fit: cover;
+  border: none;
+  border-radius: 2px;
+}
+
+.fblqa-name {
+  min-width: 0;
+  flex: 1 1 auto;
+  font-size: 0.74rem;
+  line-height: 1.05;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fblqa-empty,
+.fblqa-missing-label {
+  display: block;
+  width: 100%;
+  padding-left: 0.25rem;
+  font-size: 0.72rem;
+  line-height: 1;
+  opacity: 0.58;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.fblqa-missing {
+  border-style: dotted;
+}
+
+.fblqa-remove {
+  position: absolute;
+  top: 4px;
+  right: 3px;
+  width: 14px;
+  height: 14px;
+  min-height: 14px;
+  padding: 0;
+  border-radius: 50%;
+  line-height: 11px;
+  font-size: 0.68rem;
+  cursor: pointer;
+}
+
+.fblqa-wallet {
+  position: relative;
+  flex: 0 0 auto;
+  width: 30px;
+  height: 28px;
+}
+
+.fblqa-wallet-button {
+  width: 30px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border-radius: 4px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1rem;
+  cursor: pointer;
+}
+
+.fblqa-wallet-popover {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 100;
+  display: none;
+  min-width: 126px;
+  padding: 0.38rem;
+  border: 1px solid var(--color-border-light-tertiary, #9a8a6a);
+  border-radius: 5px;
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.28);
+  background: var(--color-bg, #f1eee6);
+}
+
+.fblqa-wallet.is-open .fblqa-wallet-popover {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.fblqa-currency-row {
+  box-sizing: border-box;
+  height: 26px;
+  display: grid;
+  grid-template-columns: 24px 44px 24px 30px;
+  align-items: center;
+  gap: 2px;
+}
+
+.fblqa-currency-button {
+  width: 24px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0;
+  border-radius: 3px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 22px;
+}
+
+.fblqa-currency-input {
+  box-sizing: border-box;
+  width: 44px;
+  height: 24px;
+  min-height: 24px;
+  padding: 0 1px;
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 24px;
+  text-align: center;
+}
+
+.fblqa-currency-input::-webkit-outer-spin-button,
+.fblqa-currency-input::-webkit-inner-spin-button {
+  margin: 0;
+}
+
+.fblqa-currency-abbr {
+  font-size: 0.9rem;
+  font-weight: 800;
+  line-height: 1;
+  white-space: nowrap;
+  opacity: 0.94;
+}
+
+.fblqa-overencumbered {
+  border-color: rgba(130, 0, 0, 0.95);
+  background: rgba(190, 0, 0, 0.28);
+  color: #3a0000;
+  outline: 1px solid rgba(130, 0, 0, 0.75);
+  outline-offset: -2px;
+}
+
+.gear-tab .fblqa-panel + .gears,
+.tab[data-tab="gear"] .fblqa-panel + .gears {
+  margin-top: 2px !important;
+  padding-top: 0 !important;
+}
+
+.gear-tab .fblqa-panel + .gears .items-list,
+.tab[data-tab="gear"] .fblqa-panel + .gears .items-list {
+  margin-top: 0 !important;
+}
+
+.gear-tab .fblqa-panel ~ .gears,
+.gear-tab .fblqa-panel ~ section.gears,
+.tab[data-tab="gear"] .fblqa-panel ~ .gears,
+.tab[data-tab="gear"] .fblqa-panel ~ section.gears {
+  margin-top: 2px !important;
+  padding-top: 0 !important;
+}
+
+.gear-tab .currencies.fblqa-original-hidden,
+.tab[data-tab="gear"] .currencies.fblqa-original-hidden {
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 0 !important;
+}
+
+.fblqa-original-hidden {
+  display: none !important;
+}
+
+.fblqa-wallet-popover {
+  min-width: 176px;
+}
+
+.fblqa-currency-row {
+  grid-template-columns: 24px 72px 24px 30px;
+}
+
+.fblqa-currency-input {
+  width: 72px;
+}
+
+.fblqa-wallet-message {
+  min-height: 14px;
+  margin-top: 3px;
+  font-size: 0.75rem;
+  font-weight: 900;
+  line-height: 1.1;
+  text-align: center;
+  letter-spacing: 0.02em;
+}
+
+.fblqa-wallet-message.is-error {
+  color: #7a0000;
+}
+
+
+/* v1.5.3: preserve the system's three-track Gear layout while removing only
+ * the dead spacing introduced by its 8px row gap and bottom padding. The
+ * middle track must stay flexible so the Gear list scrolls and consumables
+ * remain visible at the bottom of the sheet at every window height. */
+.gear-tab.fblqa-compacted,
+.tab[data-tab="gear"].fblqa-compacted {
+  gap: 0 !important;
+  row-gap: 0 !important;
+  column-gap: 0 !important;
+  grid-template-rows: auto minmax(0, 1fr) auto !important;
+  grid-auto-rows: auto !important;
+  align-content: stretch !important;
+  min-height: 0 !important;
+  height: 100% !important;
+  overflow: hidden !important;
+}
+
+.gear-tab.fblqa-compacted > .fblqa-panel,
+.tab[data-tab="gear"].fblqa-compacted > .fblqa-panel {
+  min-height: 0 !important;
+  margin-bottom: 0 !important;
+  padding-bottom: 0 !important;
+  align-self: start !important;
+}
+
+.gear-tab.fblqa-compacted .fblqa-line,
+.tab[data-tab="gear"].fblqa-compacted .fblqa-line {
+  margin-bottom: 0 !important;
+}
+
+.gear-tab.fblqa-compacted > .gears,
+.gear-tab.fblqa-compacted > section.gears,
+.tab[data-tab="gear"].fblqa-compacted > .gears,
+.tab[data-tab="gear"].fblqa-compacted > section.gears {
+  min-height: 0 !important;
+  height: auto !important;
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  align-self: stretch !important;
+  overflow: hidden !important;
+}
+
+.gear-tab.fblqa-compacted > .gears > .item-list,
+.gear-tab.fblqa-compacted > section.gears > .item-list,
+.tab[data-tab="gear"].fblqa-compacted > .gears > .item-list,
+.tab[data-tab="gear"].fblqa-compacted > section.gears > .item-list {
+  min-height: 0 !important;
+  flex: 1 1 auto !important;
+  padding-top: 0 !important;
+  padding-bottom: 0 !important;
+  overflow: hidden !important;
+}
+
+.gear-tab.fblqa-compacted > .gears > .item-list > .items,
+.gear-tab.fblqa-compacted > section.gears > .item-list > .items,
+.tab[data-tab="gear"].fblqa-compacted > .gears > .item-list > .items,
+.tab[data-tab="gear"].fblqa-compacted > section.gears > .item-list > .items {
+  min-height: 0 !important;
+  flex: 1 1 auto !important;
+  overflow-x: hidden !important;
+  overflow-y: auto !important;
+}
+
+.gear-tab.fblqa-compacted > .consumables,
+.tab[data-tab="gear"].fblqa-compacted > .consumables {
+  min-height: 0 !important;
+  height: auto !important;
+  margin: 0 !important;
+  align-self: end !important;
+}
+
+.gear-tab.fblqa-compacted .gears > nav.controls.fblqa-original-hidden,
+.tab[data-tab="gear"].fblqa-compacted .gears > nav.controls.fblqa-original-hidden {
+  display: none !important;
+  margin: 0 !important;
+  padding: 0 !important;
+  border: 0 !important;
+  height: 0 !important;
+  min-height: 0 !important;
+}
+
+.gear-tab.fblqa-compacted .gears > *:first-child,
+.gear-tab.fblqa-compacted .fblqa-first-visible-gear-block,
+.gear-tab.fblqa-compacted .gears .items-list:first-child,
+.gear-tab.fblqa-compacted .gears .items-header:first-child,
+.tab[data-tab="gear"].fblqa-compacted .gears > *:first-child,
+.tab[data-tab="gear"].fblqa-compacted .fblqa-first-visible-gear-block,
+.tab[data-tab="gear"].fblqa-compacted .gears .items-list:first-child,
+.tab[data-tab="gear"].fblqa-compacted .gears .items-header:first-child {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}
+
+.gear-tab.fblqa-compacted .currencies.fblqa-original-hidden + .gears,
+.tab[data-tab="gear"].fblqa-compacted .currencies.fblqa-original-hidden + .gears {
+  margin-top: 0 !important;
+  padding-top: 0 !important;
+}

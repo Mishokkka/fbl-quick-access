@@ -1,0 +1,22 @@
+<div class="injury-row special-mor-row" data-row-kind="item" data-item-id="{{itemId}}" data-order="{{order}}">
+  <div class="injury-header">
+    {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
+    <div class="injury-title-block mor-title-block">
+      <i class="fas fa-biohazard collapse-icon"></i>
+      <img class="injury-img" src="{{img}}" title="{{name}}" />
+      <span class="condition-name mor-name-display">{{name}}</span>
+    </div>
+    <div class="mor-controls">
+      <span class="mor-label" title="{{localize 'FBLEC.Mor.CurrentTitle'}}">{{localize "FBLEC.Mor.CurrentShort"}}:</span>
+      {{#if editable}}<button class="mor-btn mor-item-x-minus">-</button>{{/if}}
+      <input class="mor-input" data-type="x" type="text" value="{{current}}" readonly>
+      {{#if editable}}<button class="mor-btn mor-item-x-plus">+</button>{{/if}}
+      <span class="mor-label" title="{{localize 'FBLEC.Mor.PermanentTitle'}}">{{localize "FBLEC.Mor.PermanentShort"}}:</span>
+      {{#if editable}}<button class="mor-btn mor-item-y-minus">-</button>{{/if}}
+      <input class="mor-input" data-type="y" type="text" value="{{permanent}}" readonly>
+      {{#if editable}}<button class="mor-btn mor-item-y-plus">+</button>{{/if}}
+    </div>
+    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Mor.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
+  </div>
+  <div class="injury-desc">{{{effect}}}</div>
+</div>

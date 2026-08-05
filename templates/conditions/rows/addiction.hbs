@@ -1,0 +1,27 @@
+<div class="injury-row special-addiction-row" data-row-kind="item" data-item-id="{{itemId}}" data-order="{{order}}">
+  <div class="injury-header">
+    {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
+    <div class="injury-title-block addiction-title-block">
+      <i class="fas fa-pills collapse-icon addiction-collapse-toggle" title="{{localize 'FBLEC.UI.ToggleDescription'}}"></i>
+      <img class="injury-img" src="{{img}}" title="{{name}}" />
+      <span class="condition-name addiction-name-display">{{name}}</span>
+    </div>
+    <div class="addiction-controls">
+      {{#if editable}}
+        <select class="addiction-severity-select" title="{{localize 'FBLEC.Addiction.Severity'}}">
+          {{#each severityOptions}}
+            <option value="{{value}}" {{#if selected}}selected{{/if}}>{{label}}</option>
+          {{/each}}
+        </select>
+      {{/if}}
+      <span class="addiction-status" title="{{statusTitle}}">{{statusText}}</span>
+      {{#if editable}}
+        <button class="addiction-btn addiction-morning" title="{{localize 'FBLEC.Addiction.Morning'}}"><i class="fas fa-sun"></i></button>
+        <button class="addiction-btn addiction-advance" title="{{localize 'FBLEC.Addiction.Advance'}}"><i class="fas fa-step-forward"></i></button>
+        <button class="addiction-btn addiction-relapse" title="{{localize 'FBLEC.Addiction.Relapse'}}"><i class="fas fa-syringe"></i></button>
+      {{/if}}
+    </div>
+    {{#if editable}}<button class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Addiction.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
+  </div>
+  <div class="injury-desc">{{{effect}}}</div>
+</div>

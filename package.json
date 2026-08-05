@@ -1,0 +1,8 @@
+{
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test dev-tests/*.test.mjs"
+  },
+  "version": "1.6.1"
+}

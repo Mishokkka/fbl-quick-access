@@ -1,0 +1,33 @@
+/* FBL EC Prosthetics compatibility. Extension cards do not expose deletion,
+   because removing the embedded item directly would desync the body map. */
+.fblqa-gear-card-extension .fblqa-gear-card-bottom,
+.gear-tab .fblqa-gear-card-extension .fblqa-gear-card-bottom,
+.tab[data-tab="gear"] .fblqa-gear-card-extension .fblqa-gear-card-bottom {
+  grid-template-columns: repeat(3, minmax(0, 1fr)) 18px;
+}
+
+.fblqa-gear-card-extension .fblqa-gear-card-bottom::after {
+  content: "";
+}
+
+.fblecp-extensions-category > tbody > tr.fblecp-extension-item.fblqa-card-source-hidden,
+.fblecp-extensions-category > tbody > tr.fblecp-extension-item.fblqa-card-source-hidden > td {
+  display: none !important;
+}
+
+.fblecp-extensions-category > tbody > tr.fblqa-gear-card-grid-row {
+  display: table-row !important;
+}
+
+.fblecp-extensions-category > tbody > tr.fblqa-gear-card-grid-row > td {
+  display: table-cell !important;
+  padding: 1px 0 2px 0 !important;
+}
+
+.fblecp-extensions-category .fblqa-gear-card-grid {
+  display: grid;
+}
+
+.fblecp-extensions-category .fblqa-gear-card {
+  display: flex;
+}

@@ -1,0 +1,11 @@
+<div class="tab conditions-tab fblec-stat-tab fblec-columns-{{layoutColumns}} {{#unless editable}}fblec-readonly{{/unless}}" data-group="{{tabGroup}}" data-tab="{{tabId}}" data-layout-columns="{{layoutColumns}}">
+  <div class="conditions-wrapper">
+    <div class="conditions-list">{{{rowsHtml}}}{{{providerSectionsHtml}}}</div>
+    <div class="conditions-controls">
+      <button class="layout-toggle" type="button" data-columns="{{nextLayoutColumns}}" title="{{layoutButtonTitle}}">{{layoutButtonLabel}}</button>
+      {{#if editable}}
+        <button class="add-condition" type="button">{{localize "FBLEC.UI.AddCustom"}}</button>
+      {{/if}}
+    </div>
+  </div>
+</div>
