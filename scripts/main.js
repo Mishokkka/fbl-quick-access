@@ -10,7 +10,7 @@ import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
 import { registerWalletListeners } from "./wallet.js";
 import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
 import { applyDecorativeBorderMode, applyItemSheetNoBorders, compactMainTab, compactSheetHeader, isDecorativeBordersCompact, setupDecorativeBorderToggle } from "./main-tab.js";
-import { setupStartWillpowerButton } from "./willpower.js";
+import { getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
 import { openRestDialog, setupRestButton } from "./rest.js";
 import { buildNewDayPlan, buildNewDayPlanWithProviders, openNewDayDialog } from "./new-day.js";
 import { removeChargenButton } from "./header-controls.js";
@@ -37,7 +37,8 @@ Hooks.once("init", () => {
       capabilities: Object.freeze({
         statProviders: true,
         newDayProviders: true,
-        activeGmExecution: true
+        activeGmExecution: true,
+        characterImport: true
       }),
       refreshGearPresentation,
       registerStatProvider,
@@ -56,6 +57,8 @@ Hooks.once("init", () => {
       getReputationEntries,
       saveReputationEntries,
       openReputationDialog,
+      getWillpowerTalents,
+      saveWillpowerTalents,
       pruneActorReferences,
       pruneWorldActorReferences
     };

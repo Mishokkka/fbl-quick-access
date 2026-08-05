@@ -171,3 +171,33 @@ Rules:
 - Payloads and results must be JSON-serializable plain data.
 - Registered handlers are privileged code. Each handler must validate the requesting user, document permission, ids, and expected payload shape.
 - The active GM is selected deterministically from active GM users by id, so every client addresses the same GM.
+
+
+## Character-import helpers
+
+Quick Access exposes the same structured fields used by its Reputation and
+start-Willpower interfaces. Importers should prefer these methods instead of
+writing module flags directly:
+
+```js
+const qa = game.modules.get("fbl-quick-access")?.api;
+
+await qa.saveReputationEntries(actor, [
+  { id: "stable-id", amount: 2, description: "Known monster hunter", location: "Noctis" }
+], { render: false });
+
+await qa.saveWillpowerTalents(actor, {
+  kinTalentId: importedKinTalent.id,
+  professionalTalentId: importedPath.id
+}, { render: false });
+```
+
+Read the current values with:
+
+```js
+qa.getReputationEntries(actor);
+qa.getWillpowerTalents(actor);
+```
+
+`qa.capabilities.characterImport` is `true` when these helpers are available.
+The talent ids are Actor Embedded Item ids, not compendium ids or catalog ids.
