@@ -6,6 +6,7 @@ export const FLAG_GEAR_ORDER = "gearOrder";
 export const FLAG_COMPACT_BORDERS = "compactDecorativeBorders";
 export const FLAG_SHORT_REST_RECOVERY = "shortRestRecovery";
 export const FLAG_REPUTATION_ENTRIES = "reputationEntries";
+export const FLAG_BIOGRAPHY_PROFILE = "biographyProfile";
 export const SYSTEM_ID = "forbidden-lands";
 
 export const SETTINGS = Object.freeze({

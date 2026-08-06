@@ -205,3 +205,69 @@ The talent ids are Actor Embedded Item ids, not compendium ids or catalog ids.
 Each non-empty id must resolve to a `talent` Item embedded in the same Actor, and
 the Kin and Professional selections must be different. Invalid selections reject
 with a `TypeError`; pass `null` or an empty string to clear a selection.
+
+## Biography profile helpers
+
+Quick Access 1.7.0 replaces the native BIO tab presentation with a structured
+biography dossier and a sliding Pilgrim Card. Importers can write the complete
+profile through the public API:
+
+```js
+await qa.saveBiographyProfile(actor, {
+  identity: {
+    name: "Lucien",
+    kin: "Half-Elf",
+    kinVariant: "Conquist",
+    profession: "Sorcerer",
+    issuingCountry: "Sangren",
+    origin: "Sirosten",
+    religion: "Steel Faith",
+    birthDate: { day: 12, month: "Теплорост", year: 850, label: "12 Теплороста 850 П.П." }
+  },
+  concept: "Investigator and reluctant miracle-worker",
+  pride: "...",
+  darkSecret: "...",
+  physical: {
+    appearance: "...",
+    height: "...",
+    weight: "...",
+    skin: "...",
+    eyes: "...",
+    hair: "...",
+    distinguishingMarks: "..."
+  },
+  background: "...",
+  family: "...",
+  motivation: "...",
+  partyConnections: "...",
+  publicNote: "...",
+  languages: [
+    { id: "lang-1", languageId: "damian", name: "Дамийский", level: "full", cost: 2, native: false }
+  ],
+  questions: {
+    bestFriend: "...",
+    favoriteFood: "...",
+    prejudices: "...",
+    aristocracy: "...",
+    favoriteMemory: "...",
+    oneWish: "...",
+    greatestFear: "...",
+    notes: "..."
+  },
+  rumors: [
+    { id: "rumor-1", name: "Ничак", text: "...", truth: "uncertain" }
+  ]
+}, { render: false });
+```
+
+Read the normalized profile with:
+
+```js
+qa.getBiographyProfile(actor);
+```
+
+`qa.capabilities.biographyProfile` is `true` when these methods are available.
+The API also synchronizes Actor name and the native `kin`, `profession`,
+`pride`, `darkSecret`, and `note` system fields. The legacy `face`, `body`, and
+`clothing` fields are no longer shown by Quick Access; pre-existing content is
+kept in a read-only archive inside the redesigned BIO tab.

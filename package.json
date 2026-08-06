@@ -4,5 +4,5 @@
   "scripts": {
     "test": "node --test dev-tests/*.test.mjs"
   },
-  "version": "1.6.2"
+  "version": "1.7.1"
 }

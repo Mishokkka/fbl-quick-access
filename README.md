@@ -1,4 +1,13 @@
-# Forbidden Lands Quick Access Gear
+# Forbidden Lands Quick Access
+
+## Version 1.7.1
+
+- Replaced the native BIO presentation with a compact two-column personal dossier.
+- Added the sliding **Pilgrim Card** with identity, kin, subrace, issuing country, portrait, and physical-description fields.
+- Added structured languages, character questions, rumors, background, family, Pride, Dark Secret, motivation, connections, and public-note fields.
+- Preserved legacy Face, Body, and Clothing text in a read-only archive instead of discarding it.
+- Added public `getBiographyProfile()` and `saveBiographyProfile()` integration helpers for character importers.
+- Retained the structured Reputation and start-Willpower import helpers introduced in 1.6.2.
 
 
 ## 1.6.2
@@ -38,6 +47,8 @@ Small quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Borderless item sheets.
 - Start-of-session Willpower helper using a manually selected Kin Talent and Professional Talent.
 - Integrated Expanded Conditions STAT tab from the former `forbidden-lands-expanded-conditions` module.
+- Redesigned BIO tab with a two-column personal dossier and a sliding, editable Pilgrim Card.
+- Structured language and rumor rows with add/remove controls; imported language learning costs remain visible.
 
 ## Wallet behavior
 
@@ -65,6 +76,7 @@ Actor flags:
 - `flags.fbl-quick-access.compactDecorativeBorders`
 - `flags.fbl-quick-access.willpowerTalents`
 - `flags.fbl-quick-access.shortRestRecovery`
+- `flags.fbl-quick-access.biographyProfile`
 - `flags.fbl-quick-access.conditions.*` for the integrated STAT tab and Expanded Conditions data
 
 Client-side `localStorage`:
@@ -111,6 +123,14 @@ game.modules.get("fl-firearms").api.getFirearmTooltipData(item)
 If `fl-firearms` is inactive, missing, or does not expose the method, item tooltips keep working without the firearm section. This module does not parse firearm item-sheet HTML and does not read `flags.fl-firearms` directly.
 
 
+## Redesigned BIO and Pilgrim Card
+
+The native Forbidden Lands BIO tab is replaced at render time; system templates and files are not modified. The visible dossier uses two columns and stores structured data in `flags.fbl-quick-access.biographyProfile`.
+
+The Pilgrim Card slides beside the actor sheet and contains the actor portrait, name, kin, subrace, issuing country, birth date, overall appearance, height, weight, skin, eyes, hair, and distinguishing marks. The main dossier contains Concept, Pride, Dark Secret, Background, Family, motivation, party connections, the public Note, languages, character questions, and rumors.
+
+Legacy Face, Body, and Clothing values are not shown as active editing fields. Existing non-empty values are copied into a read-only archive on the new BIO tab so an upgrade does not silently discard old character text.
+
 ## Public API
 
 The module exposes data-oriented helpers at:
@@ -119,7 +139,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.6.2:
+Available methods in 1.7.1:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`
@@ -138,6 +158,8 @@ Available methods in 1.6.2:
 - `getReputationEntries(actor)`
 - `saveReputationEntries(actor, entries, options?)`
 - `openReputationDialog(app, actor)`
+- `getBiographyProfile(actor)`
+- `saveBiographyProfile(actor, profile, options?)`
 - `getWillpowerTalents(actor)`
 - `saveWillpowerTalents(actor, talents, options?)`
 - `pruneActorReferences(actor)`

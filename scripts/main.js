@@ -21,6 +21,7 @@ import { handleStatProviderActorDeleted, refreshStat, registerStatProvider } fro
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
+import { closeBiographyDrawer, getBiographyProfile, saveBiographyProfile, setupBiographyTab } from "./biography.js";
 
 Hooks.once("init", () => {
   registerCoreSettings();
@@ -38,7 +39,8 @@ Hooks.once("init", () => {
         statProviders: true,
         newDayProviders: true,
         activeGmExecution: true,
-        characterImport: true
+        characterImport: true,
+        biographyProfile: true
       }),
       refreshGearPresentation,
       registerStatProvider,
@@ -57,6 +59,8 @@ Hooks.once("init", () => {
       getReputationEntries,
       saveReputationEntries,
       openReputationDialog,
+      getBiographyProfile,
+      saveBiographyProfile,
       getWillpowerTalents,
       saveWillpowerTalents,
       pruneActorReferences,
@@ -85,6 +89,8 @@ Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInject
 Hooks.on("renderActorSheet", renderQuickAccess);
 Hooks.on("renderActorSheet", renderExpandedConditionsSafely);
 Hooks.on("renderApplicationV2", renderQuickAccess);
+Hooks.on("closeActorSheet", closeQuickAccessActorSheet);
+Hooks.on("closeApplicationV2", closeQuickAccessActorSheet);
 
 // Item sheets use a separate visual cleanup pipeline. Do not register it on
 // renderApplicationV1 as well, otherwise V1 item sheets can be processed twice.
@@ -116,6 +122,7 @@ function renderQuickAccess(app, htmlOrElement) {
     setupStartWillpowerButton(app, actor, root);
     setupRestButton(app, actor, root);
     setupReputationManager(app, actor, root);
+    setupBiographyTab(app, actor, root);
 
     const gearTab = findGearTab(root);
     if (gearTab) setupGearTab(app, actor, gearTab);
@@ -216,4 +223,9 @@ function renderItemSheetVisuals(app, htmlOrElement) {
   } catch (error) {
     console.error(`${MODULE_ID} | item sheet visual cleanup failed`, error);
   }
+}
+
+function closeQuickAccessActorSheet(app) {
+  const actor = getActorFromApp(app);
+  if (actor) closeBiographyDrawer(actor);
 }
