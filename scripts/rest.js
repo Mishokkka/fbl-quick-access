@@ -4,6 +4,7 @@ import { qaLocalize } from "./i18n.js";
 import { findConditionControl, findRestButton } from "./sheet-adapter/forbidden-lands-v1.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
+import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.js";
 import { openNewDayDialog } from "./new-day.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
@@ -138,7 +139,7 @@ export async function openRestDialog(app, actor, root = null) {
     canResetShortRest: canResetShortRestLimit(actor)
   });
 
-  if (!globalThis.Dialog) {
+  if (!hasFoundryDialogApi()) {
     ui.notifications?.warn?.(qaLocalize("Rest.DialogUnavailable", "Окно отдыха недоступно в этом окружении."));
     return;
   }
@@ -152,7 +153,7 @@ export async function openRestDialog(app, actor, root = null) {
       resolve(value);
     };
 
-    dialog = new Dialog({
+    dialog = createFoundryDialog({
       title: qaLocalize("Rest.Title", "Отдых: {actor}", { actor: actor?.name ?? "" }),
       content,
       buttons: {

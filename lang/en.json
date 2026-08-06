@@ -47,7 +47,8 @@
       "Remove": "Remove from Quick Access",
       "Title": "Quick Access: {capacity}/{maxSlots} slots",
       "TypeReject": "Quick Access accepts only Weapon, Armor, Gear, and Raw Material items",
-      "WeightReject": "Quick Access accepts only items of Normal weight or lighter"
+      "WeightReject": "Quick Access accepts only items of Normal weight or lighter",
+      "OpenItem": "Open item: {name}"
     },
     "Tooltip": {
       "Ammo": "Ammo",
@@ -128,7 +129,8 @@
         "RecipientOffline": "No active player is available to confirm this transfer.",
         "RecipientDialogUnavailable": "The recipient could not open the confirmation dialog.",
         "RecipientTimeout": "The recipient did not answer in time.",
-        "InvalidRequest": "The transfer request failed validation."
+        "InvalidRequest": "The transfer request failed validation.",
+        "IdentityProofFailed": "The transfer could not verify the sender identity. Retry after the clients finish connecting."
       },
       "CurrencyAbbr": {
         "Gold": "GP",
@@ -253,6 +255,10 @@
       "PostNoChangeRestCards": {
         "Name": "Post no-change Rest cards",
         "Hint": "Post a chat card when Rest completes without changing the character sheet."
+      },
+      "PilgrimCardFont": {
+        "Name": "Pilgrim Card font",
+        "Hint": "Choose the font used inside Pilgrim Cards from the fonts available in Foundry VTT."
       }
     },
     "NewDay": {
@@ -339,6 +345,95 @@
       "ChatChecked": "Checked {checked} of {total} points",
       "NoteHeading": "Reputation",
       "NoteEmpty": "No Reputation has been recorded yet."
+    },
+    "Bio": {
+      "Fields": {
+        "Pride": "Pride",
+        "DarkSecret": "Dark Secret",
+        "Background": "Background",
+        "Family": "Family",
+        "Motivation": "Motivation for Adventure",
+        "PartyConnections": "Connection to the Party"
+      },
+      "Questions": {
+        "BestFriend": "Best friend or closest person",
+        "FavoriteFood": "Favorite food and why",
+        "Prejudices": "Prejudices about kin and species",
+        "Aristocracy": "Attitude toward the aristocracy",
+        "FavoriteMemory": "Favorite memory",
+        "OneWish": "One wish",
+        "GreatestFear": "Greatest fear",
+        "Notes": "Additional answers and notes",
+        "Title": "Answers to Questions"
+      },
+      "LanguageLevels": {
+        "Basic": "Basic",
+        "Full": "Fluent",
+        "Academic": "Academic"
+      },
+      "Languages": {
+        "Title": "Languages",
+        "Add": "Add language",
+        "Empty": "No languages recorded.",
+        "Language": "Language",
+        "NamePlaceholder": "Name",
+        "Level": "Level",
+        "Cost": "Cost",
+        "Native": "Native",
+        "Remove": "Remove language"
+      },
+      "Rumors": {
+        "Title": "Rumors",
+        "Add": "Add rumor",
+        "Empty": "No rumors recorded.",
+        "Source": "Name or source",
+        "SourcePlaceholder": "Who tells it",
+        "Text": "Rumor",
+        "Remove": "Remove rumor"
+      },
+      "Archive": {
+        "Button": "BIO Archive",
+        "Title": "Original BIO Archive",
+        "Face": "Face",
+        "Body": "Body",
+        "Clothing": "Clothing",
+        "Copy": "Copy",
+        "CopyField": "Copy: {field}",
+        "Copied": "Copied"
+      },
+      "Pilgrim": {
+        "Button": "Pilgrim Card",
+        "Title": "Pilgrim Card",
+        "Close": "Close",
+        "Attach": "Attach to sheet",
+        "Detach": "Detach from sheet",
+        "AirIslands": "Air Islands",
+        "Stamp": "APPROVED",
+        "Name": "Name",
+        "Kin": "Kin",
+        "KinVariant": "Sub-kin",
+        "IssuingCountry": "Issuing country",
+        "Appearance": "General appearance",
+        "Height": "Height",
+        "Weight": "Weight",
+        "Skin": "Skin",
+        "Eyes": "Eyes",
+        "Hair": "Hair",
+        "DistinguishingMarks": "Distinguishing marks",
+        "BirthDateMissing": "Birth date not recorded",
+        "Validity": "Valid in all ports"
+      },
+      "PrideRoll": "Roll Pride",
+      "Save": {
+        "Saving": "Saving…",
+        "Saved": "Saved",
+        "Error": "Save failed",
+        "Button": "Save"
+      },
+      "Expand": "Expand",
+      "Collapse": "Collapse",
+      "Edit": "Edit",
+      "Cancel": "Cancel"
     }
   },
   "FBLEC.UI.AddCustom": "+ condition",

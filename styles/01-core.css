@@ -59,7 +59,7 @@
   min-height: 28px;
   height: 28px;
   min-width: 78px;
-  padding: 1px 18px 1px 2px;
+  padding: 1px 24px 1px 2px;
   border: 1px dashed var(--color-border-light-tertiary, #9a8a6a);
   border-radius: 4px;
   display: inline-flex;
@@ -69,6 +69,37 @@
   gap: 0.22rem;
   overflow: hidden;
   text-align: left;
+}
+
+
+.fblqa-slot-open {
+  min-width: 0;
+  min-height: 24px;
+  height: 24px;
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0.22rem;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  box-shadow: none;
+}
+
+.fblqa-slot-open:hover,
+.fblqa-slot-open:active {
+  background: rgba(255, 255, 255, 0.06);
+  box-shadow: none;
+}
+
+.fblqa-slot-open:focus-visible {
+  outline: 2px solid var(--color-shadow-primary, #ff6400);
+  outline-offset: -1px;
 }
 
 .fblqa-filled {
@@ -124,15 +155,16 @@
 
 .fblqa-remove {
   position: absolute;
-  top: 4px;
-  right: 3px;
-  width: 14px;
-  height: 14px;
-  min-height: 14px;
+  top: 3px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  min-width: 20px;
+  min-height: 20px;
   padding: 0;
   border-radius: 50%;
-  line-height: 11px;
-  font-size: 0.68rem;
+  line-height: 18px;
+  font-size: 0.82rem;
   cursor: pointer;
 }
 
@@ -392,4 +424,33 @@
 .tab[data-tab="gear"].fblqa-compacted .currencies.fblqa-original-hidden + .gears {
   margin-top: 0 !important;
   padding-top: 0 !important;
+}
+
+/* Keep ten-slot bars usable when the actor sheet itself is narrow. */
+.fblqa-panel {
+  width: 100%;
+  container-type: inline-size;
+  container-name: fblqa-quick-panel;
+}
+
+.fblqa-slots {
+  grid-template-columns: repeat(var(--fblqa-responsive-slot-columns, var(--fblqa-slot-columns, 1)), minmax(0, 1fr));
+}
+
+@container fblqa-quick-panel (max-width: 720px) {
+  .fblqa-slots-balanced {
+    --fblqa-responsive-slot-columns: 4;
+  }
+}
+
+@container fblqa-quick-panel (max-width: 560px) {
+  .fblqa-slots-balanced {
+    --fblqa-responsive-slot-columns: 3;
+  }
+}
+
+@container fblqa-quick-panel (max-width: 360px) {
+  .fblqa-slots-balanced {
+    --fblqa-responsive-slot-columns: 2;
+  }
 }

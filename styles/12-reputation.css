@@ -12,6 +12,14 @@
   cursor: pointer;
 }
 
+.fblqa-reputation-dialog .window-header .close,
+.fblqa-reputation-dialog .window-header .header-button.close,
+.fblqa-reputation-dialog .window-header [data-action="close"],
+.app.fblqa-reputation-dialog .window-header .close,
+.app.fblqa-reputation-dialog .window-header [data-action="close"] {
+  color: #111 !important;
+}
+
 .fblqa-reputation-dialog .window-content,
 .app.fblqa-reputation-dialog .window-content {
   padding: 10px;

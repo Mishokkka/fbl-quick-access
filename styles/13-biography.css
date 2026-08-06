@@ -1,381 +1,898 @@
-/* Redesigned BIO tab and the sliding Pilgrim Card. */
+/* Compact one-column BIO tab and detachable Pilgrim Card. */
 .fblqa-biography-tab {
+  position: relative;
   box-sizing: border-box;
   overflow-y: auto !important;
   overflow-x: hidden !important;
-  padding: 0.45rem !important;
+  overflow-anchor: none;
+  padding: 4px 9px 6px !important;
+}
+
+.fblqa-biography-tab *,
+.fblqa-pilgrim-drawer * {
+  box-sizing: border-box;
 }
 
 .fblqa-bio-shell {
+  --fblqa-bio-ink: var(--color-text-primary, #29241f);
+  --fblqa-bio-muted: rgba(51, 43, 35, 0.72);
+  --fblqa-bio-line: rgba(74, 54, 37, 0.24);
   position: relative;
-  min-height: 100%;
-  color: var(--color-text-primary, #25211d);
-}
-
-.fblqa-bio-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.65rem;
-  margin-bottom: 0.45rem;
-  padding: 0.48rem 0.62rem;
-  border: 1px solid rgba(70, 49, 30, 0.28);
-  border-radius: 5px;
-  background:
-    linear-gradient(100deg, rgba(112, 52, 37, 0.18), transparent 44%),
-    rgba(239, 232, 216, 0.72);
-}
-
-.fblqa-bio-header h2 {
-  margin: 0;
-  font-size: 1.28rem;
-  line-height: 1.1;
-}
-
-.fblqa-bio-kicker {
-  display: block;
-  margin-bottom: 0.08rem;
-  font-size: 0.65rem;
-  font-weight: 800;
-  letter-spacing: 0.18em;
-  text-transform: uppercase;
-  opacity: 0.62;
-}
-
-.fblqa-bio-header-actions,
-.fblqa-bio-section-head {
-  display: flex;
-  align-items: center;
-  gap: 0.32rem;
-}
-
-.fblqa-bio-header-actions button,
-.fblqa-bio-section-head button {
-  min-height: 27px;
-  padding: 0.22rem 0.48rem;
-  border: 1px solid rgba(62, 45, 30, 0.34);
-  border-radius: 4px;
-  background: rgba(246, 241, 229, 0.72);
-  font-size: 0.75rem;
-  font-weight: 700;
-}
-
-.fblqa-pilgrim-trigger {
-  background: rgba(104, 47, 35, 0.88) !important;
-  color: #f7ead2 !important;
-}
-
-.fblqa-bio-columns {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  gap: 0.45rem;
-  align-items: start;
-}
-
-.fblqa-bio-column {
-  display: grid;
-  gap: 0.45rem;
-  min-width: 0;
-}
-
-.fblqa-bio-section {
-  min-width: 0;
-  padding: 0.48rem;
-  border: 1px solid rgba(66, 48, 31, 0.24);
-  border-radius: 5px;
-  background: rgba(238, 234, 224, 0.76);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
-}
-
-.fblqa-bio-section-accent {
-  background:
-    linear-gradient(145deg, rgba(145, 55, 41, 0.10), transparent 55%),
-    rgba(238, 234, 224, 0.8);
-}
-
-.fblqa-bio-section > h3,
-.fblqa-bio-section-head h3 {
-  margin: 0 0 0.38rem;
-  font-size: 0.92rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-
-.fblqa-bio-section-head {
-  justify-content: space-between;
-  margin-bottom: 0.34rem;
-}
-
-.fblqa-bio-section-head h3 { margin: 0; }
-.fblqa-bio-section-head button { width: 27px; padding: 0; }
-
-.fblqa-bio-field {
-  display: grid;
-  gap: 0.16rem;
-  min-width: 0;
-  margin-bottom: 0.36rem;
-}
-
-.fblqa-bio-field:last-child { margin-bottom: 0; }
-
-.fblqa-bio-field > span {
-  font-size: 0.68rem;
-  font-weight: 800;
-  letter-spacing: 0.035em;
-  opacity: 0.72;
-}
-
-.fblqa-bio-field input,
-.fblqa-bio-field textarea,
-.fblqa-language-row input,
-.fblqa-language-row select,
-.fblqa-rumor-row input,
-.fblqa-rumor-row select,
-.fblqa-rumor-row textarea {
-  box-sizing: border-box;
   width: 100%;
   min-width: 0;
-  border: 1px solid rgba(61, 45, 32, 0.28);
+  min-height: 100%;
+  color: var(--fblqa-bio-ink);
+  font-family: var(--font-primary, "Signika", sans-serif);
+  font-size: 13px;
+  line-height: 1.24;
+}
+
+.fblqa-bio-stack,
+.fblqa-question-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+  min-width: 0;
+}
+
+.fblqa-bio-block,
+.fblqa-language-section,
+.fblqa-rumor-section,
+.fblqa-questions-section {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.fblqa-bio-section-body[hidden] {
+  display: none !important;
+}
+
+.fblqa-bio-heading-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+  margin: 0 0 1px;
+}
+
+.fblqa-bio-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  margin: 0 !important;
+  padding: 2px 2px 1px !important;
+  border: 0 !important;
+  border-bottom: 1px solid var(--fblqa-bio-line) !important;
+  background: transparent !important;
+  color: var(--fblqa-bio-ink) !important;
+  font-family: inherit;
+  font-size: 15px !important;
+  font-weight: 700;
+  letter-spacing: 0.035em;
+  line-height: 1.08 !important;
+  text-align: left;
+  text-transform: uppercase;
+  box-shadow: none !important;
+}
+
+.fblqa-bio-heading-row.is-subheading {
+  margin-top: 1px;
+}
+
+.fblqa-bio-heading-row.is-subheading .fblqa-bio-title {
+  padding: 1px 2px !important;
+  border-bottom-color: rgba(74, 54, 37, 0.14) !important;
+  color: var(--fblqa-bio-muted) !important;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  text-transform: none;
+}
+
+.fblqa-bio-collapse,
+.fblqa-bio-heading-action,
+.fblqa-pride-roll,
+.fblqa-language-row > button,
+.fblqa-rumor-row > button,
+.fblqa-bio-actions button,
+.fblqa-legacy-grid article > header button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 24px;
+  min-width: 24px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 1px solid rgba(70, 50, 33, 0.26);
   border-radius: 3px;
-  background: rgba(255, 253, 247, 0.72);
+  background: rgba(249, 246, 237, 0.82);
   color: inherit;
+  font-family: var(--font-primary, "Signika", sans-serif);
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: none;
 }
 
-.fblqa-bio-field textarea,
-.fblqa-rumor-row textarea {
-  resize: vertical;
-  line-height: 1.25;
+.fblqa-bio-collapse {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  border: 0;
+  background: transparent;
+  color: var(--fblqa-bio-muted);
 }
 
-.fblqa-bio-pair,
-.fblqa-question-grid,
-.fblqa-pilgrim-pair,
-.fblqa-pilgrim-details {
+.fblqa-bio-collapse:hover {
+  background: rgba(80, 57, 38, 0.08);
+}
+
+.fblqa-pride-roll-slot {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  width: 31px;
+  min-width: 31px;
+  height: 29px;
+}
+
+.fblqa-pride-roll {
+  position: static !important;
+  inset: auto !important;
+  float: none !important;
+  transform: none !important;
+  width: 31px;
+  min-width: 31px;
+  height: 29px;
+  min-height: 29px;
+  color: #6f281f;
+  font-size: 17px;
+}
+
+.fblqa-native-pride-roll-source[hidden] {
+  display: none !important;
+}
+
+.fblqa-bio-field,
+.fblqa-row-field {
+  display: grid;
+  grid-template-rows: auto auto;
+  gap: 1px;
+  min-width: 0;
+  margin: 0;
+}
+
+.fblqa-bio-field > span,
+.fblqa-row-field > span {
+  display: block;
+  min-width: 0;
+  margin: 0;
+  color: var(--fblqa-bio-muted);
+  font-size: 10px;
+  font-weight: 650;
+  line-height: 1.08;
+}
+
+.fblqa-biography-tab .fblqa-bio-field input,
+.fblqa-biography-tab .fblqa-language-row input,
+.fblqa-biography-tab .fblqa-language-row select,
+.fblqa-biography-tab .fblqa-rumor-row input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 26px !important;
+  min-height: 26px !important;
+  margin: 0;
+  padding: 2px 5px;
+  border: 1px solid rgba(68, 50, 35, 0.25);
+  border-radius: 2px;
+  background: rgba(255, 254, 249, 0.76);
+  color: var(--fblqa-bio-ink);
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.2;
+  box-shadow: inset 0 1px 2px rgba(61, 42, 27, 0.04);
+}
+
+/* Rich text fields stay as lightweight previews until the user starts editing.
+   Only one native Foundry ProseMirror is mounted at a time, which avoids the
+   layout feedback loops and heavy DOM cost of a dozen simultaneous editors. */
+.fblqa-rich-control {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+}
+
+.fblqa-rich-preview {
+  display: block;
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  min-height: 25px;
+  margin: 0;
+  padding: 2px 28px 2px 2px;
+  color: var(--fblqa-bio-ink);
+  line-height: 1.28;
+  white-space: normal;
+  overflow: visible;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  cursor: text;
+}
+
+.fblqa-rich-field.is-compact .fblqa-rich-preview {
+  min-height: 22px;
+}
+
+.fblqa-rich-preview[hidden] {
+  display: none !important;
+}
+
+.fblqa-rich-preview p,
+.fblqa-rich-preview ul,
+.fblqa-rich-preview ol,
+.fblqa-rich-preview blockquote {
+  max-width: 100%;
+  margin-top: 0.12em;
+  margin-bottom: 0.12em;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.fblqa-rich-preview p:first-child,
+.fblqa-rich-preview ul:first-child,
+.fblqa-rich-preview ol:first-child,
+.fblqa-rich-preview blockquote:first-child { margin-top: 0; }
+
+.fblqa-rich-preview p:last-child,
+.fblqa-rich-preview ul:last-child,
+.fblqa-rich-preview ol:last-child,
+.fblqa-rich-preview blockquote:last-child { margin-bottom: 0; }
+
+.fblqa-rich-edit {
+  position: absolute;
+  z-index: 2;
+  top: 1px;
+  right: 1px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  min-width: 23px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--fblqa-bio-muted);
+  opacity: 0.45;
+  box-shadow: none;
+}
+
+.fblqa-rich-control:hover .fblqa-rich-edit,
+.fblqa-rich-edit:focus-visible {
+  background: rgba(80, 57, 38, 0.08);
+  opacity: 1;
+}
+
+.fblqa-rich-edit[hidden] {
+  display: none;
+}
+
+.fblqa-rich-editor-shell {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 3px;
+  width: 100%;
+  min-width: 0;
+  margin: 1px 0 2px;
+}
+
+.fblqa-rich-editor-shell prose-mirror {
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  height: var(--fblqa-editor-height, 132px);
+  min-height: 112px;
+  max-height: 260px;
+  margin: 0;
+  overflow: hidden;
+}
+
+.fblqa-rich-editor-shell prose-mirror > .editor-content {
+  display: none;
+}
+
+.fblqa-rich-editor-shell prose-mirror .editor-container {
+  box-sizing: border-box;
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-width: 100%;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
+}
+
+.fblqa-rich-editor-shell prose-mirror menu,
+.fblqa-rich-editor-shell prose-mirror .prosemirror-menu,
+.fblqa-rich-editor-shell prose-mirror .editor-menu {
+  box-sizing: border-box;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  width: 100%;
+  min-width: 0;
+  min-height: 34px;
+  max-height: 68px;
+  margin: 0;
+  padding: 2px 4px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  align-content: flex-start;
+}
+
+.fblqa-rich-editor-shell prose-mirror .ProseMirror,
+.fblqa-rich-editor-shell prose-mirror [contenteditable="true"] {
+  box-sizing: border-box;
+  display: block;
+  flex: 1 1 auto;
+  width: 100%;
+  min-width: 0;
+  min-height: 44px;
+  max-width: 100%;
+  height: auto;
+  margin: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.fblqa-rich-editor-shell prose-mirror .ProseMirror *,
+.fblqa-rich-editor-shell prose-mirror [contenteditable="true"] * {
+  max-width: 100%;
+  white-space: inherit;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.fblqa-rich-editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 4px;
+  min-width: 0;
+}
+
+.fblqa-rich-editor-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  width: auto;
+  min-width: 0;
+  height: 24px;
+  min-height: 24px;
+  margin: 0;
+  padding: 1px 7px;
+  border: 1px solid rgba(70, 50, 33, 0.26);
+  border-radius: 3px;
+  background: rgba(249, 246, 237, 0.82);
+  color: inherit;
+  font-family: var(--font-primary, "Signika", sans-serif);
+  font-size: 11px;
+  line-height: 1;
+  box-shadow: none;
+}
+
+.fblqa-bio-list {
+  display: grid;
+  gap: 0;
+  min-width: 0;
+}
+
+.fblqa-language-list {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0.38rem;
+  gap: 4px 8px;
+  align-items: end;
+  padding: 2px 0 1px;
 }
 
-.fblqa-bio-list { display: grid; gap: 0.28rem; }
+.fblqa-language-row,
+.fblqa-rumor-row {
+  min-width: 0;
+  padding: 2px 0 4px;
+  margin: 0;
+  border: 0;
+  border-bottom: 1px solid rgba(78, 57, 39, 0.14);
+  background: transparent;
+}
 
 .fblqa-language-row {
   display: grid;
-  grid-template-columns: minmax(90px, 1.2fr) 92px 62px auto 24px;
-  gap: 0.24rem;
-  align-items: center;
+  grid-template-columns: minmax(72px, 1.25fr) minmax(122px, 0.95fr) 48px 22px;
+  gap: 4px;
+  align-items: end;
+  width: 100%;
+  max-width: 100%;
+  padding: 2px 0 3px;
+}
+
+.fblqa-language-row.is-wide {
+  grid-column: 1 / -1;
+}
+
+.fblqa-language-level select {
+  min-width: 0;
+  padding-right: 24px;
+  font-size: 11px;
+  text-overflow: ellipsis;
+}
+
+.fblqa-cost-field input { text-align: center; }
+
+.fblqa-row-remove {
+  color: rgba(101, 36, 31, 0.82) !important;
 }
 
 .fblqa-rumor-row {
   display: grid;
-  grid-template-columns: minmax(95px, 0.65fr) minmax(150px, 1.7fr) 104px 24px;
-  gap: 0.24rem;
-  align-items: start;
+  grid-template-columns: minmax(0, 1fr) 24px;
+  gap: 4px;
+  align-items: end;
 }
 
-.fblqa-language-row > button,
-.fblqa-rumor-row > button {
-  width: 24px;
-  min-height: 24px;
+.fblqa-rumor-text { min-width: 0; }
+
+.fblqa-bio-empty {
+  margin: 2px 2px 3px;
+  color: var(--fblqa-bio-muted);
+  font-size: 11px;
+}
+
+.fblqa-legacy-section {
+  margin: 6px 0 0;
   padding: 0;
+  border: 0;
 }
 
-.fblqa-cost-field,
-.fblqa-native-field {
+.fblqa-legacy-section[hidden] {
+  display: none !important;
+}
+
+.fblqa-legacy-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+.fblqa-legacy-grid article {
+  min-width: 0;
+  padding: 3px 4px;
+  border-bottom: 1px solid rgba(78, 57, 39, 0.15);
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.fblqa-legacy-grid article > header {
   display: flex;
   align-items: center;
-  gap: 0.2rem;
-  margin: 0;
-  font-size: 0.65rem;
-  white-space: nowrap;
+  gap: 4px;
+  margin: 0 0 2px;
 }
 
-.fblqa-cost-field { flex-direction: column; align-items: stretch; }
-.fblqa-cost-field span { opacity: 0.68; }
-.fblqa-cost-field input { text-align: center; }
-.fblqa-native-field input { width: auto; }
-
-.fblqa-bio-details > summary,
-.fblqa-legacy-section summary {
-  cursor: pointer;
-  font-size: 0.9rem;
-  font-weight: 800;
+.fblqa-legacy-grid article > header strong {
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--fblqa-bio-muted);
+  font-size: 11px;
   text-transform: uppercase;
+  user-select: text !important;
+  -webkit-user-select: text !important;
 }
 
-.fblqa-question-grid { margin-top: 0.45rem; }
-.fblqa-bio-empty { margin: 0.2rem; font-size: 0.76rem; opacity: 0.62; }
-.fblqa-legacy-section article { margin-top: 0.4rem; }
-.fblqa-legacy-section article p { max-height: 120px; overflow: auto; white-space: pre-wrap; font-size: 0.72rem; }
+.fblqa-legacy-grid article > header button.is-copied {
+  color: #2e6d3c;
+  border-color: rgba(46, 109, 60, 0.55);
+}
 
-.fblqa-bio-save-state {
-  position: sticky;
-  bottom: 0.2rem;
-  float: right;
-  min-height: 1rem;
-  padding: 0.12rem 0.36rem;
-  border-radius: 4px;
-  font-size: 0.65rem;
-  background: rgba(30, 28, 24, 0.78);
-  color: #f5ecdc;
+.fblqa-legacy-content {
+  max-height: none;
+  overflow: visible;
+  padding: 1px 2px;
+  cursor: text;
+  pointer-events: auto;
+  overflow-wrap: anywhere;
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.fblqa-legacy-content,
+.fblqa-legacy-content * {
+  user-select: text !important;
+  -webkit-user-select: text !important;
+}
+
+.fblqa-legacy-content p:first-child { margin-top: 0; }
+.fblqa-legacy-content p:last-child { margin-bottom: 0; }
+
+/* Floating controls remain in the lower-right corner of the visible BIO tab.
+   They deliberately have no backing strip and do not consume layout space. */
+.fblqa-bio-actions {
+  position: absolute;
+  z-index: 30;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 5px;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
   pointer-events: none;
 }
-.fblqa-bio-save-state:empty { visibility: hidden; }
-.fblqa-bio-save-state.is-error { background: rgba(118, 30, 27, 0.9); }
+
+.fblqa-bio-actions button {
+  width: auto;
+  min-width: 0;
+  padding: 0 7px;
+  background: rgba(245, 241, 231, 0.92);
+  pointer-events: auto;
+  filter: drop-shadow(0 1px 2px rgba(0, 0, 0, 0.24));
+}
+
+.fblqa-bio-actions button i {
+  margin-right: 4px;
+}
+
+.fblqa-pilgrim-trigger {
+  border-color: rgba(83, 35, 28, 0.68) !important;
+  background: rgba(104, 47, 35, 0.96) !important;
+  color: #f8ecd5 !important;
+}
+
+.fblqa-archive-trigger[aria-expanded="true"] {
+  background: rgba(84, 68, 49, 0.22);
+}
 
 .fblqa-bio-shell.is-readonly input,
-.fblqa-bio-shell.is-readonly textarea,
-.fblqa-bio-shell.is-readonly select {
-  opacity: 0.82;
+.fblqa-bio-shell.is-readonly select,
+.fblqa-bio-shell.is-readonly prose-mirror {
+  opacity: 0.86;
   cursor: default;
 }
 
+/* Compact Pilgrim Card. It follows the actor sheet while linked, then becomes
+   an independently draggable window as soon as its title bar is dragged. */
 .fblqa-pilgrim-drawer {
   position: fixed;
   z-index: 10050;
   box-sizing: border-box;
   overflow: auto;
   opacity: 0;
-  transform: translateX(26px) scale(0.98);
-  transition: opacity 160ms ease, transform 180ms ease;
+  transform: translateX(18px) scale(0.985);
+  transition: opacity 140ms ease, transform 160ms ease;
   pointer-events: none;
-  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.38));
+  filter: drop-shadow(0 8px 18px rgba(0, 0, 0, 0.34));
 }
 
-.fblqa-pilgrim-drawer[data-side="left"] { transform: translateX(-26px) scale(0.98); }
-.fblqa-pilgrim-drawer.is-open { opacity: 1; transform: translateX(0) scale(1); pointer-events: auto; }
+.fblqa-pilgrim-drawer[data-side="left"] {
+  transform: translateX(-18px) scale(0.985);
+}
+
+.fblqa-pilgrim-drawer.is-open {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  pointer-events: auto;
+}
+
+.fblqa-pilgrim-drawer.is-dragging {
+  transition: none;
+  user-select: none;
+}
 
 .fblqa-pilgrim-pocket {
   position: relative;
-  padding: 18px 8px 8px;
-  border-radius: 8px;
-  background: linear-gradient(90deg, #5f3827, #7e4d31 44%, #57301f);
-  box-shadow: inset 0 0 0 2px rgba(32, 18, 10, 0.42), inset 0 0 18px rgba(0, 0, 0, 0.22);
+  padding: 0;
+  border: 1px solid rgba(39, 22, 12, 0.65);
+  border-radius: 5px;
+  background: #6d402a;
+  box-shadow: inset 0 0 10px rgba(0, 0, 0, 0.18);
 }
 
-.fblqa-pilgrim-pocket::before {
-  content: "";
-  position: absolute;
-  top: 6px;
-  left: 20%;
-  right: 20%;
-  height: 6px;
-  border-radius: 50%;
-  background: rgba(27, 14, 8, 0.58);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14);
+.fblqa-pilgrim-windowbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-height: 27px;
+  padding: 2px 3px 2px 7px;
+  color: #f7ead2;
+  cursor: grab;
+  touch-action: none;
 }
 
-.fblqa-pilgrim-close {
-  position: absolute;
-  top: 3px;
-  right: 4px;
-  z-index: 2;
-  width: 26px;
-  min-height: 24px;
+.fblqa-pilgrim-drawer.is-dragging .fblqa-pilgrim-windowbar {
+  cursor: grabbing;
+}
+
+.fblqa-pilgrim-window-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.fblqa-pilgrim-window-actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+
+.fblqa-pilgrim-window-actions button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 23px;
+  min-width: 23px;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
   padding: 0;
   border: 0;
   background: transparent;
-  color: #f7ead2;
+  color: inherit;
+  box-shadow: none;
+}
+
+.fblqa-pilgrim-window-actions button:hover {
+  background: rgba(255, 255, 255, 0.12);
 }
 
 .fblqa-pilgrim-card {
   position: relative;
-  padding: 0.7rem;
+  margin: 0 4px 4px;
+  padding: 7px;
   border: 1px solid #5c4a31;
-  border-radius: 5px;
+  border-radius: 3px;
   background:
-    radial-gradient(circle at 82% 16%, rgba(139, 53, 42, 0.16) 0 42px, transparent 43px),
-    repeating-linear-gradient(0deg, rgba(74, 52, 30, 0.035) 0 1px, transparent 1px 4px),
+    repeating-linear-gradient(0deg, rgba(74, 52, 30, 0.03) 0 1px, transparent 1px 4px),
     #e7d9b8;
   color: #2b241b;
-  font-family: Georgia, "Times New Roman", serif;
-  box-shadow: inset 0 0 22px rgba(94, 67, 34, 0.18);
+  font-family: var(--fblqa-pilgrim-font, Georgia, "Times New Roman", serif);
+  font-size: 11px;
+  line-height: 1.18;
+  box-shadow: inset 0 0 16px rgba(94, 67, 34, 0.15);
+}
+
+.fblqa-pilgrim-card,
+.fblqa-pilgrim-card input,
+.fblqa-pilgrim-card textarea,
+.fblqa-pilgrim-card select,
+.fblqa-pilgrim-card label,
+.fblqa-pilgrim-card span,
+.fblqa-pilgrim-card footer,
+.fblqa-pilgrim-card prose-mirror,
+.fblqa-pilgrim-card .ProseMirror,
+.fblqa-pilgrim-card [contenteditable="true"] {
+  font-family: var(--fblqa-pilgrim-font, Georgia, "Times New Roman", serif);
 }
 
 .fblqa-pilgrim-card::after {
-  content: "ПИЛИГРИМ";
+  content: attr(data-stamp);
   position: absolute;
-  right: 18px;
-  bottom: 34px;
-  transform: rotate(-12deg);
-  padding: 3px 8px;
+  right: 10px;
+  bottom: 26px;
+  transform: rotate(-9deg);
+  max-width: 118px;
+  padding: 2px 6px;
   border: 2px solid rgba(116, 42, 35, 0.28);
   border-radius: 50%;
-  color: rgba(116, 42, 35, 0.28);
-  font-size: 0.72rem;
+  color: rgba(116, 42, 35, 0.30);
+  font-family: inherit;
+  font-size: 8px;
   font-weight: 900;
-  letter-spacing: 0.14em;
+  letter-spacing: 0.07em;
+  line-height: 1;
+  text-align: center;
+  text-transform: uppercase;
   pointer-events: none;
 }
 
-.fblqa-pilgrim-card > header,
+.fblqa-pilgrim-serial {
+  margin: 0 0 3px;
+  padding: 0 1px 3px;
+  border-bottom: 1px solid rgba(61, 45, 30, 0.38);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-align: right;
+}
+
 .fblqa-pilgrim-card > footer {
   display: flex;
   justify-content: space-between;
-  gap: 0.5rem;
+  gap: 6px;
 }
-
-.fblqa-pilgrim-card > header {
-  align-items: flex-start;
-  margin-bottom: 0.55rem;
-  padding-bottom: 0.42rem;
-  border-bottom: 2px double rgba(61, 45, 30, 0.52);
-}
-
-.fblqa-pilgrim-card > header span { font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase; }
-.fblqa-pilgrim-card > header h2 { margin: 0.05rem 0 0; font-size: 1.3rem; text-transform: uppercase; }
-.fblqa-pilgrim-card > header strong { font-size: 0.72rem; }
 
 .fblqa-pilgrim-identity {
   display: grid;
-  grid-template-columns: 92px minmax(0, 1fr);
-  gap: 0.55rem;
-  margin-bottom: 0.48rem;
+  gap: 2px;
+  min-width: 0;
+  margin-bottom: 3px;
 }
 
-.fblqa-pilgrim-identity > img {
-  width: 92px;
-  height: 116px;
-  object-fit: cover;
-  border: 1px solid rgba(55, 42, 29, 0.62);
-  border-radius: 2px;
-  filter: sepia(0.18) contrast(0.94);
+.fblqa-pilgrim-pair,
+.fblqa-pilgrim-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 3px;
+  min-width: 0;
 }
 
-.fblqa-pilgrim-card .fblqa-bio-field > span { color: #4a3b28; opacity: 1; }
-.fblqa-pilgrim-card input,
-.fblqa-pilgrim-card textarea {
+.fblqa-pilgrim-details {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.fblqa-pilgrim-details > .fblqa-bio-field {
+  grid-column: span 2;
+}
+
+.fblqa-pilgrim-details > .fblqa-pilgrim-hair {
+  grid-column: span 4;
+}
+
+.fblqa-pilgrim-card .fblqa-bio-block,
+.fblqa-pilgrim-card .fblqa-bio-field {
+  gap: 1px;
+  margin: 0 0 2px;
+}
+
+.fblqa-pilgrim-card .fblqa-bio-heading-row {
+  margin-bottom: 1px;
+}
+
+.fblqa-pilgrim-card .fblqa-bio-title,
+.fblqa-pilgrim-card .fblqa-bio-field > span {
+  margin: 0 !important;
+  padding: 0 1px !important;
+  border: 0 !important;
+  color: #4a3b28 !important;
+  font-family: inherit;
+  font-size: 9px !important;
+  font-weight: 700;
+  letter-spacing: 0;
+  line-height: 1.04 !important;
+  text-transform: none;
+}
+
+.fblqa-pilgrim-card input {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 22px;
+  min-height: 22px;
+  margin: 0;
+  padding: 2px 3px;
   border: 0;
-  border-bottom: 1px solid rgba(58, 43, 29, 0.48);
+  border-bottom: 1px solid rgba(58, 43, 29, 0.44);
   border-radius: 0;
-  background: rgba(255, 250, 233, 0.24);
+  background: rgba(255, 250, 233, 0.20);
   color: #211b15;
   font-family: inherit;
+  font-size: 11px;
+  line-height: 1.12;
 }
 
-.fblqa-pilgrim-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fblqa-pilgrim-card textarea {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  min-height: 22px;
+  height: 22px;
+  margin: 0;
+  padding: 3px 3px 2px;
+  border: 0;
+  border-bottom: 1px solid rgba(58, 43, 29, 0.44);
+  border-radius: 0;
+  background: rgba(255, 250, 233, 0.20);
+  color: #211b15;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.12;
+  resize: none;
+  overflow-y: hidden;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.fblqa-growing-text-field {
+  margin-bottom: 2px;
+}
+
+.fblqa-pilgrim-card prose-mirror,
+.fblqa-pilgrim-card prose-mirror > .editor-content,
+.fblqa-pilgrim-card prose-mirror .editor-content,
+.fblqa-pilgrim-card prose-mirror .ProseMirror,
+.fblqa-pilgrim-card prose-mirror [contenteditable="true"] {
+  min-height: 28px;
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.fblqa-pilgrim-marks {
+  grid-column: 1 / -1;
+}
+
 .fblqa-pilgrim-card > footer {
-  margin-top: 0.4rem;
-  padding-top: 0.35rem;
-  border-top: 1px solid rgba(58, 43, 29, 0.42);
-  font-size: 0.62rem;
+  margin-top: 3px;
+  padding-top: 3px;
+  border-top: 1px solid rgba(58, 43, 29, 0.40);
+  font-size: 8px;
   font-style: italic;
 }
 
-@media (max-width: 900px) {
-  .fblqa-bio-columns { grid-template-columns: 1fr; }
-  .fblqa-question-grid { grid-template-columns: 1fr; }
+@media (max-width: 700px) {
+  .fblqa-language-list {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .fblqa-language-row {
+    grid-column: 1 / -1;
+  }
 }
 
-@media (max-width: 620px) {
-  .fblqa-bio-header { align-items: flex-start; flex-direction: column; }
-  .fblqa-bio-header-actions { width: 100%; }
-  .fblqa-bio-header-actions button { flex: 1; }
-  .fblqa-bio-pair,
-  .fblqa-pilgrim-details { grid-template-columns: 1fr; }
-  .fblqa-language-row,
-  .fblqa-rumor-row { grid-template-columns: 1fr 28px; }
-  .fblqa-language-row > :not(button),
-  .fblqa-rumor-row > :not(button) { grid-column: 1; }
-  .fblqa-language-row > button,
-  .fblqa-rumor-row > button { grid-column: 2; grid-row: 1; }
+@media (max-width: 430px) {
+  .fblqa-pilgrim-details {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .fblqa-pilgrim-details > .fblqa-bio-field,
+  .fblqa-pilgrim-details > .fblqa-pilgrim-hair {
+    grid-column: span 1;
+  }
+}
+
+/* Apply the configured world font to actual controls as well as labels.
+   Inline rules are also installed by settings.js for system CSS
+   that declares its form fonts with high specificity. */
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card input,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card textarea,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card select,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card option,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card label,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card span,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card footer,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card prose-mirror,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card prose-mirror .editor-content,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card prose-mirror .ProseMirror,
+.fblqa-pilgrim-drawer .fblqa-pilgrim-card prose-mirror [contenteditable="true"] {
+  font-family: var(--fblqa-pilgrim-font, Georgia, "Times New Roman", serif);
 }

@@ -438,11 +438,14 @@ async function enrichTooltipText(text, item) {
 
   if (globalThis.TextEditor?.enrichHTML) {
     try {
-      return await TextEditor.enrichHTML(raw, {
+      const enriched = await TextEditor.enrichHTML(raw, {
         async: true,
         secrets: item.isOwner,
         relativeTo: item
       });
+      const cleanHTML = globalThis.foundry?.utils?.cleanHTML;
+      if (typeof cleanHTML === "function") return String(cleanHTML(enriched) ?? "");
+      return escapeHtml(raw).replace(/\n/g, "<br>");
     } catch (error) {
       console.warn(`${MODULE_ID} | tooltip text enrichment failed`, error);
     }

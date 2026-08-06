@@ -170,7 +170,9 @@ Rules:
 - Operation ids must match `^[a-z0-9][a-z0-9._:-]*$` (case-insensitive).
 - Duplicate operation ids throw instead of replacing another module's handler.
 - Payloads and results must be JSON-serializable plain data.
-- Registered handlers are privileged code. Each handler must validate the requesting user, document permission, ids, and expected payload shape.
+- Quick Access authenticates the claimed requester and active-GM response with a one-time proof on the sending User document. Handlers receive that authenticated User as `context.requestUser`; they must not replace it with an id taken from `payload`.
+- Registered handlers are privileged code. Each handler must validate the authenticated requesting user, document permission, ids, and expected payload shape before reading hidden data or changing documents.
+- Foundry module sockets are broadcast transport, not a private channel. Identity proofs prevent sender spoofing but do not encrypt or conceal packets. Every request payload and every returned result must be safe for every connected client to receive. Keep GM-only details on the active GM and return only public-safe summaries.
 - The active GM is selected deterministically from active GM users by id, so every client addresses the same GM.
 
 
@@ -208,7 +210,7 @@ with a `TypeError`; pass `null` or an empty string to clear a selection.
 
 ## Biography profile helpers
 
-Quick Access 1.7.0 replaces the native BIO tab presentation with a structured
+Quick Access 1.7.11 replaces the native BIO tab presentation with a structured
 biography dossier and a sliding Pilgrim Card. Importers can write the complete
 profile through the public API:
 
@@ -255,7 +257,7 @@ await qa.saveBiographyProfile(actor, {
     notes: "..."
   },
   rumors: [
-    { id: "rumor-1", name: "Ничак", text: "...", truth: "uncertain" }
+    { id: "rumor-1", name: "Ничак", text: "..." }
   ]
 }, { render: false });
 ```
@@ -268,6 +270,8 @@ qa.getBiographyProfile(actor);
 
 `qa.capabilities.biographyProfile` is `true` when these methods are available.
 The API also synchronizes Actor name and the native `kin`, `profession`,
-`pride`, `darkSecret`, and `note` system fields. The legacy `face`, `body`, and
-`clothing` fields are no longer shown by Quick Access; pre-existing content is
-kept in a read-only archive inside the redesigned BIO tab.
+`pride`, `darkSecret`, and `note` system fields. Concept and publicNote remain
+accepted for importer compatibility but are not rendered in BIO. Rumor truth
+is ignored. The legacy `face`, `body`, and `clothing` fields are no longer shown
+as active fields; pre-existing content is kept in an explicitly toggleable
+read-only archive inside the redesigned BIO tab.

@@ -4,13 +4,25 @@ import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback, rerenderSheet } from "./utils.js";
+import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import {
+  clearSocketProof,
+  consumeSocketProof,
+  createSocketProof,
+  scheduleSocketProofCleanup,
+  verifySocketProof
+} from "./socket-auth.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
 const DECISION_TYPE = "wallet-transfer-decision";
 const RESULT_TYPE = "wallet-transfer-result";
+const OFFER_PROOF_KIND = "walletTransferOffer";
+const DECISION_PROOF_KIND = "walletTransferDecision";
+const RESULT_PROOF_KIND = "walletTransferResult";
 const REQUEST_TIMEOUT_MS = 90_000;
 const RESULT_GRACE_MS = 5_000;
+const PROOF_GRACE_MS = 60_000;
 const SEEN_PACKET_LIMIT = 200;
 
 let socketRegistered = false;
@@ -42,7 +54,7 @@ export async function openMoneyTransferDialog(app, sourceActor) {
     return null;
   }
 
-  if (!globalThis.Dialog) {
+  if (!hasFoundryDialogApi()) {
     ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.DialogUnavailable", "Окно передачи денег недоступно в этом окружении."));
     return null;
   }
@@ -51,13 +63,14 @@ export async function openMoneyTransferDialog(app, sourceActor) {
 
   return new Promise((resolve) => {
     let finished = false;
+    let submitted = false;
     const finish = (value) => {
       if (finished) return;
       finished = true;
       resolve(value);
     };
 
-    new Dialog({
+    createFoundryDialog({
       title: qaLocalize("Wallet.Transfer.Title", "Передача денег"),
       content,
       buttons: {
@@ -65,6 +78,8 @@ export async function openMoneyTransferDialog(app, sourceActor) {
           icon: '<i class="fas fa-paper-plane"></i>',
           label: qaLocalize("Wallet.Transfer.Send", "Передать"),
           callback: async (html) => {
+            if (submitted) return;
+            submitted = true;
             const form = extractDialogElement(html)?.querySelector("form.fblqa-money-transfer-form");
             const targetActorId = String(form?.querySelector('[name="targetActor"]')?.value ?? "");
             const amounts = Object.fromEntries(CURRENCIES.map((currency) => [
@@ -102,7 +117,9 @@ export async function openMoneyTransferDialog(app, sourceActor) {
         element?.closest?.(".app")?.classList.add("fblqa-money-transfer-dialog");
         setupMoneyTransferDialog(element, sourceActor);
       },
-      close: () => finish(null)
+      close: () => {
+        if (!submitted) finish(null);
+      }
     }, {
       classes: ["fblqa-money-transfer-dialog"],
       width: 430,
@@ -211,29 +228,40 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
   if (!game.socket?.emit) return { ok: false, error: "socket-unavailable" };
 
   const requestId = makeRequestId();
+  const offer = {
+    type: OFFER_TYPE,
+    requestId,
+    requesterId: game.user.id,
+    recipientUserId: recipient.id,
+    primaryGmId: primaryGm.id,
+    sourceActorId,
+    targetActorId,
+    amounts,
+    createdAt: Date.now()
+  };
+
+  try {
+    await createSocketProof(OFFER_PROOF_KIND, requestId, offer, game.user);
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer offer could not be authorized`, error);
+    return { ok: false, error: "identity-proof-failed" };
+  }
+
   const response = new Promise((resolve) => {
     const timeout = globalThis.setTimeout(() => {
       pendingRequests.delete(requestId);
+      void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
       resolve({ ok: false, error: "timeout" });
     }, REQUEST_TIMEOUT_MS + RESULT_GRACE_MS);
-    pendingRequests.set(requestId, { resolve, timeout });
+    pendingRequests.set(requestId, { resolve, timeout, primaryGmId: primaryGm.id });
   });
 
   try {
-    await sendSocketMessage({
-      type: OFFER_TYPE,
-      requestId,
-      requesterId: game.user.id,
-      recipientUserId: recipient.id,
-      primaryGmId: primaryGm.id,
-      sourceActorId,
-      targetActorId,
-      amounts,
-      createdAt: Date.now()
-    });
+    await sendSocketMessage(offer);
   } catch (error) {
     const pending = pendingRequests.get(requestId);
     pendingRequests.delete(requestId);
+    void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
     if (pending) globalThis.clearTimeout(pending.timeout);
     console.error(`${MODULE_ID} | money transfer offer could not be sent`, error);
     return { ok: false, error: "socket-unavailable" };
@@ -247,7 +275,7 @@ async function handleSocketMessage(message) {
   if (!rememberPacket(message.packetId)) return;
 
   if (message.type === RESULT_TYPE) {
-    handleTransferResult(message);
+    await handleTransferResult(message);
     return;
   }
 
@@ -262,9 +290,22 @@ async function handleSocketMessage(message) {
 }
 
 async function handleTransferOffer(message) {
+  if (!isValidOfferMessage(message)) return;
   const primaryGm = getPrimaryActiveGm();
+  const isPrimaryGm = Boolean(game.user?.isGM && primaryGm?.id === game.user.id && message.primaryGmId === game.user.id);
+  const isRecipient = message.recipientUserId === game.user?.id;
+  if (!isPrimaryGm && !isRecipient) return;
 
-  if (game.user?.isGM && primaryGm?.id === game.user.id) {
+  const requester = findUser(message.requesterId);
+  if (!requester?.active) return;
+  const proof = verifySocketProof(requester, OFFER_PROOF_KIND, message.requestId, withoutPacketId(message), {
+    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
+  });
+  if (!proof.ok) return;
+  if (!consumeSocketProof(requester.id, OFFER_PROOF_KIND, message.requestId)) return;
+
+  if (isPrimaryGm) {
+    if (gmOffers.has(message.requestId)) return;
     const validation = validateIncomingOffer(message);
     if (!validation.ok) {
       await finalizeTransferOffer(message, validation);
@@ -283,34 +324,20 @@ async function handleTransferOffer(message) {
     if (earlyDecision) {
       globalThis.clearTimeout(earlyDecision.timeout);
       earlyDecisions.delete(message.requestId);
-      await handleTransferDecision(earlyDecision.message);
+      await processTransferDecision(message, earlyDecision.message);
     }
   }
 
-  if (message.recipientUserId !== game.user?.id) return;
+  if (!isRecipient) return;
 
   const validation = validateRecipientOffer(message);
   if (!validation.ok) {
-    await sendSocketMessage({
-      type: DECISION_TYPE,
-      requestId: message.requestId,
-      requesterId: message.requesterId,
-      recipientUserId: message.recipientUserId,
-      accepted: false,
-      reason: validation.error
-    });
+    await sendTransferDecision(message, false, validation.error);
     return;
   }
 
-  if (!globalThis.Dialog) {
-    await sendSocketMessage({
-      type: DECISION_TYPE,
-      requestId: message.requestId,
-      requesterId: message.requesterId,
-      recipientUserId: message.recipientUserId,
-      accepted: false,
-      reason: "recipient-dialog-unavailable"
-    });
+  if (!hasFoundryDialogApi()) {
+    await sendTransferDecision(message, false, "recipient-dialog-unavailable");
     return;
   }
 
@@ -318,20 +345,34 @@ async function handleTransferOffer(message) {
 }
 
 async function handleTransferDecision(message) {
+  if (!isValidDecisionMessage(message)) return;
   const primaryGm = getPrimaryActiveGm();
-  if (!game.user?.isGM || primaryGm?.id !== game.user.id) return;
+  if (!game.user?.isGM || primaryGm?.id !== game.user.id || message.primaryGmId !== game.user.id) return;
+
+  const recipientUser = findUser(message.recipientUserId);
+  if (!recipientUser?.active || recipientUser.isGM) return;
+  const proof = verifySocketProof(recipientUser, DECISION_PROOF_KIND, message.requestId, withoutPacketId(message), {
+    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
+  });
+  if (!proof.ok) return;
+  if (!consumeSocketProof(recipientUser.id, DECISION_PROOF_KIND, message.requestId)) return;
 
   const stored = gmOffers.get(message.requestId);
   if (!stored) {
     if (!earlyDecisions.has(message.requestId)) {
       const timeout = globalThis.setTimeout(() => earlyDecisions.delete(message.requestId), RESULT_GRACE_MS);
-      earlyDecisions.set(message.requestId, { message: { ...message }, timeout });
+      earlyDecisions.set(message.requestId, { message: { ...message }, timeout, authenticated: true });
     }
     return;
   }
-  const offer = stored.offer;
 
-  if (message.recipientUserId !== offer.recipientUserId || message.requesterId !== offer.requesterId) {
+  await processTransferDecision(stored.offer, message);
+}
+
+async function processTransferDecision(offer, message) {
+  if (message.recipientUserId !== offer.recipientUserId
+    || message.requesterId !== offer.requesterId
+    || message.primaryGmId !== offer.primaryGmId) {
     await finalizeTransferOffer(offer, { ok: false, error: "invalid-request" });
     return;
   }
@@ -344,7 +385,7 @@ async function handleTransferDecision(message) {
     return;
   }
 
-  const recipientUser = game.users?.get?.(offer.recipientUserId);
+  const recipientUser = findUser(offer.recipientUserId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   if (!recipientUser || !recipientUser.active || !userOwnsActor(recipientUser, targetActor)) {
     await finalizeTransferOffer(offer, { ok: false, error: "invalid-recipient" });
@@ -356,7 +397,23 @@ async function handleTransferDecision(message) {
   await finalizeTransferOffer(offer, result);
 }
 
-function handleTransferResult(message) {
+async function handleTransferResult(message) {
+  if (!isValidResultMessage(message)) return;
+  const isRequester = message.requesterId === game.user?.id;
+  const isRecipient = message.recipientUserId === game.user?.id;
+  if (!isRequester && !isRecipient) return;
+
+  const primaryGm = findUser(message.primaryGmId);
+  if (!primaryGm?.isGM) return;
+  const currentPrimaryGm = getPrimaryActiveGm();
+  if (currentPrimaryGm?.id !== primaryGm.id) return;
+
+  const proof = verifySocketProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message), {
+    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
+  });
+  if (!proof.ok) return;
+  if (!consumeSocketProof(primaryGm.id, RESULT_PROOF_KIND, message.requestId)) return;
+
   const incoming = incomingOffers.get(message.requestId);
   if (incoming) {
     incoming.decided = true;
@@ -364,16 +421,18 @@ function handleTransferResult(message) {
     incomingOffers.delete(message.requestId);
   }
 
-  if (message.requesterId === game.user?.id) {
+  if (isRequester) {
     const pending = pendingRequests.get(message.requestId);
-    if (pending) {
+    if (pending && pending.primaryGmId === message.primaryGmId) {
       globalThis.clearTimeout(pending.timeout);
       pendingRequests.delete(message.requestId);
+      void clearSocketProof(game.user, OFFER_PROOF_KIND, message.requestId);
       pending.resolve(message.result ?? { ok: false, error: "unknown" });
     }
   }
 
-  if (message.recipientUserId !== game.user?.id) return;
+  if (!isRecipient) return;
+  void clearSocketProof(game.user, DECISION_PROOF_KIND, message.requestId);
 
   const result = message.result ?? { ok: false, error: "unknown" };
   if (result.ok) {
@@ -390,6 +449,30 @@ function handleTransferResult(message) {
   targetActor?.sheet?.render?.(false);
 }
 
+async function sendTransferDecision(offer, accepted, reason = null) {
+  const message = {
+    type: DECISION_TYPE,
+    requestId: offer.requestId,
+    requesterId: offer.requesterId,
+    recipientUserId: offer.recipientUserId,
+    primaryGmId: offer.primaryGmId,
+    accepted: Boolean(accepted),
+    reason: reason ? String(reason) : null,
+    createdAt: Date.now()
+  };
+
+  try {
+    await createSocketProof(DECISION_PROOF_KIND, offer.requestId, message, game.user);
+    scheduleSocketProofCleanup(game.user, DECISION_PROOF_KIND, offer.requestId, REQUEST_TIMEOUT_MS + PROOF_GRACE_MS);
+    await sendSocketMessage(message);
+    return true;
+  } catch (error) {
+    void clearSocketProof(game.user, DECISION_PROOF_KIND, offer.requestId);
+    console.error(`${MODULE_ID} | money transfer decision could not be sent`, error);
+    return false;
+  }
+}
+
 function openIncomingMoneyTransferDialog(offer) {
   if (incomingOffers.has(offer.requestId)) return;
 
@@ -399,18 +482,16 @@ function openIncomingMoneyTransferDialog(offer) {
   const decide = async (accepted, reason = null) => {
     if (state.decided) return;
     state.decided = true;
+    const sent = await sendTransferDecision(offer, accepted, reason);
+    if (!sent) {
+      state.decided = false;
+      ui.notifications?.error?.(localizeTransferError("identity-proof-failed"));
+      return;
+    }
     incomingOffers.delete(offer.requestId);
-    await sendSocketMessage({
-      type: DECISION_TYPE,
-      requestId: offer.requestId,
-      requesterId: offer.requesterId,
-      recipientUserId: offer.recipientUserId,
-      accepted,
-      reason
-    });
   };
 
-  const dialog = new Dialog({
+  const dialog = createFoundryDialog({
     title: qaLocalize("Wallet.Transfer.IncomingTitle", "Входящий перевод"),
     content,
     buttons: {
@@ -463,12 +544,13 @@ function buildIncomingMoneyTransferDialogContent(offer) {
 }
 
 function validateIncomingOffer(message) {
-  const requester = game.users?.get?.(message.requesterId);
-  const recipient = game.users?.get?.(message.recipientUserId);
+  const requester = findUser(message.requesterId);
+  const recipient = findUser(message.recipientUserId);
   const sourceActor = game.actors?.get?.(message.sourceActorId);
   const targetActor = game.actors?.get?.(message.targetActorId);
 
   if (!requester || !recipient || !sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
+  if (!requester.active) return { ok: false, error: "source-permission" };
   if (!requester.isGM && !userOwnsActor(requester, sourceActor)) return { ok: false, error: "source-permission" };
   if (!recipient.active || recipient.isGM || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
   if (sourceActor.type !== "character" || targetActor.type !== "character") return { ok: false, error: "invalid-recipient" };
@@ -476,7 +558,7 @@ function validateIncomingOffer(message) {
 }
 
 function validateRecipientOffer(message) {
-  const recipient = game.users?.get?.(message.recipientUserId);
+  const recipient = findUser(message.recipientUserId);
   const targetActor = game.actors?.get?.(message.targetActorId);
   if (!recipient || recipient.id !== game.user?.id || !targetActor) return { ok: false, error: "invalid-recipient" };
   if (!recipient.active || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
@@ -497,15 +579,30 @@ async function finalizeTransferOffer(offer, result) {
     amounts: normalizeTransferAmounts(result?.amounts ?? offer.amounts)
   };
 
-  await sendSocketMessage({
+  const resultMessage = {
     type: RESULT_TYPE,
     requestId: offer.requestId,
     requesterId: offer.requesterId,
     recipientUserId: offer.recipientUserId,
+    primaryGmId: offer.primaryGmId,
     sourceActorId: offer.sourceActorId,
     targetActorId: offer.targetActorId,
-    result: completeResult
-  });
+    result: completeResult,
+    createdAt: Date.now()
+  };
+
+  try {
+    await createSocketProof(RESULT_PROOF_KIND, offer.requestId, resultMessage, game.user);
+    scheduleSocketProofCleanup(game.user, RESULT_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
+    await sendSocketMessage(resultMessage);
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer result could not be authenticated`, error);
+  }
+
+  const requester = findUser(offer.requesterId);
+  const recipient = findUser(offer.recipientUserId);
+  scheduleSocketProofCleanup(requester, OFFER_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
+  scheduleSocketProofCleanup(recipient, DECISION_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   await postTransferWhisper(offer, completeResult);
 }
 
@@ -513,11 +610,16 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
   const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
   if (!plan.ok) return plan;
 
-  let sourceChanged = false;
   try {
-    await sourceActor.update(plan.sourceUpdate);
-    sourceChanged = true;
-    await targetActor.update(plan.targetUpdate);
+    const ActorClass = sourceActor?.constructor?.implementation ?? sourceActor?.constructor;
+    if (typeof ActorClass?.updateDocuments !== "function") {
+      throw new Error("Actor.updateDocuments is unavailable");
+    }
+
+    await ActorClass.updateDocuments([
+      { _id: sourceActor.id, ...plan.sourceUpdate },
+      { _id: targetActor.id, ...plan.targetUpdate }
+    ]);
 
     Hooks.callAll?.("fblQuickAccess.walletTransferred", {
       sourceActor,
@@ -535,14 +637,6 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
     };
   } catch (error) {
     console.error(`${MODULE_ID} | money transfer failed`, error);
-    if (sourceChanged) {
-      try {
-        await sourceActor.update(buildActorCurrencyUpdate(sourceActor, plan.sourceBefore));
-      } catch (rollbackError) {
-        console.error(`${MODULE_ID} | money transfer rollback failed`, rollbackError);
-        return { ok: false, error: "rollback-failed" };
-      }
-    }
     return { ok: false, error: "update-failed" };
   }
 }
@@ -685,6 +779,53 @@ function userOwnsActor(user, actor) {
   return Number(ownership[user.id] ?? ownership.default ?? 0) >= 3;
 }
 
+function findUser(id) {
+  const users = globalThis.game?.users;
+  return users?.get?.(id) ?? Array.from(users ?? []).find((user) => user?.id === id) ?? null;
+}
+
+function withoutPacketId(message) {
+  return Object.fromEntries(Object.entries(message ?? {}).filter(([key]) => key !== "packetId"));
+}
+
+function isValidRequestId(value) {
+  return /^[a-z0-9][a-z0-9_-]{5,127}$/i.test(String(value ?? ""));
+}
+
+function isValidOfferMessage(message) {
+  return isValidRequestId(message?.requestId)
+    && message?.type === OFFER_TYPE
+    && typeof message.requesterId === "string"
+    && typeof message.recipientUserId === "string"
+    && typeof message.primaryGmId === "string"
+    && typeof message.sourceActorId === "string"
+    && typeof message.targetActorId === "string"
+    && message.amounts && typeof message.amounts === "object"
+    && Number.isFinite(Number(message.createdAt));
+}
+
+function isValidDecisionMessage(message) {
+  return isValidRequestId(message?.requestId)
+    && message?.type === DECISION_TYPE
+    && typeof message.requesterId === "string"
+    && typeof message.recipientUserId === "string"
+    && typeof message.primaryGmId === "string"
+    && typeof message.accepted === "boolean"
+    && Number.isFinite(Number(message.createdAt));
+}
+
+function isValidResultMessage(message) {
+  return isValidRequestId(message?.requestId)
+    && message?.type === RESULT_TYPE
+    && typeof message.requesterId === "string"
+    && typeof message.recipientUserId === "string"
+    && typeof message.primaryGmId === "string"
+    && typeof message.sourceActorId === "string"
+    && typeof message.targetActorId === "string"
+    && message.result && typeof message.result === "object"
+    && Number.isFinite(Number(message.createdAt));
+}
+
 function getPrimaryActiveGm() {
   return Array.from(game.users ?? [])
     .filter((user) => user.isGM && user.active)
@@ -714,6 +855,7 @@ function localizeTransferError(code) {
     "invalid-request": "InvalidRequest",
     "no-gm": "NoGm",
     "socket-unavailable": "SocketUnavailable",
+    "identity-proof-failed": "IdentityProofFailed",
     "timeout": "Timeout",
     "rollback-failed": "RollbackFailed",
     "update-failed": "UpdateFailed"

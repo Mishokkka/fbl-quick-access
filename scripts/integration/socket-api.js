@@ -1,9 +1,19 @@
 import { MODULE_ID } from "../constants.js";
+import {
+  clearSocketProof,
+  consumeSocketProof,
+  createSocketProof,
+  scheduleSocketProofCleanup,
+  verifySocketProof
+} from "../socket-auth.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const REQUEST_TYPE = "integration-api-request";
 const RESPONSE_TYPE = "integration-api-response";
+const REQUEST_PROOF_KIND = "integrationRequest";
+const RESPONSE_PROOF_KIND = "integrationResponse";
 const DEFAULT_TIMEOUT_MS = 30_000;
+const PROOF_GRACE_MS = 60_000;
 const OPERATION_PATTERN = /^[a-z0-9][a-z0-9._:-]*$/i;
 
 const handlers = new Map();
@@ -85,12 +95,25 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
     createdAt: Date.now()
   };
 
+  try {
+    await createSocketProof(REQUEST_PROOF_KIND, requestId, message, game.user);
+  } catch (error) {
+    throw integrationError(error?.code ?? "identity-proof-failed", `Could not authorize Quick Access GM operation: ${error?.message ?? error}`);
+  }
+
   const response = new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
       pendingRequests.delete(requestId);
+      void clearSocketProof(game.user, REQUEST_PROOF_KIND, requestId);
       reject(integrationError("timeout", `Quick Access GM operation timed out: ${key}`));
     }, timeoutMs);
-    pendingRequests.set(requestId, { resolve, reject, timeout, operation: key });
+    pendingRequests.set(requestId, {
+      resolve,
+      reject,
+      timeout,
+      operation: key,
+      activeGMId: activeGM.id
+    });
   });
 
   try {
@@ -98,6 +121,7 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
   } catch (error) {
     const pending = pendingRequests.get(requestId);
     pendingRequests.delete(requestId);
+    void clearSocketProof(game.user, REQUEST_PROOF_KIND, requestId);
     if (pending) {
       globalThis.clearTimeout(pending.timeout);
       pending.reject(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
@@ -119,11 +143,12 @@ async function handleSocketMessage(message) {
   if (!message || typeof message !== "object") return;
 
   if (message.type === RESPONSE_TYPE) {
-    handleResponse(message);
+    await handleResponse(message);
     return;
   }
 
   if (message.type !== REQUEST_TYPE) return;
+  if (!isValidRequestMessage(message)) return;
   if (!game.user?.isGM || message.activeGMId !== game.user.id) return;
 
   // Ignore requests sent to a GM who ceased being the deterministic active GM
@@ -131,12 +156,21 @@ async function handleSocketMessage(message) {
   const activeGM = getActiveGM();
   if (!activeGM || activeGM.id !== game.user.id) return;
 
-  const requester = game.users?.get?.(message.requesterId) ?? null;
+  const requester = findUser(message.requesterId);
+  if (!requester?.active) return;
+
+  const proof = verifySocketProof(requester, REQUEST_PROOF_KIND, message.requestId, message, {
+    ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
+  });
+  if (!proof.ok) return;
+  if (!consumeSocketProof(requester.id, REQUEST_PROOF_KIND, message.requestId)) return;
+  await clearSocketProof(requester, REQUEST_PROOF_KIND, message.requestId);
+
   let response;
   try {
     const result = await invokeHandler(message.operation, message.payload, {
       requestId: message.requestId,
-      requesterId: message.requesterId,
+      requesterId: requester.id,
       requestUser: requester,
       activeGM,
       isRemote: true
@@ -153,22 +187,41 @@ async function handleSocketMessage(message) {
     };
   }
 
-  game.socket.emit(SOCKET_CHANNEL, {
+  const responseMessage = {
     type: RESPONSE_TYPE,
     requestId: message.requestId,
-    recipientId: message.requesterId,
+    recipientId: requester.id,
     activeGMId: game.user.id,
+    createdAt: Date.now(),
     ...response
-  });
+  };
+
+  try {
+    await createSocketProof(RESPONSE_PROOF_KIND, message.requestId, responseMessage, game.user);
+    scheduleSocketProofCleanup(game.user, RESPONSE_PROOF_KIND, message.requestId, PROOF_GRACE_MS);
+    game.socket.emit(SOCKET_CHANNEL, responseMessage);
+  } catch (error) {
+    console.error(`${MODULE_ID} | integration socket response could not be authenticated`, message.operation, error);
+  }
 }
 
-function handleResponse(message) {
+async function handleResponse(message) {
+  if (!isValidResponseMessage(message)) return;
   if (message.recipientId !== globalThis.game?.user?.id) return;
   const pending = pendingRequests.get(message.requestId);
-  if (!pending) return;
+  if (!pending || message.activeGMId !== pending.activeGMId) return;
+
+  const activeGM = findUser(message.activeGMId);
+  if (!activeGM?.isGM || !activeGM.active) return;
+  const proof = verifySocketProof(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
+    ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
+  });
+  if (!proof.ok) return;
+  if (!consumeSocketProof(activeGM.id, RESPONSE_PROOF_KIND, message.requestId)) return;
 
   pendingRequests.delete(message.requestId);
   globalThis.clearTimeout(pending.timeout);
+  void clearSocketProof(game.user, REQUEST_PROOF_KIND, message.requestId);
 
   if (message.ok) {
     pending.resolve(message.result);
@@ -187,12 +240,47 @@ async function invokeHandler(operation, payload, context) {
   return handler(payload, Object.freeze({ ...context, operation }));
 }
 
+function isValidRequestMessage(message) {
+  try {
+    normalizeRequestId(message.requestId);
+    normalizeOperation(message.operation);
+  } catch (_error) {
+    return false;
+  }
+  return typeof message.requesterId === "string"
+    && typeof message.activeGMId === "string"
+    && Number.isFinite(Number(message.createdAt));
+}
+
+function isValidResponseMessage(message) {
+  try {
+    normalizeRequestId(message.requestId);
+  } catch (_error) {
+    return false;
+  }
+  return typeof message.recipientId === "string"
+    && typeof message.activeGMId === "string"
+    && typeof message.ok === "boolean"
+    && Number.isFinite(Number(message.createdAt));
+}
+
 function normalizeOperation(operation) {
   const key = String(operation ?? "").trim();
   if (!OPERATION_PATTERN.test(key)) {
     throw new TypeError(`Invalid Quick Access socket operation id: ${key || "<empty>"}`);
   }
   return key;
+}
+
+function normalizeRequestId(value) {
+  const id = String(value ?? "").trim();
+  if (!/^[a-z0-9][a-z0-9_-]{5,127}$/i.test(id)) throw new TypeError(`Invalid Quick Access socket request id: ${id || "<empty>"}`);
+  return id;
+}
+
+function findUser(id) {
+  const users = globalThis.game?.users;
+  return users?.get?.(id) ?? Array.from(users ?? []).find((user) => user?.id === id) ?? null;
 }
 
 function makeRequestId() {
