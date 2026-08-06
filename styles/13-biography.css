@@ -1,0 +1,381 @@
+/* Redesigned BIO tab and the sliding Pilgrim Card. */
+.fblqa-biography-tab {
+  box-sizing: border-box;
+  overflow-y: auto !important;
+  overflow-x: hidden !important;
+  padding: 0.45rem !important;
+}
+
+.fblqa-bio-shell {
+  position: relative;
+  min-height: 100%;
+  color: var(--color-text-primary, #25211d);
+}
+
+.fblqa-bio-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.65rem;
+  margin-bottom: 0.45rem;
+  padding: 0.48rem 0.62rem;
+  border: 1px solid rgba(70, 49, 30, 0.28);
+  border-radius: 5px;
+  background:
+    linear-gradient(100deg, rgba(112, 52, 37, 0.18), transparent 44%),
+    rgba(239, 232, 216, 0.72);
+}
+
+.fblqa-bio-header h2 {
+  margin: 0;
+  font-size: 1.28rem;
+  line-height: 1.1;
+}
+
+.fblqa-bio-kicker {
+  display: block;
+  margin-bottom: 0.08rem;
+  font-size: 0.65rem;
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  opacity: 0.62;
+}
+
+.fblqa-bio-header-actions,
+.fblqa-bio-section-head {
+  display: flex;
+  align-items: center;
+  gap: 0.32rem;
+}
+
+.fblqa-bio-header-actions button,
+.fblqa-bio-section-head button {
+  min-height: 27px;
+  padding: 0.22rem 0.48rem;
+  border: 1px solid rgba(62, 45, 30, 0.34);
+  border-radius: 4px;
+  background: rgba(246, 241, 229, 0.72);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.fblqa-pilgrim-trigger {
+  background: rgba(104, 47, 35, 0.88) !important;
+  color: #f7ead2 !important;
+}
+
+.fblqa-bio-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
+}
+
+.fblqa-bio-column {
+  display: grid;
+  gap: 0.45rem;
+  min-width: 0;
+}
+
+.fblqa-bio-section {
+  min-width: 0;
+  padding: 0.48rem;
+  border: 1px solid rgba(66, 48, 31, 0.24);
+  border-radius: 5px;
+  background: rgba(238, 234, 224, 0.76);
+  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.26);
+}
+
+.fblqa-bio-section-accent {
+  background:
+    linear-gradient(145deg, rgba(145, 55, 41, 0.10), transparent 55%),
+    rgba(238, 234, 224, 0.8);
+}
+
+.fblqa-bio-section > h3,
+.fblqa-bio-section-head h3 {
+  margin: 0 0 0.38rem;
+  font-size: 0.92rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+
+.fblqa-bio-section-head {
+  justify-content: space-between;
+  margin-bottom: 0.34rem;
+}
+
+.fblqa-bio-section-head h3 { margin: 0; }
+.fblqa-bio-section-head button { width: 27px; padding: 0; }
+
+.fblqa-bio-field {
+  display: grid;
+  gap: 0.16rem;
+  min-width: 0;
+  margin-bottom: 0.36rem;
+}
+
+.fblqa-bio-field:last-child { margin-bottom: 0; }
+
+.fblqa-bio-field > span {
+  font-size: 0.68rem;
+  font-weight: 800;
+  letter-spacing: 0.035em;
+  opacity: 0.72;
+}
+
+.fblqa-bio-field input,
+.fblqa-bio-field textarea,
+.fblqa-language-row input,
+.fblqa-language-row select,
+.fblqa-rumor-row input,
+.fblqa-rumor-row select,
+.fblqa-rumor-row textarea {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  border: 1px solid rgba(61, 45, 32, 0.28);
+  border-radius: 3px;
+  background: rgba(255, 253, 247, 0.72);
+  color: inherit;
+}
+
+.fblqa-bio-field textarea,
+.fblqa-rumor-row textarea {
+  resize: vertical;
+  line-height: 1.25;
+}
+
+.fblqa-bio-pair,
+.fblqa-question-grid,
+.fblqa-pilgrim-pair,
+.fblqa-pilgrim-details {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.38rem;
+}
+
+.fblqa-bio-list { display: grid; gap: 0.28rem; }
+
+.fblqa-language-row {
+  display: grid;
+  grid-template-columns: minmax(90px, 1.2fr) 92px 62px auto 24px;
+  gap: 0.24rem;
+  align-items: center;
+}
+
+.fblqa-rumor-row {
+  display: grid;
+  grid-template-columns: minmax(95px, 0.65fr) minmax(150px, 1.7fr) 104px 24px;
+  gap: 0.24rem;
+  align-items: start;
+}
+
+.fblqa-language-row > button,
+.fblqa-rumor-row > button {
+  width: 24px;
+  min-height: 24px;
+  padding: 0;
+}
+
+.fblqa-cost-field,
+.fblqa-native-field {
+  display: flex;
+  align-items: center;
+  gap: 0.2rem;
+  margin: 0;
+  font-size: 0.65rem;
+  white-space: nowrap;
+}
+
+.fblqa-cost-field { flex-direction: column; align-items: stretch; }
+.fblqa-cost-field span { opacity: 0.68; }
+.fblqa-cost-field input { text-align: center; }
+.fblqa-native-field input { width: auto; }
+
+.fblqa-bio-details > summary,
+.fblqa-legacy-section summary {
+  cursor: pointer;
+  font-size: 0.9rem;
+  font-weight: 800;
+  text-transform: uppercase;
+}
+
+.fblqa-question-grid { margin-top: 0.45rem; }
+.fblqa-bio-empty { margin: 0.2rem; font-size: 0.76rem; opacity: 0.62; }
+.fblqa-legacy-section article { margin-top: 0.4rem; }
+.fblqa-legacy-section article p { max-height: 120px; overflow: auto; white-space: pre-wrap; font-size: 0.72rem; }
+
+.fblqa-bio-save-state {
+  position: sticky;
+  bottom: 0.2rem;
+  float: right;
+  min-height: 1rem;
+  padding: 0.12rem 0.36rem;
+  border-radius: 4px;
+  font-size: 0.65rem;
+  background: rgba(30, 28, 24, 0.78);
+  color: #f5ecdc;
+  pointer-events: none;
+}
+.fblqa-bio-save-state:empty { visibility: hidden; }
+.fblqa-bio-save-state.is-error { background: rgba(118, 30, 27, 0.9); }
+
+.fblqa-bio-shell.is-readonly input,
+.fblqa-bio-shell.is-readonly textarea,
+.fblqa-bio-shell.is-readonly select {
+  opacity: 0.82;
+  cursor: default;
+}
+
+.fblqa-pilgrim-drawer {
+  position: fixed;
+  z-index: 10050;
+  box-sizing: border-box;
+  overflow: auto;
+  opacity: 0;
+  transform: translateX(26px) scale(0.98);
+  transition: opacity 160ms ease, transform 180ms ease;
+  pointer-events: none;
+  filter: drop-shadow(0 12px 24px rgba(0, 0, 0, 0.38));
+}
+
+.fblqa-pilgrim-drawer[data-side="left"] { transform: translateX(-26px) scale(0.98); }
+.fblqa-pilgrim-drawer.is-open { opacity: 1; transform: translateX(0) scale(1); pointer-events: auto; }
+
+.fblqa-pilgrim-pocket {
+  position: relative;
+  padding: 18px 8px 8px;
+  border-radius: 8px;
+  background: linear-gradient(90deg, #5f3827, #7e4d31 44%, #57301f);
+  box-shadow: inset 0 0 0 2px rgba(32, 18, 10, 0.42), inset 0 0 18px rgba(0, 0, 0, 0.22);
+}
+
+.fblqa-pilgrim-pocket::before {
+  content: "";
+  position: absolute;
+  top: 6px;
+  left: 20%;
+  right: 20%;
+  height: 6px;
+  border-radius: 50%;
+  background: rgba(27, 14, 8, 0.58);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.14);
+}
+
+.fblqa-pilgrim-close {
+  position: absolute;
+  top: 3px;
+  right: 4px;
+  z-index: 2;
+  width: 26px;
+  min-height: 24px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: #f7ead2;
+}
+
+.fblqa-pilgrim-card {
+  position: relative;
+  padding: 0.7rem;
+  border: 1px solid #5c4a31;
+  border-radius: 5px;
+  background:
+    radial-gradient(circle at 82% 16%, rgba(139, 53, 42, 0.16) 0 42px, transparent 43px),
+    repeating-linear-gradient(0deg, rgba(74, 52, 30, 0.035) 0 1px, transparent 1px 4px),
+    #e7d9b8;
+  color: #2b241b;
+  font-family: Georgia, "Times New Roman", serif;
+  box-shadow: inset 0 0 22px rgba(94, 67, 34, 0.18);
+}
+
+.fblqa-pilgrim-card::after {
+  content: "ПИЛИГРИМ";
+  position: absolute;
+  right: 18px;
+  bottom: 34px;
+  transform: rotate(-12deg);
+  padding: 3px 8px;
+  border: 2px solid rgba(116, 42, 35, 0.28);
+  border-radius: 50%;
+  color: rgba(116, 42, 35, 0.28);
+  font-size: 0.72rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  pointer-events: none;
+}
+
+.fblqa-pilgrim-card > header,
+.fblqa-pilgrim-card > footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.5rem;
+}
+
+.fblqa-pilgrim-card > header {
+  align-items: flex-start;
+  margin-bottom: 0.55rem;
+  padding-bottom: 0.42rem;
+  border-bottom: 2px double rgba(61, 45, 30, 0.52);
+}
+
+.fblqa-pilgrim-card > header span { font-size: 0.62rem; letter-spacing: 0.12em; text-transform: uppercase; }
+.fblqa-pilgrim-card > header h2 { margin: 0.05rem 0 0; font-size: 1.3rem; text-transform: uppercase; }
+.fblqa-pilgrim-card > header strong { font-size: 0.72rem; }
+
+.fblqa-pilgrim-identity {
+  display: grid;
+  grid-template-columns: 92px minmax(0, 1fr);
+  gap: 0.55rem;
+  margin-bottom: 0.48rem;
+}
+
+.fblqa-pilgrim-identity > img {
+  width: 92px;
+  height: 116px;
+  object-fit: cover;
+  border: 1px solid rgba(55, 42, 29, 0.62);
+  border-radius: 2px;
+  filter: sepia(0.18) contrast(0.94);
+}
+
+.fblqa-pilgrim-card .fblqa-bio-field > span { color: #4a3b28; opacity: 1; }
+.fblqa-pilgrim-card input,
+.fblqa-pilgrim-card textarea {
+  border: 0;
+  border-bottom: 1px solid rgba(58, 43, 29, 0.48);
+  border-radius: 0;
+  background: rgba(255, 250, 233, 0.24);
+  color: #211b15;
+  font-family: inherit;
+}
+
+.fblqa-pilgrim-details { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.fblqa-pilgrim-card > footer {
+  margin-top: 0.4rem;
+  padding-top: 0.35rem;
+  border-top: 1px solid rgba(58, 43, 29, 0.42);
+  font-size: 0.62rem;
+  font-style: italic;
+}
+
+@media (max-width: 900px) {
+  .fblqa-bio-columns { grid-template-columns: 1fr; }
+  .fblqa-question-grid { grid-template-columns: 1fr; }
+}
+
+@media (max-width: 620px) {
+  .fblqa-bio-header { align-items: flex-start; flex-direction: column; }
+  .fblqa-bio-header-actions { width: 100%; }
+  .fblqa-bio-header-actions button { flex: 1; }
+  .fblqa-bio-pair,
+  .fblqa-pilgrim-details { grid-template-columns: 1fr; }
+  .fblqa-language-row,
+  .fblqa-rumor-row { grid-template-columns: 1fr 28px; }
+  .fblqa-language-row > :not(button),
+  .fblqa-rumor-row > :not(button) { grid-column: 1; }
+  .fblqa-language-row > button,
+  .fblqa-rumor-row > button { grid-column: 2; grid-row: 1; }
+}

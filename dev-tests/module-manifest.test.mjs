@@ -37,7 +37,8 @@ test("style manifest keeps ordered feature CSS and no legacy final file", () => 
     "styles/10-rest.css",
     "styles/11-expanded-conditions.css",
     "styles/09-compat-prosthetics.css",
-    "styles/12-reputation.css"
+    "styles/12-reputation.css",
+    "styles/13-biography.css"
   ]);
 
   assert.equal(moduleJson.styles.some((path) => /final/i.test(normalize(path))), false);

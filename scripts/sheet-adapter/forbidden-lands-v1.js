@@ -45,6 +45,19 @@ export function findTalentTab(root) {
     ?? null;
 }
 
+
+export function findNoteTab(root) {
+  return root?.querySelector?.('.sheet-body > .tab[data-tab="note"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="bio"]')
+    ?? root?.querySelector?.('.tab.note[data-tab="note"]')
+    ?? root?.querySelector?.('.tab.bio[data-tab="bio"]')
+    ?? root?.querySelector?.('.note-tab')
+    ?? root?.querySelector?.('.bio-tab')
+    ?? root?.querySelector?.('[data-tab="note"]')
+    ?? root?.querySelector?.('[data-tab="bio"]')
+    ?? null;
+}
+
 export function findMainTab(root) {
   return root?.querySelector?.(".main-tab")
     ?? root?.querySelector?.('[data-tab="main"]')

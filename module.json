@@ -1,8 +1,8 @@
 {
   "id": "fbl-quick-access",
-  "title": "Forbidden Lands Quick Access Gear",
-  "description": "Forbidden Lands character-sheet quality-of-life suite with Quick Access gear, wallet, Reputation ledger, tooltips, Rest/New Day workflows, integrated STAT conditions, and a public provider API for extension modules.",
-  "version": "1.6.2",
+  "title": "Forbidden Lands Quick Access",
+  "description": "Forbidden Lands character-sheet quality-of-life suite with Quick Access gear, redesigned BIO dossier and Pilgrim Card, wallet, Reputation ledger, tooltips, Rest/New Day workflows, integrated STAT conditions, and a public provider API.",
+  "version": "1.7.1",
   "authors": [
     {
       "name": "vmisha007 + ChatGPT"
@@ -39,7 +39,8 @@
     "styles/10-rest.css",
     "styles/11-expanded-conditions.css",
     "styles/09-compat-prosthetics.css",
-    "styles/12-reputation.css"
+    "styles/12-reputation.css",
+    "styles/13-biography.css"
   ],
   "languages": [
     {
