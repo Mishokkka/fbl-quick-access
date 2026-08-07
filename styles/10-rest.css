@@ -165,15 +165,47 @@
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.12) inset;
 }
 
-.fblqa-rest-type-switch input[type="radio"] {
+.application.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"],
+.app.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"] {
+  appearance: none;
+  -webkit-appearance: none;
+  display: grid;
+  place-content: center;
+  box-sizing: border-box;
   width: 15px;
   height: 15px;
   min-width: 15px;
   min-height: 15px;
   margin: 0;
+  padding: 0;
+  border: 1.5px solid #29251f;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.82);
+  box-shadow: none;
+  opacity: 1;
+  position: static;
+  inset: auto;
+  clip: auto;
+  pointer-events: auto;
 }
 
-.fblqa-rest-pane[hidden] {
+.application.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"]::before,
+.app.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"]::before {
+  content: "";
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #29251f;
+  transform: scale(0);
+  transition: transform 80ms ease;
+}
+
+.application.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"]:checked::before,
+.app.fblqa-rest-dialog .fblqa-rest-type-switch input[type="radio"]:checked::before {
+  transform: scale(1);
+}
+
+.fblqa-rest-form .fblqa-rest-pane[hidden] {
   display: none;
 }
 
@@ -514,6 +546,19 @@
   background: rgba(221, 217, 211, 0.98);
   color: var(--fblqa-rest-text);
   font-family: "IM Fell Great Primer", var(--font-primary), serif;
+}
+
+.application.fblqa-rest-dialog .window-header [data-action="close"],
+.application.fblqa-rest-dialog .window-header .close,
+.app.fblqa-rest-dialog .window-header .close {
+  color: #111;
+  opacity: 1;
+}
+
+.application.fblqa-rest-dialog .window-header [data-action="close"] i,
+.application.fblqa-rest-dialog .window-header .close i,
+.app.fblqa-rest-dialog .window-header .close i {
+  color: inherit;
 }
 
 .application.fblqa-rest-dialog .window-content {

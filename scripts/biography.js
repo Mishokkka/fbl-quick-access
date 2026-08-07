@@ -370,7 +370,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
 
   bioTab.querySelector('[data-bio-action="add-rumor"]')?.addEventListener("click", () => {
     if (!editable) return warnCannotModifyActor();
-    state.rumors.push({ id: makeId("rumor"), name: "", text: "" });
+    state.rumors.push({ id: makeId("rumor"), text: "" });
     render();
     queueProfileSave(actor, state, null, 0);
   });
@@ -407,6 +407,7 @@ function openPilgrimCard(actor, root, state, editable, bioTab) {
     updatePilgrimAttachmentUi(drawer);
     if (drawer.dataset.attached === "true") positionPilgrimDrawer(drawer, application);
   });
+  setupPilgrimBirthDateEditor(drawer, actor, state, editable);
   bindSimpleControls(drawer, actor, state, editable, null, bioTab);
   bindRichEditors(drawer, actor, state, editable, null, bioTab);
 }
@@ -420,9 +421,16 @@ function pilgrimCardHtml(actor, profile, editable) {
       <div class="fblqa-pilgrim-windowbar" data-pilgrim-drag>
         <span class="fblqa-pilgrim-window-title"><i class="fa-solid fa-id-card"></i>${escapeHtml(t("Bio.Pilgrim.Title", "Карта пилигрима"))}</span>
         <span class="fblqa-pilgrim-window-actions">
+          <button type="button" data-bio-action="edit-birth-date" aria-expanded="false" aria-label="${escapeHtml(t("Bio.Pilgrim.EditBirthDate", "Настроить дату рождения"))}" title="${escapeHtml(t("Bio.Pilgrim.EditBirthDate", "Настроить дату рождения"))}"${editable ? "" : " disabled"}><i class="fa-solid fa-calendar-days"></i></button>
           <button type="button" data-bio-action="toggle-pilgrim-attachment"><i class="fa-solid fa-link"></i></button>
           <button type="button" data-bio-action="close-pilgrim" aria-label="${escapeHtml(t("Bio.Pilgrim.Close", "Закрыть"))}" title="${escapeHtml(t("Bio.Pilgrim.Close", "Закрыть"))}"><i class="fa-solid fa-xmark"></i></button>
         </span>
+      </div>
+      <div class="fblqa-pilgrim-birth-editor" data-pilgrim-birth-editor hidden>
+        <label>
+          <span>${escapeHtml(t("Bio.Pilgrim.BirthDate", "Дата рождения"))}</span>
+          <input type="text" data-pilgrim-birth-input value="${escapeHtml(birthDateLabel(profile.identity.birthDate))}" placeholder="${escapeHtml(t("Bio.Pilgrim.BirthDatePlaceholder", "Например: 14 Зноероста 842"))}"${disabled}>
+        </label>
       </div>
       <div class="fblqa-pilgrim-card" data-stamp="${escapeHtml(stamp)}">
         <div class="fblqa-pilgrim-serial">${escapeHtml(serial)}</div>
@@ -443,9 +451,58 @@ function pilgrimCardHtml(actor, profile, editable) {
           ${fieldInput("physical.hair", t("Bio.Pilgrim.Hair", "Волосы"), profile.physical.hair, disabled, "fblqa-pilgrim-hair")}
         </div>
         ${fieldTextarea("physical.distinguishingMarks", t("Bio.Pilgrim.DistinguishingMarks", "Особые приметы"), profile.physical.distinguishingMarks, disabled, "fblqa-pilgrim-marks")}
-        <footer><span>${escapeHtml(birthDateLabel(profile.identity.birthDate) || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана"))}</span><span>${escapeHtml(t("Bio.Pilgrim.Validity", "Действительна во всех портах"))}</span></footer>
+        <footer><span data-pilgrim-birth-label>${escapeHtml(birthDateLabel(profile.identity.birthDate) || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана"))}</span><span>${escapeHtml(t("Bio.Pilgrim.Validity", "Действительна во всех портах"))}</span></footer>
       </div>
     </div>`;
+}
+
+
+function setupPilgrimBirthDateEditor(drawer, actor, state, editable) {
+  const button = drawer.querySelector('[data-bio-action="edit-birth-date"]');
+  const editor = drawer.querySelector("[data-pilgrim-birth-editor]");
+  const input = drawer.querySelector("[data-pilgrim-birth-input]");
+  const label = drawer.querySelector("[data-pilgrim-birth-label]");
+  if (!(button instanceof HTMLElement) || !(editor instanceof HTMLElement) || !(input instanceof HTMLInputElement)) return;
+
+  const closeEditor = () => {
+    editor.hidden = true;
+    button.setAttribute("aria-expanded", "false");
+  };
+
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!editable) return warnCannotModifyActor();
+    const open = editor.hidden;
+    editor.hidden = !open;
+    button.setAttribute("aria-expanded", String(open));
+    if (open) {
+      input.focus();
+      input.select();
+    }
+  });
+
+  input.addEventListener("input", () => {
+    if (!editable) return;
+    state.identity.birthDate = normalizeBirthDate(input.value);
+    if (label instanceof HTMLElement) {
+      label.textContent = birthDateLabel(state.identity.birthDate) || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана");
+    }
+    queueProfileSave(actor, state, null);
+  });
+
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeEditor();
+      button.focus();
+    }
+    if (event.key === "Enter") {
+      event.preventDefault();
+      closeEditor();
+      button.focus();
+    }
+  });
 }
 
 function setupPilgrimMovement(drawer, application) {
@@ -568,8 +625,7 @@ function languageRow(entry, index, editable) {
 
 function rumorRow(entry, index, editable) {
   const disabled = editable ? "" : " disabled";
-  return `<div class="fblqa-rumor-row">
-    <label class="fblqa-row-field fblqa-rumor-source"><span>${escapeHtml(t("Bio.Rumors.Source", "Имя или источник"))}</span><input type="text" data-bio-path="rumors.${index}.name" value="${escapeHtml(entry.name)}" placeholder="${escapeHtml(t("Bio.Rumors.SourcePlaceholder", "Кто рассказывает"))}"${disabled}></label>
+  return `<div class="fblqa-rumor-row${editable ? " is-editable" : " is-readonly"}">
     <label class="fblqa-row-field fblqa-rumor-text"><span>${escapeHtml(t("Bio.Rumors.Text", "Слух"))}</span><input type="text" data-bio-path="rumors.${index}.text" value="${escapeHtml(plainTextFromHtml(entry.text))}" placeholder="${escapeHtml(t("Bio.Rumors.Text", "Слух"))}"${disabled}></label>
     ${editable ? `<button type="button" class="fblqa-row-remove" data-bio-action="remove-rumor" data-index="${index}" aria-label="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}" title="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}"><i class="fa-solid fa-xmark"></i></button>` : ""}
   </div>`;
@@ -766,13 +822,17 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
     <button type="button" data-bio-action="cancel-rich"><i class="fa-solid fa-xmark"></i><span>${escapeHtml(t("Bio.Cancel", "Отмена"))}</span></button>`;
 
   let dirty = false;
-  let editorReady = false;
   let closed = false;
-  const markDirty = (event) => {
-    if (!editorReady) return;
-    const target = event.target instanceof HTMLElement ? event.target : null;
-    if (target && !target.closest?.(".ProseMirror, [contenteditable='true'], prose-mirror")) return;
+  const markDirty = () => {
+    // Any input/change bubbling from the editor shell is a user edit. Do not wait
+    // for the custom element's next-frame upgrade: the first keystroke can happen
+    // before that frame. Once upgraded, also consult Foundry's own dirty state.
     dirty = true;
+    try {
+      if (typeof editor.isDirty === "function") dirty = dirty || Boolean(editor.isDirty());
+    } catch (_error) {
+      // The event itself is sufficient evidence of a user edit.
+    }
   };
   shell.addEventListener("input", markDirty, true);
   shell.addEventListener("change", markDirty, true);
@@ -795,7 +855,6 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
     } catch (_error) {
       // The value attribute and sanitized light-DOM fallback remain authoritative.
     }
-    editorReady = true;
     editor.querySelector(".ProseMirror, [contenteditable='true']")?.focus?.();
   });
 
@@ -961,31 +1020,53 @@ function scheduleLanguageLayout(scope) {
 function applyLanguageLayout(list) {
   const rows = [...list.querySelectorAll(":scope > .fblqa-language-row")];
   if (!rows.length || list.clientWidth <= 0) return;
-  const available = list.clientWidth;
-  const half = (available - 8) / 2;
-  const needsWide = rows.map((row) => {
-    const name = row.querySelector(".fblqa-language-name input");
-    const level = row.querySelector(".fblqa-language-level select");
-    const nameText = String(name?.value || name?.placeholder || "");
-    const levelText = String(level?.selectedOptions?.[0]?.textContent || level?.value || "");
-    const estimatedWidth = 132 + Math.min(220, [...nameText].length * 7.1) + Math.min(150, [...levelText].length * 7.4);
-    return available < 560 || estimatedWidth > half;
-  });
 
-  for (const row of rows) row.classList.remove("is-wide");
-  for (let index = 0; index < rows.length;) {
-    if (needsWide[index]) {
-      rows[index].classList.add("is-wide");
-      index += 1;
-      continue;
-    }
-    if (index + 1 < rows.length && !needsWide[index + 1]) {
-      index += 2;
-      continue;
-    }
-    rows[index].classList.add("is-wide");
-    index += 1;
+  for (const row of rows) {
+    updateLanguageLevelWidth(row);
+    row.classList.remove("is-wide");
   }
+
+  // The list intentionally uses either one or two language rows per visual line.
+  // Name gets every spare pixel; level only reserves enough room for its current
+  // label/value, plus the native select arrow.
+  const twoColumnsFit = list.clientWidth >= 560;
+  if (!twoColumnsFit) {
+    for (const row of rows) row.classList.add("is-wide");
+    return;
+  }
+
+  if (rows.length % 2 === 1) rows.at(-1)?.classList.add("is-wide");
+}
+
+function updateLanguageLevelWidth(row) {
+  const field = row.querySelector(".fblqa-language-level");
+  const select = field?.querySelector?.("select");
+  const label = field?.querySelector?.(":scope > span");
+  if (!(field instanceof HTMLElement) || !(select instanceof HTMLElement)) return;
+
+  const optionText = String(select.selectedOptions?.[0]?.textContent || select.value || "").trim();
+  const labelText = String(label?.textContent || "").trim();
+  const style = globalThis.getComputedStyle?.(select);
+  const number = (value) => Number.parseFloat(value) || 0;
+  // Reserve exactly the rendered control chrome: left/right padding, borders and
+  // a minimum arrow lane. Foundry/system select styling can otherwise place the
+  // dropdown indicator over the final letters of the selected level.
+  const leftPadding = number(style?.paddingLeft);
+  const rightPadding = Math.max(28, number(style?.paddingRight));
+  const borderWidth = number(style?.borderLeftWidth) + number(style?.borderRightWidth);
+  const optionWidth = measureControlText(select, optionText) + leftPadding + rightPadding + borderWidth + 1;
+  const labelWidth = measureControlText(label instanceof HTMLElement ? label : select, labelText);
+  field.style.setProperty("--fblqa-language-level-width", `${Math.ceil(Math.max(optionWidth, labelWidth))}px`);
+}
+
+function measureControlText(element, text) {
+  if (!text) return 0;
+  const style = globalThis.getComputedStyle?.(element);
+  const canvas = measureControlText.canvas ??= document.createElement("canvas");
+  const context = canvas.getContext?.("2d");
+  if (!context) return [...text].length * 7;
+  context.font = style?.font || `${style?.fontSize || "12px"} ${style?.fontFamily || "sans-serif"}`;
+  return context.measureText(text).width;
 }
 
 function captureBiographyViewport(bioTab, actor) {
@@ -1247,10 +1328,9 @@ function normalizeLanguages(value) {
 function normalizeRumors(value) {
   if (!Array.isArray(value)) return [];
   return value.map((entry, index) => typeof entry === "string"
-    ? { id: makeId(`rumor-${index + 1}`), name: "", text: entry }
+    ? { id: makeId(`rumor-${index + 1}`), text: entry }
     : {
         id: String(entry?.id ?? makeId(`rumor-${index + 1}`)),
-        name: String(entry?.name ?? entry?.characterName ?? entry?.source ?? ""),
         text: String(entry?.text ?? entry?.rumor ?? "")
       });
 }
@@ -1363,7 +1443,10 @@ function sanitizeRichHtmlWithoutDom(html) {
 }
 
 function isSafeRichUrl(value, attributeName) {
-  const raw = String(value ?? "").replace(/[\u0000-\u001F\u007F\s]+/gu, "").trim();
+  const raw = String(value ?? "")
+    .replace(/[\u0000-\u001F\u007F\s]+/gu, "")
+    .replaceAll("\\", "/")
+    .trim();
   if (!raw || raw.startsWith("#") || raw.startsWith("./") || raw.startsWith("../")) return true;
   if (raw.startsWith("//")) return false;
   if (raw.startsWith("/")) return true;

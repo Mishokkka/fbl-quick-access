@@ -29,7 +29,6 @@ test("normalizes imported biography rows without exposing rumor truth", () => {
   });
   assert.deepEqual(profile.rumors[0], {
     id: profile.rumors[0].id,
-    name: "Ничак",
     text: "Боится механизмов"
   });
 });
@@ -40,7 +39,7 @@ test("keeps legacy BIO archive and tolerates old string rumors", () => {
     legacy: { face: "<p>Face text</p>", body: "Body text", clothing: "Clothing text" }
   });
 
-  assert.equal(profile.rumors[0].name, "");
+  assert.equal("name" in profile.rumors[0], false);
   assert.equal(profile.rumors[0].text, "Старый слух");
   assert.equal(profile.legacy.face, "<p>Face text</p>");
   assert.equal(profile.legacy.body, "Body text");
@@ -105,14 +104,38 @@ test("BIO localization and removed controls match the current data model", () =>
   assert.equal("Native" in en.FBLQA.Bio.Languages, false);
   assert.equal("AirIslands" in ru.FBLQA.Bio.Pilgrim, false);
   assert.equal("AirIslands" in en.FBLQA.Bio.Pilgrim, false);
-  assert.equal(ru.FBLQA.Bio.Rumors.Source, "Имя или источник");
-  assert.equal(en.FBLQA.Bio.Rumors.Source, "Name or source");
+  assert.equal("Source" in ru.FBLQA.Bio.Rumors, false);
+  assert.equal("Source" in en.FBLQA.Bio.Rumors, false);
+  assert.equal("SourcePlaceholder" in ru.FBLQA.Bio.Rumors, false);
+  assert.equal("SourcePlaceholder" in en.FBLQA.Bio.Rumors, false);
+  assert.doesNotMatch(source, /rumors\.\$\{index\}\.name/);
+  assert.doesNotMatch(source, /fblqa-rumor-source/);
   assert.equal(ru.FBLQA.Bio.Fields.Pride, "Гордость");
   assert.equal(en.FBLQA.Bio.Fields.Pride, "Pride");
 });
 
+test("language level column is content-sized and rumor rows contain text only", () => {
+  const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
+
+  assert.match(css, /grid-template-columns:\s*minmax\(0, 1fr\) var\(--fblqa-language-level-width, max-content\) 40px 18px/);
+  assert.match(source, /updateLanguageLevelWidth\(row\)/);
+  assert.match(source, /measureControlText\(select, optionText\)/);
+  assert.match(source, /Math\.max\(28, number\(style\?\.paddingRight\)\)/);
+  assert.match(css, /\.fblqa-language-level select\s*\{[\s\S]*?padding-right:\s*28px/);
+  assert.match(css, /\.fblqa-rumor-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
+  assert.match(css, /\.fblqa-rumor-row\.is-editable\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 18px/);
+  assert.doesNotMatch(source, /data-bio-path="rumors\.\$\{index\}\.name"/);
+});
+
 test("BIO editor preserves stored rich text until the user actually changes it", () => {
+  const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
   const original = "<p><strong>Старый текст</strong></p>";
+
+  assert.doesNotMatch(source, /let editorReady|if \(!editorReady\) return/);
+  assert.doesNotMatch(source, /target\.closest\?\.\("\.ProseMirror, \[contenteditable='true'\], prose-mirror"\)/);
+  assert.match(source, /shell\.addEventListener\("input", markDirty, true\)/);
+  assert.match(source, /shell\.addEventListener\("change", markDirty, true\)/);
 
   assert.equal(resolveBiographyEditorValue({
     originalValue: original,
@@ -148,6 +171,24 @@ test("BIO editor accepts new text and intentional deletion after a user edit", (
     editableHtml: "",
     dirty: true
   }), "");
+
+  assert.equal(resolveBiographyEditorValue({
+    originalValue: original,
+    propertyValue: "<p>Из свойства</p>",
+    attributeValue: original,
+    editableHtml: null,
+    dirty: true
+  }), "<p>Из свойства</p>");
+});
+
+test("Pilgrim Card exposes birth-date editing in its header and uses a full-size stamp", () => {
+  const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
+
+  assert.match(source, /data-bio-action="edit-birth-date"/);
+  assert.match(source, /data-pilgrim-birth-editor/);
+  assert.match(source, /setupPilgrimBirthDateEditor\(drawer, actor, state, editable\)/);
+  assert.match(css, /\.fblqa-pilgrim-card::after\s*\{[\s\S]*?width:\s*98px;[\s\S]*?height:\s*98px;[\s\S]*?border:\s*4px double/);
 });
 
 test("font choices include Foundry, world-configured, and already loaded families", async () => {
