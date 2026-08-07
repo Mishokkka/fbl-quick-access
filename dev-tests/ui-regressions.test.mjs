@@ -126,3 +126,18 @@ test("Reputation replaces the native header roll with a ledger dialog", () => {
   assert.match(css, /\.fblqa-reputation-note-summary/);
   assert.doesNotMatch(css, /\.fblqa-reputation-value\s*\{[^}]*background:/);
 });
+
+
+test("Reputation dialog close control is forced to black", () => {
+  const css = readFileSync(join(root, "styles", "12-reputation.css"), "utf8");
+  assert.match(css, /fblqa-reputation-dialog[\s\S]*?\[data-action="close"\][\s\S]*?color:\s*#111\s*!important/);
+});
+
+test("Pilgrim font choices refresh after world fonts are available", () => {
+  const main = readFileSync(join(root, "scripts", "main.js"), "utf8");
+  const settings = readFileSync(join(root, "scripts", "settings.js"), "utf8");
+  assert.match(main, /Hooks\.once\("ready"[\s\S]*?refreshPilgrimFontChoices\(\)/);
+  assert.match(main, /renderSettingsConfig[\s\S]*?refreshPilgrimFontChoices/);
+  assert.match(settings, /getAvailableFonts/);
+  assert.match(settings, /core", "fonts"/);
+});

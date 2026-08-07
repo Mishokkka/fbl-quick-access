@@ -615,7 +615,8 @@
   line-height: 1.25;
 }
 
-.fblqa-delete-dialog .dialog-buttons {
+.fblqa-delete-dialog .dialog-buttons,
+.fblqa-delete-dialog .form-footer {
   box-sizing: border-box;
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -624,7 +625,8 @@
   padding: 0 12px 12px;
 }
 
-.fblqa-delete-dialog .dialog-button {
+.fblqa-delete-dialog .dialog-button,
+.fblqa-delete-dialog .form-footer button {
   min-height: 30px;
   margin: 0;
   border: 1px solid rgba(0, 0, 0, 0.32);
@@ -639,20 +641,28 @@
 }
 
 .fblqa-delete-dialog .dialog-button:hover,
-.fblqa-delete-dialog .dialog-button:focus {
+.fblqa-delete-dialog .dialog-button:focus,
+.fblqa-delete-dialog .form-footer button:hover,
+.fblqa-delete-dialog .form-footer button:focus {
   outline: 0;
   background: rgba(226, 219, 204, 0.98);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
 }
 
-.fblqa-delete-dialog .dialog-button.yes {
+.fblqa-delete-dialog .dialog-button.yes,
+.fblqa-delete-dialog .form-footer button.yes,
+.fblqa-delete-dialog .form-footer button[data-action="yes"] {
   border-color: rgba(120, 40, 35, 0.68);
   background: rgba(120, 40, 35, 0.14);
   color: #222020;
 }
 
 .fblqa-delete-dialog .dialog-button.yes:hover,
-.fblqa-delete-dialog .dialog-button.yes:focus {
+.fblqa-delete-dialog .dialog-button.yes:focus,
+.fblqa-delete-dialog .form-footer button.yes:hover,
+.fblqa-delete-dialog .form-footer button.yes:focus,
+.fblqa-delete-dialog .form-footer button[data-action="yes"]:hover,
+.fblqa-delete-dialog .form-footer button[data-action="yes"]:focus {
   background: rgba(120, 40, 35, 0.22);
 }
 

@@ -71,6 +71,19 @@ function attachTooltipToRow(actor, row) {
   row.addEventListener("dblclick", (event) => openItemFromRow(actor, row, event));
 
   const anchors = findTooltipAnchors(row);
+  const keyboardAnchor = anchors.find((anchor) => !anchor.matches("a, button, input, select, textarea, [contenteditable='true']")) ?? anchors[0];
+  if (keyboardAnchor instanceof HTMLElement && !keyboardAnchor.matches("a, button, input, select, textarea, [contenteditable='true']")) {
+    keyboardAnchor.tabIndex = 0;
+    keyboardAnchor.addEventListener("keydown", (event) => {
+      if (event.key !== "Enter") return;
+      const item = findItemForTooltip(actor, row);
+      if (!item) return;
+      event.preventDefault();
+      hideItemTooltip();
+      item.sheet?.render(true);
+    });
+  }
+
   for (const anchor of anchors) {
     anchor.classList.add("fblqa-tooltip-anchor");
     anchor.addEventListener("mouseenter", (event) => scheduleItemTooltip(actor, row, anchor, event));
@@ -131,6 +144,7 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   clearTimeout(itemTooltipHideTimer);
   itemTooltipHideTimer = null;
   clearTimeout(itemTooltipTimer);
+  removeTooltipDescription(itemTooltipAnchor);
   itemTooltipAnchor = anchor;
 
   if (event?.clientX || event?.clientY) {
@@ -149,6 +163,7 @@ function scheduleItemTooltip(actor, row, anchor, event) {
     const tooltip = ensureItemTooltipElement();
     tooltip.innerHTML = html;
     tooltip.classList.add("is-visible");
+    addTooltipDescription(anchor, tooltip.id);
     positionItemTooltip();
   }, ITEM_TOOLTIP_DELAY_MS);
 }
@@ -163,6 +178,7 @@ export function hideItemTooltip() {
   clearTimeout(itemTooltipHideTimer);
   itemTooltipHideTimer = null;
   itemTooltipTimer = null;
+  removeTooltipDescription(itemTooltipAnchor);
   itemTooltipAnchor = null;
 
   if (itemTooltipElement) {
@@ -175,12 +191,29 @@ function ensureItemTooltipElement() {
   if (itemTooltipElement) return itemTooltipElement;
 
   itemTooltipElement = document.createElement("aside");
+  itemTooltipElement.id = "fblqa-item-tooltip";
   itemTooltipElement.classList.add("fblqa-item-tooltip");
   itemTooltipElement.setAttribute("role", "tooltip");
   itemTooltipElement.addEventListener("mouseenter", () => clearTimeout(itemTooltipHideTimer));
   itemTooltipElement.addEventListener("mouseleave", scheduleItemTooltipHide);
   document.body.append(itemTooltipElement);
   return itemTooltipElement;
+}
+
+function addTooltipDescription(anchor, tooltipId) {
+  if (!(anchor instanceof HTMLElement) || !tooltipId) return;
+  const ids = new Set(String(anchor.getAttribute("aria-describedby") ?? "").split(/\s+/u).filter(Boolean));
+  ids.add(tooltipId);
+  anchor.setAttribute("aria-describedby", [...ids].join(" "));
+}
+
+function removeTooltipDescription(anchor) {
+  if (!(anchor instanceof HTMLElement) || !itemTooltipElement?.id) return;
+  const ids = String(anchor.getAttribute("aria-describedby") ?? "")
+    .split(/\s+/u)
+    .filter((id) => id && id !== itemTooltipElement.id);
+  if (ids.length) anchor.setAttribute("aria-describedby", ids.join(" "));
+  else anchor.removeAttribute("aria-describedby");
 }
 
 function positionItemTooltip() {

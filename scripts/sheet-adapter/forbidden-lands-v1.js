@@ -46,15 +46,23 @@ export function findTalentTab(root) {
 }
 
 
+export function findBiographyTab(root) {
+  return root?.querySelector?.('.sheet-body > .tab[data-tab="bio"]')
+    ?? root?.querySelector?.('.sheet-body > .bio-tab')
+    ?? root?.querySelector?.('.sheet-body .tab.bio[data-tab="bio"]')
+    ?? root?.querySelector?.('.sheet-body .tab[data-tab="bio"]')
+    ?? root?.querySelector?.('.bio-tab[data-tab="bio"]')
+    ?? root?.querySelector?.('.bio-tab')
+    ?? null;
+}
+
 export function findNoteTab(root) {
   return root?.querySelector?.('.sheet-body > .tab[data-tab="note"]')
-    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="bio"]')
-    ?? root?.querySelector?.('.tab.note[data-tab="note"]')
-    ?? root?.querySelector?.('.tab.bio[data-tab="bio"]')
+    ?? root?.querySelector?.('.sheet-body > .note-tab')
+    ?? root?.querySelector?.('.sheet-body .tab.note[data-tab="note"]')
+    ?? root?.querySelector?.('.sheet-body .tab[data-tab="note"]')
+    ?? root?.querySelector?.('.note-tab[data-tab="note"]')
     ?? root?.querySelector?.('.note-tab')
-    ?? root?.querySelector?.('.bio-tab')
-    ?? root?.querySelector?.('[data-tab="note"]')
-    ?? root?.querySelector?.('[data-tab="bio"]')
     ?? null;
 }
 

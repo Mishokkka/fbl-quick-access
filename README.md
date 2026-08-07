@@ -1,14 +1,16 @@
 # Forbidden Lands Quick Access
 
-## Version 1.7.1
+## Version 1.7.11
 
-- Replaced the native BIO presentation with a compact two-column personal dossier.
-- Added the sliding **Pilgrim Card** with identity, kin, subrace, issuing country, portrait, and physical-description fields.
-- Added structured languages, character questions, rumors, background, family, Pride, Dark Secret, motivation, connections, and public-note fields.
-- Preserved legacy Face, Body, and Clothing text in a read-only archive instead of discarding it.
-- Added public `getBiographyProfile()` and `saveBiographyProfile()` integration helpers for character importers.
-- Retained the structured Reputation and start-Willpower import helpers introduced in 1.6.2.
-
+- Authenticates player-to-GM integration calls and wallet-transfer offers, decisions, and results with one-time proofs stored on the sending User document. Socket packets no longer trust claimed user ids by themselves.
+- Applies both sides of an accepted wallet transfer through one `Actor.updateDocuments` batch, avoiding the former sequential partial-update and rollback path.
+- Sanitizes BIO rich text before persistence and display, and sanitizes enriched tooltip HTML before inserting it into the DOM.
+- Cleans up BIO observers, viewport listeners, animation frames, and deleted-actor state during rerender and teardown.
+- Replaces private application `_state` and `_element` access with public Foundry v13 application properties.
+- Routes production dialogs through the Foundry v13 `DialogV2` API, with a compatibility fallback only for non-v13 test environments.
+- Prevents transfer submit/close and accept/close races from producing duplicate or contradictory transfer decisions.
+- Makes filled Quick Access slots single-click and keyboard operable, adds accessible labels and tooltip descriptions, enlarges the remove target, and adapts the slot grid to narrow sheet widths.
+- Keeps the BIO editor fixes from 1.7.10: one wrapped editing layer, intrinsic toolbar height, and compact native ProseMirror controls.
 
 ## 1.6.2
 
@@ -20,8 +22,8 @@ Small quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
 
-- Foundry VTT: v13, verified on v13.351.
-- Forbidden Lands system: v13.0.5.
+- Foundry VTT target: v13.351.
+- Forbidden Lands system target: v13.0.5.
 - Optional integration: `fl-firearms`, through its public API only.
 - Optional integration: `item-piles`, through `game.itempiles.API.giveItem(item)` when available.
 - The former `forbidden-lands-expanded-conditions` module should be disabled after installing this integrated version.
@@ -47,7 +49,7 @@ Small quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Borderless item sheets.
 - Start-of-session Willpower helper using a manually selected Kin Talent and Professional Talent.
 - Integrated Expanded Conditions STAT tab from the former `forbidden-lands-expanded-conditions` module.
-- Redesigned BIO tab with a two-column personal dossier and a sliding, editable Pilgrim Card.
+- Redesigned BIO tab with a compact one-column dossier, native Foundry rich-text editors, a copyable legacy BIO archive, and an attached or detachable editable Pilgrim Card.
 - Structured language and rumor rows with add/remove controls; imported language learning costs remain visible.
 
 ## Wallet behavior
@@ -125,11 +127,13 @@ If `fl-firearms` is inactive, missing, or does not expose the method, item toolt
 
 ## Redesigned BIO and Pilgrim Card
 
-The native Forbidden Lands BIO tab is replaced at render time; system templates and files are not modified. The visible dossier uses two columns and stores structured data in `flags.fbl-quick-access.biographyProfile`.
+The native Forbidden Lands BIO tab is replaced at render time; system templates and files are not modified. The visible dossier uses one compact column and stores structured data in `flags.fbl-quick-access.biographyProfile`.
 
-The Pilgrim Card slides beside the actor sheet and contains the actor portrait, name, kin, subrace, issuing country, birth date, overall appearance, height, weight, skin, eyes, hair, and distinguishing marks. The main dossier contains Concept, Pride, Dark Secret, Background, Family, motivation, party connections, the public Note, languages, character questions, and rumors.
+The compact Pilgrim Card opens beside the actor sheet and contains name, kin, subrace, issuing country, birth date, overall appearance, height, weight, skin, eyes, hair, and a full-width distinguishing-marks field. It deliberately has no portrait. It follows the actor sheet while linked and can be detached into an independently draggable window. The transparent sticky BIO footer contains only the archive and Pilgrim Card controls.
 
-Legacy Face, Body, and Clothing values are not shown as active editing fields. Existing non-empty values are copied into a read-only archive on the new BIO tab so an upgrade does not silently discard old character text.
+The visible dossier contains Pride, Dark Secret, Background, Family, motivation, party connections, languages, character questions, and rumors. Concept and the public Note remain accepted by the import API for backward compatibility but are not displayed in BIO; the native NOTE tab remains the place for public information. Rumor truth is not stored or displayed by Quick Access.
+
+All multiline dossier fields use Foundry's native `<prose-mirror>` editor, including its formatting and explicit save workflow. Legacy Face, Body, and Clothing values are not shown as active editing fields. Existing non-empty values are available through an explicit archive toggle, including actors that already had an older Quick Access biography profile flag. Archive text is selectable and each field also has a copy button.
 
 ## Public API
 
@@ -139,7 +143,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.1:
+Available methods in 1.7.11:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`

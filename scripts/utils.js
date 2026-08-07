@@ -124,7 +124,7 @@ export function scheduleSheetRefresh(app) {
 
   const timeout = window.setTimeout(() => {
     SCHEDULED_SHEET_REFRESHES.delete(app);
-    if (app.closing || app.closed || app._state === -1) return;
+    if (app.rendered === false || (Number.isFinite(Number(app.state)) && Number(app.state) < 0)) return;
     app.render(false);
   }, 0);
 

@@ -2,6 +2,7 @@ import { FLAG_REPUTATION_ENTRIES, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml } from "./utils.js";
+import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
@@ -164,7 +165,7 @@ export function setupReputationNoteSummary(actor, root) {
 }
 
 export function openReputationDialog(app, actor) {
-  if (!actor || !globalThis.Dialog) return null;
+  if (!actor || !hasFoundryDialogApi()) return null;
 
   const key = actor.uuid ?? actor.id;
   const existing = OPEN_DIALOGS.get(key);
@@ -208,7 +209,7 @@ export function openReputationDialog(app, actor) {
     return saveChain;
   };
 
-  const dialog = new Dialog({
+  const dialog = createFoundryDialog({
     title: qaLocalize("Reputation.Title", "Репутация: {name}", { name: actor.name ?? "" }),
     content,
     buttons: {},
@@ -630,7 +631,7 @@ function extractRollResults(roll, expected) {
 }
 
 function updateSheetReputationPresentation(app, actor, entries) {
-  const root = extractElement(app?.element ?? app?._element);
+  const root = extractElement(app?.element);
   if (!root) return;
   const input = root.querySelector?.(`input[name="${REPUTATION_PATH}"]`);
   if (input) input.value = String(getReputationTotal(entries));

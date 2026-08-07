@@ -2,6 +2,7 @@ import { FLAG_SHORT_REST_RECOVERY, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
+import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 import { FLAGS as CONDITION_FLAGS } from "./conditions/constants.js";
 import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
@@ -315,7 +316,7 @@ export async function openNewDayDialog(app, actor) {
     return null;
   }
 
-  if (!globalThis.Dialog) {
+  if (!hasFoundryDialogApi()) {
     ui.notifications?.warn?.(qaLocalize("NewDay.DialogUnavailable", "Окно нового дня недоступно в этом окружении."));
     return null;
   }
@@ -338,7 +339,7 @@ export async function openNewDayDialog(app, actor) {
       resolve(value);
     };
 
-    new Dialog({
+    createFoundryDialog({
       title: qaLocalize("NewDay.Title", "Новый день: {actor}", { actor: actor?.name ?? "" }),
       content,
       buttons: {

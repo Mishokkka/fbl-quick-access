@@ -152,9 +152,20 @@ function buildSlot(app, actor, index, itemId, item) {
     });
   }
 
-  slot.addEventListener("dblclick", (event) => {
-    event.preventDefault();
+  const openItem = (event) => {
+    event?.preventDefault?.();
     item.sheet?.render(true);
+  };
+
+  const openButton = document.createElement("button");
+  openButton.type = "button";
+  openButton.classList.add("fblqa-slot-open");
+  openButton.setAttribute("aria-label", qaLocalize("QuickAccess.OpenItem", "Открыть предмет: {name}", { name: item.name }));
+  openButton.title = slot.title;
+  openButton.addEventListener("click", openItem);
+  slot.addEventListener("dblclick", (event) => {
+    if (event.target?.closest?.(".fblqa-remove")) return;
+    openItem(event);
   });
 
   const img = document.createElement("img");
@@ -166,8 +177,9 @@ function buildSlot(app, actor, index, itemId, item) {
   name.classList.add("fblqa-name");
   name.textContent = item.name;
 
+  openButton.append(img, name);
   const removeButton = makeRemoveButton(app, actor, index);
-  slot.append(img, name, removeButton);
+  slot.append(openButton, removeButton);
   return slot;
 }
 
@@ -177,6 +189,7 @@ function makeRemoveButton(app, actor, index) {
   button.classList.add("fblqa-remove");
   button.textContent = "×";
   button.title = qaLocalize("QuickAccess.Remove", "Убрать из быстрого доступа");
+  button.setAttribute("aria-label", button.title);
   button.disabled = !canModifyActor(actor);
 
   button.addEventListener("click", async (event) => {

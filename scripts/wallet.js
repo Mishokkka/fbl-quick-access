@@ -260,7 +260,15 @@ function buildMoneyTransferButton(app, actor, mode) {
   button.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    await openMoneyTransferDialog(app, actor);
+    if (button.disabled) return;
+    button.disabled = true;
+    button.setAttribute("aria-busy", "true");
+    try {
+      await openMoneyTransferDialog(app, actor);
+    } finally {
+      button.removeAttribute("aria-busy");
+      button.disabled = !canModifyActor(actor);
+    }
   });
   return button;
 }

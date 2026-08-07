@@ -82,7 +82,16 @@ test("money transfer reports socket emission failure immediately and clears its 
   try {
     const sourceActor = makeCurrencyActor("source", { gold: 2 });
     const targetActor = makeCurrencyActor("target", { owner: false });
-    const requester = { id: "player-a", isGM: false, active: true, character: sourceActor };
+    const proofFlags = {};
+    const requester = {
+      id: "player-a",
+      isGM: false,
+      active: true,
+      character: sourceActor,
+      async setFlag(_scope, key, value) { proofFlags[key] = value; return value; },
+      getFlag(_scope, key) { return proofFlags[key]; },
+      async unsetFlag(_scope, key) { delete proofFlags[key]; }
+    };
     const recipient = {
       id: "player-b",
       isGM: false,

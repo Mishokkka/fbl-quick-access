@@ -149,7 +149,15 @@ test("world migration is single-GM and does not stamp partial failures", () => {
 test("integration socket cleans a pending request when emit throws synchronously", async () => {
   const previousGame = globalThis.game;
   const previousFoundry = globalThis.foundry;
-  const player = { id: "player", isGM: false, active: true };
+  const proofFlags = {};
+  const player = {
+    id: "player",
+    isGM: false,
+    active: true,
+    async setFlag(_scope, key, value) { proofFlags[key] = value; return value; },
+    getFlag(_scope, key) { return proofFlags[key]; },
+    async unsetFlag(_scope, key) { delete proofFlags[key]; }
+  };
   const gm = { id: "gm", isGM: true, active: true };
 
   globalThis.foundry = { utils: { deepClone: (value) => structuredClone(value) } };

@@ -1,5 +1,5 @@
 import { MODULE_ID } from "./constants.js";
-import { registerCoreSettings } from "./settings.js";
+import { refreshPilgrimFontChoices, registerCoreSettings } from "./settings.js";
 import { buildPanel, compactOriginalGearSpacing, hideOriginalGearTopControls } from "./panel.js";
 import { setupGearCardView, setupGearViewConsumableToggle } from "./gear-cards.js";
 import { setupGearContextMenu } from "./gear-context-menu.js";
@@ -21,7 +21,7 @@ import { handleStatProviderActorDeleted, refreshStat, registerStatProvider } fro
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
-import { closeBiographyDrawer, getBiographyProfile, saveBiographyProfile, setupBiographyTab } from "./biography.js";
+import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, releaseBiographyState, saveBiographyProfile, setupBiographyTab } from "./biography.js";
 
 Hooks.once("init", () => {
   registerCoreSettings();
@@ -71,15 +71,20 @@ Hooks.once("init", () => {
 });
 
 Hooks.once("ready", async () => {
+  refreshPilgrimFontChoices();
   registerIntegrationSocket();
   registerMoneyTransferSocket();
   await readyExpandedConditions();
   await pruneWorldActorReferences();
 });
 
+Hooks.on("renderSettingsConfig", (_app, htmlOrElement) => {
+  refreshPilgrimFontChoices(htmlOrElement);
+});
+
 Hooks.on("createItem", handleExpandedConditionsCreateItem);
 Hooks.on("deleteItem", handleDeletedActorItem);
-Hooks.on("deleteActor", handleStatProviderActorDeleted);
+Hooks.on("deleteActor", handleDeletedActor);
 Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInjected);
 
 // Forbidden Lands v13.0.5 still uses ApplicationV1 actor sheets. The concrete
@@ -177,7 +182,7 @@ function refreshGearPresentation(app, actorArg, gearTabArg) {
   const actor = actorArg?.documentName === "Actor" ? actorArg : getActorFromApp(app);
   if (!isForbiddenLandsCharacter(actor)) return false;
 
-  const root = findActorSheetRoot(app?.element ?? app?._element);
+  const root = findActorSheetRoot(app?.element);
   const gearTab = gearTabArg instanceof HTMLElement ? gearTabArg : root ? findGearTab(root) : null;
   if (!gearTab) return false;
 
@@ -225,7 +230,14 @@ function renderItemSheetVisuals(app, htmlOrElement) {
   }
 }
 
-function closeQuickAccessActorSheet(app) {
+function closeQuickAccessActorSheet(app, htmlOrElement) {
   const actor = getActorFromApp(app);
+  const root = findActorSheetRoot(htmlOrElement ?? app?.element);
+  if (root) cleanupBiographyTab(root);
   if (actor) closeBiographyDrawer(actor);
+}
+
+function handleDeletedActor(actor) {
+  handleStatProviderActorDeleted(actor);
+  releaseBiographyState(actor);
 }

@@ -266,7 +266,7 @@ async function deleteGearItem(app, actor, item, row) {
   const liveItem = actor.items?.get?.(item.id);
   if (!liveItem) return;
 
-  const appRoot = extractElement(app?.element ?? app?._element);
+  const appRoot = extractElement(app?.element);
   const liveRow = resolveLiveItemRow(
     actor,
     liveItem,

@@ -473,12 +473,14 @@
   text-align: right;
 }
 
-.fblqa-money-transfer-dialog .dialog-buttons {
+.fblqa-money-transfer-dialog .dialog-buttons,
+.fblqa-money-transfer-dialog .form-footer {
   gap: 7px;
   margin-top: 8px;
 }
 
-.fblqa-money-transfer-dialog .dialog-buttons button {
+.fblqa-money-transfer-dialog .dialog-buttons button,
+.fblqa-money-transfer-dialog .form-footer button {
   min-height: 30px;
   margin: 0;
   border: 1px solid rgba(0, 0, 0, 0.26);
@@ -525,12 +527,16 @@
   font-weight: 900;
 }
 
-.fblqa-money-transfer-offer-dialog .dialog-button.accept {
+.fblqa-money-transfer-offer-dialog .dialog-button.accept,
+.fblqa-money-transfer-offer-dialog .form-footer button.accept,
+.fblqa-money-transfer-offer-dialog .form-footer button[data-action="accept"] {
   border-color: rgba(44, 96, 54, 0.55);
   background: rgba(220, 238, 221, 0.98);
 }
 
-.fblqa-money-transfer-offer-dialog .dialog-button.decline {
+.fblqa-money-transfer-offer-dialog .dialog-button.decline,
+.fblqa-money-transfer-offer-dialog .form-footer button.decline,
+.fblqa-money-transfer-offer-dialog .form-footer button[data-action="decline"] {
   border-color: rgba(135, 48, 48, 0.48);
   background: rgba(245, 224, 224, 0.98);
 }

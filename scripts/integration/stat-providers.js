@@ -161,7 +161,7 @@ function collectActorApps(actor) {
   const result = new Set();
   const add = (app) => {
     if (!app || typeof app.render !== "function") return;
-    if (app.closing || app.closed || app._state === -1) return;
+    if (app.rendered === false || (Number.isFinite(Number(app.state)) && Number(app.state) < 0)) return;
     result.add(app);
   };
 

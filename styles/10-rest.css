@@ -54,7 +54,8 @@
 }
 
 .fblqa-rest-dialog .dialog-buttons,
-.app.fblqa-rest-dialog .dialog-buttons {
+.app.fblqa-rest-dialog .dialog-buttons,
+.fblqa-rest-dialog .form-footer {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
@@ -62,7 +63,8 @@
 }
 
 .fblqa-rest-dialog .dialog-button,
-.app.fblqa-rest-dialog .dialog-button {
+.app.fblqa-rest-dialog .dialog-button,
+.fblqa-rest-dialog .form-footer button {
   min-height: 34px;
   border: 1px solid rgba(0, 0, 0, 0.22);
   background: rgba(236, 232, 221, 0.96);
@@ -75,14 +77,17 @@
 }
 
 .fblqa-rest-dialog .dialog-button:hover,
-.app.fblqa-rest-dialog .dialog-button:hover {
+.app.fblqa-rest-dialog .dialog-button:hover,
+.fblqa-rest-dialog .form-footer button:hover {
   border-color: rgba(0, 0, 0, 0.42);
   background: rgba(245, 242, 234, 0.98);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) inset;
 }
 
 .fblqa-rest-dialog .dialog-button.apply,
-.app.fblqa-rest-dialog .dialog-button.apply {
+.app.fblqa-rest-dialog .dialog-button.apply,
+.fblqa-rest-dialog .form-footer button.apply,
+.fblqa-rest-dialog .form-footer button[data-action="apply"] {
   border-color: rgba(42, 92, 55, 0.42);
   background: rgba(214, 230, 211, 0.92);
 }

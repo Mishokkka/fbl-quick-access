@@ -11,7 +11,8 @@ export const SYSTEM_ID = "forbidden-lands";
 
 export const SETTINGS = Object.freeze({
   PLAYERS_CAN_RESET_SHORT_REST: "playersCanResetShortRest",
-  POST_NO_CHANGE_REST_CARDS: "postNoChangeRestCards"
+  POST_NO_CHANGE_REST_CARDS: "postNoChangeRestCards",
+  PILGRIM_CARD_FONT: "pilgrimCardFont"
 });
 
 export const MAX_SLOTS = 10;
