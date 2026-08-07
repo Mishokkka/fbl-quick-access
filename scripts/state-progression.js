@@ -412,8 +412,10 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
       maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
     });
     updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
-      ? { state: "error", days: 0, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-      : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
+      ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
+      : result.limitedDays > 0
+        ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
+        : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
 
     if (entry.primaryUser?.active) await sendPlayerResult(entry.primaryUser, entry.actor, context, result);
   }
@@ -479,11 +481,25 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     remaining -= 1;
   }
 
+  // `dayResults` counts days that produced an explicit result entry, not days
+  // whose calendar marker was logically consumed. The short-rest-only shortcut
+  // intentionally jumps the marker straight to context.date after one reset, so
+  // derive the contract from marker advancement instead of result count.
+  let processedDays = Math.max(0, requested - remaining);
+  try {
+    const markerAdvance = Number(api?.daysBetween?.(normalizeCalendariaDate(startDate), cursor));
+    if (Number.isFinite(markerAdvance)) {
+      processedDays = Math.max(0, Math.min(requested, Math.floor(markerAdvance)));
+    }
+  } catch (_error) {
+    // Fall back to the loop's consumed-day count if Calendaria cannot compare.
+  }
+
   return {
     mode: "automatic",
     requestedDays: requested,
-    processedDays: dayResults.length,
-    limitedDays: Math.max(0, requested - dayResults.length),
+    processedDays,
+    limitedDays: Math.max(0, requested - processedDays),
     failedDays,
     failedActions,
     days: dayResults
@@ -975,8 +991,10 @@ async function resolveActorFromGMSummary(state, actorId) {
       maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
     });
     updateGMSummaryStatus(state, actorId, result.failedActions
-      ? { state: "error", days: 0, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-      : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
+      ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
+      : result.limitedDays > 0
+        ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
+        : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
     if (entry.primaryUser?.active) await sendPlayerResult(entry.primaryUser, entry.actor, context, result);
     return;
   }

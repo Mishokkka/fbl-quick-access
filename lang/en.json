@@ -507,7 +507,8 @@
       "AbsentUndone": "Absence was undone; state progression is pending again.",
       "UndoAbsent": "Undo",
       "UndoAbsentFailed": "Could not restore the pending calendar progression.",
-      "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent."
+      "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent.",
+      "AutomaticDaysLimited": "Processed {processed} calendar days; {remaining} days remain pending."
     }
   },
   "FBLEC.UI.AddCustom": "+ condition",
