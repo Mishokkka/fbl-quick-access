@@ -17,14 +17,30 @@
   --fblqa-bio-ink: var(--color-text-primary, #29241f);
   --fblqa-bio-muted: rgba(51, 43, 35, 0.72);
   --fblqa-bio-line: rgba(74, 54, 37, 0.24);
+
   position: relative;
   width: 100%;
   min-width: 0;
   min-height: 100%;
   color: var(--fblqa-bio-ink);
-  font-family: var(--font-primary, "Signika", sans-serif);
-  font-size: 13px;
-  line-height: 1.24;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+}
+
+/* Match the active Forbidden Lands sheet typeface. Form controls and the
+   ProseMirror internals otherwise fall back to browser or Foundry UI fonts. */
+.fblqa-biography-tab :where(
+  input,
+  select,
+  textarea,
+  button,
+  prose-mirror,
+  .editor-content,
+  .ProseMirror,
+  [contenteditable="true"]
+) {
+  font-family: inherit;
 }
 
 .fblqa-bio-stack,
@@ -114,7 +130,7 @@
   border-radius: 3px;
   background: rgba(249, 246, 237, 0.82);
   color: inherit;
-  font-family: var(--font-primary, "Signika", sans-serif);
+  font-family: inherit;
   font-size: 11px;
   line-height: 1;
   box-shadow: none;
@@ -223,7 +239,6 @@
   white-space: normal;
   overflow: visible;
   overflow-wrap: anywhere;
-  word-break: break-word;
   cursor: text;
 }
 
@@ -244,7 +259,6 @@
   margin-bottom: 0.12em;
   white-space: normal;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .fblqa-rich-preview p:first-child,
@@ -363,7 +377,6 @@
   overflow-y: auto;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .fblqa-rich-editor-shell prose-mirror .ProseMirror *,
@@ -371,7 +384,6 @@
   max-width: 100%;
   white-space: inherit;
   overflow-wrap: anywhere;
-  word-break: break-word;
 }
 
 .fblqa-rich-editor-actions {
@@ -396,7 +408,7 @@
   border-radius: 3px;
   background: rgba(249, 246, 237, 0.82);
   color: inherit;
-  font-family: var(--font-primary, "Signika", sans-serif);
+  font-family: inherit;
   font-size: 11px;
   line-height: 1;
   box-shadow: none;
@@ -455,11 +467,12 @@
 
 .fblqa-rumor-row {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 24px;
+  grid-template-columns: minmax(110px, 0.55fr) minmax(0, 1.45fr) 24px;
   gap: 4px;
   align-items: end;
 }
 
+.fblqa-rumor-source,
 .fblqa-rumor-text { min-width: 0; }
 
 .fblqa-bio-empty {
@@ -676,6 +689,7 @@
 }
 
 .fblqa-pilgrim-card {
+  container-type: inline-size;
   position: relative;
   margin: 0 4px 4px;
   padding: 7px;
@@ -868,7 +882,7 @@
   }
 }
 
-@media (max-width: 430px) {
+@container (max-width: 430px) {
   .fblqa-pilgrim-details {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }

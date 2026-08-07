@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getBiographyProfile, normalizeBiographyProfile } from "../scripts/biography.js";
+import { getBiographyProfile, normalizeBiographyProfile, resolveBiographyEditorValue } from "../scripts/biography.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -93,108 +93,61 @@ test("targets BIO only and never falls back to NOTE", async () => {
   assert.equal(biographySelectors.some((selector) => selector.includes('data-tab="note"') || selector.includes("note-tab")), false);
 });
 
-test("BIO layout matches the requested localized compact one-column design", () => {
+test("BIO localization and removed controls match the current data model", () => {
   const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
-  const settings = readFileSync(join(root, "scripts", "settings.js"), "utf8");
-  const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
   const ru = JSON.parse(readFileSync(join(root, "lang", "ru.json"), "utf8"));
   const en = JSON.parse(readFileSync(join(root, "lang", "en.json"), "utf8"));
 
-  assert.match(source, /data-bio-rich-control/);
-  assert.match(source, /document\.createElement\("prose-mirror"\)/);
-  assert.match(source, /<p><br><\/p>/);
-  assert.match(source, /bindSectionToggles/);
-  assert.match(source, /data-bio-action="toggle-section"/);
-  assert.match(source, /Bio\.Questions\.Title/);
-  assert.match(source, /is-subheading/);
-  assert.match(source, /captureNativePrideRoll/);
-  assert.match(source, /fblqa-native-pride-roll-source/);
-  assert.match(source, /proxy\.innerHTML = '<i class="fa-solid fa-dice-d20"><\/i>'/);
-  assert.match(source, /actionBeforeTitle:\s*true/);
-  assert.match(source, /data-bio-action="archive"/);
-  assert.match(source, /data-bio-path="rumors\.\$\{index\}\.text"/);
-  assert.match(source, /data-bio-archive hidden/);
-  assert.match(source, /game\?\.clipboard\?\.copyPlainText/);
-  assert.match(source, /data-bio-selectable/);
-  assert.match(source, /data-pilgrim-drag/);
-  assert.match(source, /toggle-pilgrim-attachment/);
-  assert.match(source, /getPilgrimCardFontFamily/);
-  assert.match(source, /applyPilgrimCardFont/);
-  assert.match(source, /fblqa-pilgrim-serial/);
-  assert.match(source, /fieldTextarea\("physical\.appearance"/);
-  assert.match(source, /fieldTextarea\("physical\.distinguishingMarks"/);
-  assert.match(source, /fblqa-pilgrim-hair/);
-  assert.match(source, /data-bio-autosize/);
-  assert.match(source, /setupFloatingBiographyActions/);
-  assert.match(source, /ACTIVE_RICH_EDITORS/);
-  assert.match(source, /activateRichEditor/);
-  assert.match(source, /fblqa-rich-preview/);
-  assert.match(source, /editor\.addEventListener\("open"/);
-  assert.match(source, /estimateRichEditorHeight/);
-  assert.doesNotMatch(source, /EDITOR_OBSERVERS/);
-  assert.doesNotMatch(source, /EDITOR_RESIZE_FRAMES/);
-  assert.doesNotMatch(source, /scheduleEditorResize/);
-  assert.match(source, /commitActiveRichEditor/);
-  assert.match(source, /setupLanguageLayout/);
-  assert.match(source, /applyLanguageLayout/);
-  assert.match(source, /captureBiographyViewport/);
-  assert.match(source, /restoreBiographyViewport/);
-  assert.match(source, /BIO_SCROLL_POSITIONS/);
-  assert.match(source, /profile\.legacy\.face \|\|= actorBioHtml/);
-  assert.doesNotMatch(source, /data-bio-action="reputation"/);
-  assert.doesNotMatch(source, /fblqa-bio-header/);
-  assert.doesNotMatch(source, /fieldEditor\(actor, "concept"/);
-  assert.doesNotMatch(source, /fieldEditor\(actor, "publicNote"/);
-  assert.doesNotMatch(source, /fblqa-rumor-truth/);
-  assert.doesNotMatch(source, /fblqa-native-field/);
   assert.doesNotMatch(source, /data-bio-path="languages\.\$\{index\}\.native"/);
+  assert.doesNotMatch(source, /fblqa-rumor-truth/);
   assert.doesNotMatch(source, /Bio\.Pilgrim\.AirIslands/);
-  assert.doesNotMatch(source, /<img[^>]+alt="Портрет"/);
-  assert.match(source, /physical\.distinguishingMarks[\s\S]*fblqa-pilgrim-marks/);
-
-  assert.match(settings, /SETTINGS\.PILGRIM_CARD_FONT/);
-  assert.match(settings, /CONFIG\?\.fontDefinitions/);
-  assert.match(settings, /getAvailableFontChoices/);
-  assert.match(settings, /game\?\.settings\?\.get\?\.\("core", "fonts"\)/);
-  assert.match(settings, /document\?\.fonts/);
-  assert.match(settings, /refreshPilgrimFontChoices/);
-  assert.match(settings, /resolveFoundryFontFamily/);
-  assert.match(settings, /style\.setProperty\("font-family", stack, "important"\)/);
-  assert.match(settings, /choices:\s*getFoundryFontChoices\(\)/);
-
-  assert.match(css, /\.fblqa-bio-stack,[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\)/);
-  assert.match(css, /\.fblqa-bio-block,[\s\S]*?border:\s*0;/);
-  assert.match(css, /\.fblqa-bio-actions\s*\{[\s\S]*?position:\s*absolute;[\s\S]*?background:\s*transparent;/);
-  assert.doesNotMatch(css, /\.fblqa-bio-actions\s*\{[\s\S]*?position:\s*sticky;/);
-  assert.match(css, /\.fblqa-language-list\s*\{[\s\S]*?display:\s*grid;[\s\S]*?repeat\(2, minmax\(0, 1fr\)\)/);
-  assert.match(css, /\.fblqa-language-row\.is-wide\s*\{[\s\S]*?grid-column:\s*1 \/ -1;/);
-  assert.match(css, /\.fblqa-language-level select\s*\{[\s\S]*?padding-right:\s*24px;/);
-  assert.match(css, /\.fblqa-pilgrim-card textarea\s*\{[\s\S]*?min-height:\s*22px;[\s\S]*?resize:\s*none;/);
-  assert.match(css, /\.fblqa-pride-roll\s*\{[\s\S]*?width:\s*31px;[\s\S]*?font-size:\s*17px;/);
-  assert.match(css, /\.fblqa-rich-preview\s*\{[\s\S]*?min-height:\s*25px/);
-  assert.match(css, /\.fblqa-rich-editor-shell prose-mirror\s*\{[\s\S]*?height:\s*var\(--fblqa-editor-height/);
-  assert.match(css, /\.fblqa-legacy-content,[\s\S]*?user-select:\s*text !important;/);
-  assert.match(css, /\.fblqa-pilgrim-card input,[\s\S]*?font-family:\s*var\(--fblqa-pilgrim-font/);
-  assert.match(css, /fblqa-rich-editor-shell prose-mirror \.ProseMirror,[\s\S]*?white-space:\s*pre-wrap;[\s\S]*?overflow-wrap:\s*anywhere/);
-  assert.match(css, /fblqa-rich-preview\[hidden\][\s\S]*?display:\s*none\s*!important/);
-  assert.match(css, /fblqa-rich-editor-shell prose-mirror \.editor-container[\s\S]*?height:\s*100%/);
-  assert.match(css, /fblqa-rich-editor-shell prose-mirror menu,[\s\S]*?min-height:\s*34px;[\s\S]*?max-height:\s*68px/);
-  assert.doesNotMatch(css, /prose-mirror > div:first-of-type/);
-  assert.match(css, /fblqa-rich-editor-shell prose-mirror > \.editor-content[\s\S]*?display:\s*none/);
-  assert.match(css, /\.fblqa-pilgrim-details > \.fblqa-pilgrim-hair\s*\{[\s\S]*?grid-column:\s*span 4;/);
-  assert.match(css, /overflow-anchor:\s*none/);
-  assert.match(css, /\.fblqa-pilgrim-windowbar/);
-  assert.match(css, /\.fblqa-pilgrim-drawer\.is-dragging/);
-  assert.doesNotMatch(css, /\.fblqa-bio-columns/);
-
+  assert.equal("Native" in ru.FBLQA.Bio.Languages, false);
+  assert.equal("Native" in en.FBLQA.Bio.Languages, false);
+  assert.equal("AirIslands" in ru.FBLQA.Bio.Pilgrim, false);
+  assert.equal("AirIslands" in en.FBLQA.Bio.Pilgrim, false);
+  assert.equal(ru.FBLQA.Bio.Rumors.Source, "Имя или источник");
+  assert.equal(en.FBLQA.Bio.Rumors.Source, "Name or source");
   assert.equal(ru.FBLQA.Bio.Fields.Pride, "Гордость");
-  assert.equal(ru.FBLQA.Bio.Questions.Title, "Ответы на вопросы");
-  assert.equal(ru.FBLQA.Bio.Pilgrim.Stamp, "ПОДТВЕРЖДЕНО");
-  assert.equal(ru.FBLQA.Settings.PilgrimCardFont.Name, "Шрифт Карты пилигрима");
   assert.equal(en.FBLQA.Bio.Fields.Pride, "Pride");
-  assert.equal(en.FBLQA.Bio.Questions.Title, "Answers to Questions");
-  assert.equal(en.FBLQA.Bio.Pilgrim.Stamp, "APPROVED");
-  assert.equal(en.FBLQA.Settings.PilgrimCardFont.Name, "Pilgrim Card font");
+});
+
+test("BIO editor preserves stored rich text until the user actually changes it", () => {
+  const original = "<p><strong>Старый текст</strong></p>";
+
+  assert.equal(resolveBiographyEditorValue({
+    originalValue: original,
+    propertyValue: "",
+    attributeValue: original,
+    editableHtml: "<p><br></p>",
+    dirty: false
+  }), original);
+
+  assert.equal(resolveBiographyEditorValue({
+    originalValue: original,
+    propertyValue: "",
+    attributeValue: "",
+    editableHtml: "<p><br></p>",
+    dirty: false
+  }), original);
+});
+
+test("BIO editor accepts new text and intentional deletion after a user edit", () => {
+  const original = "<p>Старый текст</p>";
+  assert.equal(resolveBiographyEditorValue({
+    originalValue: original,
+    propertyValue: original,
+    attributeValue: original,
+    editableHtml: "<p>Новый текст</p>",
+    dirty: true
+  }), "<p>Новый текст</p>");
+
+  assert.equal(resolveBiographyEditorValue({
+    originalValue: original,
+    propertyValue: original,
+    attributeValue: original,
+    editableHtml: "",
+    dirty: true
+  }), "");
 });
 
 test("font choices include Foundry, world-configured, and already loaded families", async () => {

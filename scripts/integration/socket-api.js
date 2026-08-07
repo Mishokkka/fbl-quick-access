@@ -4,8 +4,9 @@ import {
   consumeSocketProof,
   createSocketProof,
   scheduleSocketProofCleanup,
-  verifySocketProof
+  verifySocketProofWithRetry
 } from "../socket-auth.js";
+import { findGameUser, makeSocketRequestId, normalizeSocketRequestId } from "../socket-utils.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const REQUEST_TYPE = "integration-api-request";
@@ -83,7 +84,7 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
 
   registerIntegrationSocket();
 
-  const requestId = makeRequestId();
+  const requestId = makeSocketRequestId();
   const timeoutMs = Math.max(1_000, Number(options?.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const message = {
     type: REQUEST_TYPE,
@@ -156,10 +157,10 @@ async function handleSocketMessage(message) {
   const activeGM = getActiveGM();
   if (!activeGM || activeGM.id !== game.user.id) return;
 
-  const requester = findUser(message.requesterId);
+  const requester = findGameUser(message.requesterId);
   if (!requester?.active) return;
 
-  const proof = verifySocketProof(requester, REQUEST_PROOF_KIND, message.requestId, message, {
+  const proof = await verifySocketProofWithRetry(requester, REQUEST_PROOF_KIND, message.requestId, message, {
     ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
   });
   if (!proof.ok) return;
@@ -211,9 +212,9 @@ async function handleResponse(message) {
   const pending = pendingRequests.get(message.requestId);
   if (!pending || message.activeGMId !== pending.activeGMId) return;
 
-  const activeGM = findUser(message.activeGMId);
+  const activeGM = findGameUser(message.activeGMId);
   if (!activeGM?.isGM || !activeGM.active) return;
-  const proof = verifySocketProof(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
+  const proof = await verifySocketProofWithRetry(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
     ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
   });
   if (!proof.ok) return;
@@ -242,7 +243,7 @@ async function invokeHandler(operation, payload, context) {
 
 function isValidRequestMessage(message) {
   try {
-    normalizeRequestId(message.requestId);
+    normalizeSocketRequestId(message.requestId);
     normalizeOperation(message.operation);
   } catch (_error) {
     return false;
@@ -254,7 +255,7 @@ function isValidRequestMessage(message) {
 
 function isValidResponseMessage(message) {
   try {
-    normalizeRequestId(message.requestId);
+    normalizeSocketRequestId(message.requestId);
   } catch (_error) {
     return false;
   }
@@ -270,23 +271,6 @@ function normalizeOperation(operation) {
     throw new TypeError(`Invalid Quick Access socket operation id: ${key || "<empty>"}`);
   }
   return key;
-}
-
-function normalizeRequestId(value) {
-  const id = String(value ?? "").trim();
-  if (!/^[a-z0-9][a-z0-9_-]{5,127}$/i.test(id)) throw new TypeError(`Invalid Quick Access socket request id: ${id || "<empty>"}`);
-  return id;
-}
-
-function findUser(id) {
-  const users = globalThis.game?.users;
-  return users?.get?.(id) ?? Array.from(users ?? []).find((user) => user?.id === id) ?? null;
-}
-
-function makeRequestId() {
-  if (globalThis.foundry?.utils?.randomID) return foundry.utils.randomID(24);
-  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function cloneForSocket(value) {

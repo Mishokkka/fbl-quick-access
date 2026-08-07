@@ -75,3 +75,89 @@ test("dialog adapter prefers Foundry v13 DialogV2 and maps legacy button callbac
     globalThis.document = previousDocument;
   }
 });
+
+test("dialog adapter reapplies outer form class, id, and dataset in DialogV2", async () => {
+  const previousFoundry = globalThis.foundry;
+  const previousDialog = globalThis.Dialog;
+  const previousDocument = globalThis.document;
+
+  class FakeClassList {
+    constructor(owner) { this.owner = owner; }
+    add(...names) {
+      const values = new Set(String(this.owner.className ?? "").split(/\s+/).filter(Boolean));
+      names.forEach((name) => values.add(name));
+      this.owner.className = [...values].join(" ");
+    }
+    contains(name) { return String(this.owner.className ?? "").split(/\s+/).includes(name); }
+  }
+
+  class FakeElement {
+    constructor(tagName = "div") {
+      this.tagName = tagName.toUpperCase();
+      this.className = "";
+      this.id = "";
+      this.dataset = {};
+      this.innerHTML = "";
+      this.classList = new FakeClassList(this);
+    }
+  }
+
+  class FakeTemplate {
+    constructor() {
+      this.content = { children: [], childNodes: [] };
+    }
+    set innerHTML(value) {
+      const text = String(value ?? "").trim();
+      const match = text.match(/^<form\b([^>]*)>([\s\S]*)<\/form>$/i);
+      if (!match) return;
+      const form = new FakeElement("form");
+      form.innerHTML = match[2];
+      form.className = match[1].match(/\bclass=["']([^"']*)["']/i)?.[1] ?? "";
+      form.id = match[1].match(/\bid=["']([^"']*)["']/i)?.[1] ?? "";
+      for (const [, key, value] of match[1].matchAll(/\bdata-([a-z0-9-]+)=["']([^"']*)["']/gi)) {
+        form.dataset[key.replace(/-([a-z])/g, (_all, letter) => letter.toUpperCase())] = value;
+      }
+      this.content.children = [form];
+      this.content.childNodes = [form];
+    }
+  }
+
+  class FakeDialogV2 {
+    constructor(config) {
+      this.config = config;
+      this.element = new FakeElement("dialog");
+      this.form = new FakeElement("form");
+      this.listeners = new Map();
+    }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    async render() { this.listeners.get("render")?.(); return this; }
+  }
+
+  globalThis.document = {
+    createElement(tagName) {
+      if (String(tagName).toLowerCase() === "template") return new FakeTemplate();
+      return new FakeElement(tagName);
+    }
+  };
+  globalThis.Dialog = undefined;
+  globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+
+  try {
+    const dialog = dialogs.createFoundryDialog({
+      title: "Rest",
+      content: '<form id="rest-form" class="fblqa-rest-form extra" data-mode="long"><p>Body</p></form>',
+      buttons: { close: { label: "Close" } }
+    });
+    await dialog.render(true);
+
+    assert.equal(dialog.form.classList.contains("fblqa-rest-form"), true);
+    assert.equal(dialog.form.classList.contains("extra"), true);
+    assert.equal(dialog.form.id, "rest-form");
+    assert.equal(dialog.form.dataset.mode, "long");
+    assert.equal(dialog.config.content, "<p>Body</p>");
+  } finally {
+    globalThis.foundry = previousFoundry;
+    globalThis.Dialog = previousDialog;
+    globalThis.document = previousDocument;
+  }
+});

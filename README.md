@@ -1,6 +1,16 @@
 # Forbidden Lands Quick Access
 
-## Version 1.7.11
+## Version 1.7.12
+
+- Preserves existing BIO rich text when Foundry mounts or saves the ProseMirror editor, while still allowing intentional replacement and deletion.
+- Restores deterministic Long Rest completion: updates finish first, the Rest dialog closes, and the New Day progression dialog opens afterward when selected.
+- Restores DialogV2 form metadata and styling for Rest, New Day, money transfer, and Reputation windows.
+- Makes BIO controls and rich-editor content inherit the active Forbidden Lands sheet font.
+- Replaces an already-visible item tooltip immediately when the pointer moves directly to another supported item.
+- Restores the native Reputation header control as an accessible trigger for the Reputation ledger.
+- Applies all valid CodeRabbit findings from pull request #8, including socket-proof timing/retries/cleanup, request-id normalization, protocol-relative URL rejection, DialogV2 footer coverage, focus treatment, and targeted regression tests.
+
+## 1.7.11
 
 - Authenticates player-to-GM integration calls and wallet-transfer offers, decisions, and results with one-time proofs stored on the sending User document. Socket packets no longer trust claimed user ids by themselves.
 - Applies both sides of an accepted wallet transfer through one `Actor.updateDocuments` batch, avoiding the former sequential partial-update and rollback path.
@@ -143,7 +153,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.11:
+Available methods in 1.7.12:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`

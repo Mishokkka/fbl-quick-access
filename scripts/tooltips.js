@@ -8,6 +8,7 @@ let itemTooltipTimer = null;
 let itemTooltipHideTimer = null;
 let itemTooltipAnchor = null;
 let itemTooltipPointer = { x: 0, y: 0 };
+let itemTooltipRequest = 0;
 
 export function registerTooltipListeners() {
   document.addEventListener("keydown", (event) => {
@@ -74,8 +75,9 @@ function attachTooltipToRow(actor, row) {
   const keyboardAnchor = anchors.find((anchor) => !anchor.matches("a, button, input, select, textarea, [contenteditable='true']")) ?? anchors[0];
   if (keyboardAnchor instanceof HTMLElement && !keyboardAnchor.matches("a, button, input, select, textarea, [contenteditable='true']")) {
     keyboardAnchor.tabIndex = 0;
+    keyboardAnchor.setAttribute("role", "button");
     keyboardAnchor.addEventListener("keydown", (event) => {
-      if (event.key !== "Enter") return;
+      if (event.key !== "Enter" && event.key !== " ") return;
       const item = findItemForTooltip(actor, row);
       if (!item) return;
       event.preventDefault();
@@ -84,12 +86,23 @@ function attachTooltipToRow(actor, row) {
     });
   }
 
-  for (const anchor of anchors) {
-    anchor.classList.add("fblqa-tooltip-anchor");
-    anchor.addEventListener("mouseenter", (event) => scheduleItemTooltip(actor, row, anchor, event));
-    anchor.addEventListener("mouseleave", scheduleItemTooltipHide);
-    anchor.addEventListener("focus", (event) => scheduleItemTooltip(actor, row, anchor, event));
-    anchor.addEventListener("blur", scheduleItemTooltipHide);
+  // Use one pointer boundary for the whole item row. Attaching hover handlers
+  // to nested image/name/card elements causes enter/leave races while the cursor
+  // crosses children and can leave the first tooltip active over later items.
+  const pointerAnchor = row instanceof HTMLElement ? row : anchors[0];
+  if (pointerAnchor instanceof HTMLElement) {
+    pointerAnchor.classList.add("fblqa-tooltip-anchor");
+    pointerAnchor.addEventListener("mouseenter", (event) => scheduleItemTooltip(actor, row, pointerAnchor, event));
+    pointerAnchor.addEventListener("mouseleave", scheduleItemTooltipHide);
+  }
+
+  if (keyboardAnchor instanceof HTMLElement && keyboardAnchor !== pointerAnchor) {
+    keyboardAnchor.classList.add("fblqa-tooltip-anchor");
+    keyboardAnchor.addEventListener("focus", (event) => scheduleItemTooltip(actor, row, keyboardAnchor, event));
+    keyboardAnchor.addEventListener("blur", scheduleItemTooltipHide);
+  } else if (keyboardAnchor instanceof HTMLElement) {
+    keyboardAnchor.addEventListener("focus", (event) => scheduleItemTooltip(actor, row, keyboardAnchor, event));
+    keyboardAnchor.addEventListener("blur", scheduleItemTooltipHide);
   }
 }
 
@@ -137,6 +150,13 @@ function openItemFromRow(actor, row, event) {
   item.sheet?.render(true);
 }
 
+export function planTooltipTransition(previousAnchor, nextAnchor, wasVisible) {
+  return {
+    replaceVisibleContent: previousAnchor !== nextAnchor,
+    delayMs: wasVisible ? 0 : ITEM_TOOLTIP_DELAY_MS
+  };
+}
+
 function scheduleItemTooltip(actor, row, anchor, event) {
   const item = findItemForTooltip(actor, row);
   if (!item) return;
@@ -144,7 +164,18 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   clearTimeout(itemTooltipHideTimer);
   itemTooltipHideTimer = null;
   clearTimeout(itemTooltipTimer);
-  removeTooltipDescription(itemTooltipAnchor);
+
+  const previousAnchor = itemTooltipAnchor;
+  const wasVisible = Boolean(itemTooltipElement?.classList.contains("is-visible"));
+  const transition = planTooltipTransition(previousAnchor, anchor, wasVisible);
+  const request = ++itemTooltipRequest;
+  if (transition.replaceVisibleContent) {
+    removeTooltipDescription(previousAnchor);
+    if (itemTooltipElement) {
+      itemTooltipElement.classList.remove("is-visible");
+      itemTooltipElement.innerHTML = "";
+    }
+  }
   itemTooltipAnchor = anchor;
 
   if (event?.clientX || event?.clientY) {
@@ -154,18 +185,19 @@ function scheduleItemTooltip(actor, row, anchor, event) {
     itemTooltipPointer = { x: rect.right, y: rect.top };
   }
 
+  const delay = transition.delayMs;
   itemTooltipTimer = window.setTimeout(async () => {
-    if (itemTooltipAnchor !== anchor) return;
+    if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor) return;
 
     const html = await buildItemTooltipHtml(item);
-    if (itemTooltipAnchor !== anchor || !anchor.isConnected) return;
+    if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor || !anchor.isConnected) return;
 
     const tooltip = ensureItemTooltipElement();
     tooltip.innerHTML = html;
     tooltip.classList.add("is-visible");
     addTooltipDescription(anchor, tooltip.id);
     positionItemTooltip();
-  }, ITEM_TOOLTIP_DELAY_MS);
+  }, delay);
 }
 
 function scheduleItemTooltipHide() {
@@ -174,6 +206,7 @@ function scheduleItemTooltipHide() {
 }
 
 export function hideItemTooltip() {
+  itemTooltipRequest += 1;
   clearTimeout(itemTooltipTimer);
   clearTimeout(itemTooltipHideTimer);
   itemTooltipHideTimer = null;

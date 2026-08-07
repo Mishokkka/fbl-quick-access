@@ -499,9 +499,14 @@
   cursor: pointer;
 }
 
-.fblqa-gear-menu-button:hover,
-.fblqa-gear-menu-button:focus {
-  outline: 0;
+.fblqa-gear-menu-button:hover {
+  background: var(--fblqa-context-hover-bg);
+  color: var(--fblqa-context-hover-text);
+}
+
+.fblqa-gear-menu-button:focus-visible {
+  outline: 2px solid var(--color-border-highlight, #ff6400);
+  outline-offset: -2px;
   background: var(--fblqa-context-hover-bg);
   color: var(--fblqa-context-hover-text);
 }
@@ -512,13 +517,13 @@
 }
 
 .fblqa-gear-menu-button:disabled:hover,
-.fblqa-gear-menu-button:disabled:focus {
+.fblqa-gear-menu-button:disabled:focus-visible {
   background: transparent;
   color: inherit;
 }
 
 .fblqa-gear-menu-button-danger:hover,
-.fblqa-gear-menu-button-danger:focus {
+.fblqa-gear-menu-button-danger:focus-visible {
   background: var(--fblqa-context-danger-bg);
 }
 
@@ -641,12 +646,16 @@
 }
 
 .fblqa-delete-dialog .dialog-button:hover,
-.fblqa-delete-dialog .dialog-button:focus,
-.fblqa-delete-dialog .form-footer button:hover,
-.fblqa-delete-dialog .form-footer button:focus {
-  outline: 0;
+.fblqa-delete-dialog .form-footer button:hover {
   background: rgba(226, 219, 204, 0.98);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.18);
+}
+
+.fblqa-delete-dialog .dialog-button:focus-visible,
+.fblqa-delete-dialog .form-footer button:focus-visible {
+  outline: 2px solid var(--color-border-highlight, #ff6400);
+  outline-offset: 2px;
+  background: rgba(226, 219, 204, 0.98);
 }
 
 .fblqa-delete-dialog .dialog-button.yes,
@@ -658,11 +667,11 @@
 }
 
 .fblqa-delete-dialog .dialog-button.yes:hover,
-.fblqa-delete-dialog .dialog-button.yes:focus,
+.fblqa-delete-dialog .dialog-button.yes:focus-visible,
 .fblqa-delete-dialog .form-footer button.yes:hover,
-.fblqa-delete-dialog .form-footer button.yes:focus,
+.fblqa-delete-dialog .form-footer button.yes:focus-visible,
 .fblqa-delete-dialog .form-footer button[data-action="yes"]:hover,
-.fblqa-delete-dialog .form-footer button[data-action="yes"]:focus {
+.fblqa-delete-dialog .form-footer button[data-action="yes"]:focus-visible {
   background: rgba(120, 40, 35, 0.22);
 }
 

@@ -2,7 +2,7 @@ import { FLAG_SHORT_REST_RECOVERY, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { FLAGS as CONDITION_FLAGS } from "./conditions/constants.js";
 import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
@@ -346,8 +346,8 @@ export async function openNewDayDialog(app, actor) {
         apply: {
           icon: '<i class="fas fa-sun"></i>',
           label: qaLocalize("NewDay.Apply", "Провести новый день"),
-          callback: async (html) => {
-            const form = extractDialogElement(html)?.querySelector("form.fblqa-new-day-form");
+          callback: async (html, _event, _button, renderedDialog) => {
+            const form = findDialogForm(renderedDialog ?? html, "form.fblqa-new-day-form");
             const selectedIds = [...(form?.querySelectorAll('input[name="newDayAction"]:checked') ?? [])]
               .map((input) => input.value);
             const result = await applyNewDayPlan(actor, plan, selectedIds);
@@ -376,10 +376,10 @@ export async function openNewDayDialog(app, actor) {
         }
       },
       default: "apply",
-      render: (html) => {
-        const element = extractDialogElement(html);
-        element?.closest?.(".app")?.classList.add("fblqa-rest-dialog", "fblqa-new-day-dialog");
-        setupNewDayDialogInteractivity(element);
+      render: (html, renderedDialog) => {
+        const element = extractDialogElement(renderedDialog ?? html);
+        element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog", "fblqa-new-day-dialog");
+        setupNewDayDialogInteractivity(renderedDialog ?? element);
       },
       close: () => finish(null)
     }, {
@@ -556,8 +556,8 @@ function coreCategoryLabel(category) {
   }[category] ?? category);
 }
 
-function setupNewDayDialogInteractivity(element) {
-  const form = element?.querySelector?.("form.fblqa-new-day-form");
+function setupNewDayDialogInteractivity(dialogOrElement) {
+  const form = findDialogForm(dialogOrElement, "form.fblqa-new-day-form");
   if (!form) return;
 
   form.querySelector('[data-action="select-all"]')?.addEventListener("click", () => {
@@ -630,8 +630,3 @@ function isArcName(name) {
   return text.includes("[АРКА]") || text.includes("[ARC]");
 }
 
-function extractDialogElement(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
-  return null;
-}

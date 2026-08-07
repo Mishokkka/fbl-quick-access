@@ -4,7 +4,8 @@
       "Cancel": "Cancel",
       "Save": "Save",
       "Untitled": "Untitled",
-      "Yes": "Yes"
+      "Yes": "Yes",
+      "Close": "Close"
     },
     "Firearms": {
       "AP": "AP",
@@ -379,7 +380,6 @@
         "NamePlaceholder": "Name",
         "Level": "Level",
         "Cost": "Cost",
-        "Native": "Native",
         "Remove": "Remove language"
       },
       "Rumors": {
@@ -407,7 +407,6 @@
         "Close": "Close",
         "Attach": "Attach to sheet",
         "Detach": "Detach from sheet",
-        "AirIslands": "Air Islands",
         "Stamp": "APPROVED",
         "Name": "Name",
         "Kin": "Kin",

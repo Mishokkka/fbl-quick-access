@@ -42,16 +42,24 @@ test("character-sheet render removes the Chargen header control", () => {
   assert.match(controls, /CHARGEN_LABELS/);
 });
 
-test("Long Rest can open the separate new-day workflow", () => {
-  const rest = readFileSync(join(root, "scripts", "rest.js"), "utf8");
-  const newDay = readFileSync(join(root, "scripts", "new-day.js"), "utf8");
+test("Long Rest closes before opening the separate new-day workflow", async () => {
+  const { runPostRestWorkflow } = await import(`../scripts/rest.js?post-rest=${Date.now()}`);
+  const events = [];
 
-  assert.match(rest, /name="startsNewDay"/);
-  assert.match(rest, /openNewDayDialog\(app, actor\)/);
-  assert.match(newDay, /buildNewDayPlan/);
-  assert.match(newDay, /applyNewDayPlan/);
-  assert.match(newDay, /addiction-day/);
-  assert.match(newDay, /wash-transition/);
+  await runPostRestWorkflow({
+    startsNewDay: true,
+    closeDialog: async () => events.push("close"),
+    openNewDay: async () => events.push("new-day")
+  });
+  assert.deepEqual(events, ["close", "new-day"]);
+
+  events.length = 0;
+  await runPostRestWorkflow({
+    startsNewDay: false,
+    closeDialog: async () => events.push("close"),
+    openNewDay: async () => events.push("new-day")
+  });
+  assert.deepEqual(events, ["close"]);
 });
 
 
@@ -116,7 +124,7 @@ test("Reputation replaces the native header roll with a ledger dialog", () => {
   assert.match(reputation, /selectRandomReputation\(entries, 2\)/);
   assert.match(reputation, /selectRandomReputation\(entries, 3\)/);
   assert.match(reputation, /new Roll\(`\$\{diceCount\}d6cs=6`\)/);
-  assert.match(reputation, /buttons:\s*\{\}/);
+  assert.match(reputation, /buttons:\s*\{[\s\S]*close:[\s\S]*Common\.Close/);
   assert.match(reputation, /scheduleReputationDialogAutoSize/);
   assert.match(reputation, /setupReputationNoteSummary/);
   assert.match(reputation, /ChatMessage\?\.create/);
@@ -133,11 +141,78 @@ test("Reputation dialog close control is forced to black", () => {
   assert.match(css, /fblqa-reputation-dialog[\s\S]*?\[data-action="close"\][\s\S]*?color:\s*#111\s*!important/);
 });
 
-test("Pilgrim font choices refresh after world fonts are available", () => {
-  const main = readFileSync(join(root, "scripts", "main.js"), "utf8");
-  const settings = readFileSync(join(root, "scripts", "settings.js"), "utf8");
-  assert.match(main, /Hooks\.once\("ready"[\s\S]*?refreshPilgrimFontChoices\(\)/);
-  assert.match(main, /renderSettingsConfig[\s\S]*?refreshPilgrimFontChoices/);
-  assert.match(settings, /getAvailableFonts/);
-  assert.match(settings, /core", "fonts"/);
+test("Pilgrim font choices refresh the registered setting and live select", async () => {
+  const previous = {
+    foundry: globalThis.foundry,
+    CONFIG: globalThis.CONFIG,
+    game: globalThis.game,
+    document: globalThis.document
+  };
+  const setting = { choices: {} };
+  const selectedOptions = [];
+  const select = {
+    tagName: "SELECT",
+    value: "World Serif",
+    replaceChildren(...options) { selectedOptions.splice(0, selectedOptions.length, ...options); },
+    append(option) { selectedOptions.push(option); }
+  };
+
+  try {
+    globalThis.foundry = {
+      applications: { settings: { menus: { FontConfig: {
+        getAvailableFontChoices: () => ({ "World Serif": "World Serif", "World Sans": "World Sans" }),
+        getAvailableFonts: () => []
+      } } } }
+    };
+    globalThis.CONFIG = { fontDefinitions: {}, defaultFontFamily: "World Serif" };
+    globalThis.game = {
+      settings: {
+        settings: { get: () => setting },
+        get(namespace, key) {
+          if (namespace === "core" && key === "fonts") return {};
+          if (namespace === "fbl-quick-access" && key === "pilgrimCardFont") return "World Serif";
+          return null;
+        }
+      }
+    };
+    globalThis.document = {
+      fonts: [],
+      createElement: () => ({ value: "", textContent: "", selected: false })
+    };
+
+    const { refreshPilgrimFontChoices } = await import(`../scripts/settings.js?refresh=${Date.now()}`);
+    const choices = refreshPilgrimFontChoices({ querySelector: () => select });
+
+    assert.equal(choices["World Serif"], "World Serif");
+    assert.equal(setting.choices["World Sans"], "World Sans");
+    assert.equal(selectedOptions.some((option) => option.value === "World Serif" && option.selected), true);
+  } finally {
+    globalThis.foundry = previous.foundry;
+    globalThis.CONFIG = previous.CONFIG;
+    globalThis.game = previous.game;
+    globalThis.document = previous.document;
+  }
+});
+
+
+test("BIO form controls and rich editor inherit the Forbidden Lands sheet font", () => {
+  const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
+  const body = getCssRuleBody(
+    css,
+    "\\.fblqa-biography-tab\\s+:where\\([\\s\\S]*?\\)",
+    "BIO font inheritance rule must exist"
+  );
+  assert.equal(getCssDeclaration(body, "font-family"), "inherit");
+});
+
+test("moving directly to another item replaces the visible tooltip without delay", async () => {
+  const { planTooltipTransition } = await import(`../scripts/tooltips.js?transition=${Date.now()}`);
+  const first = {};
+  const second = {};
+
+  assert.deepEqual(planTooltipTransition(first, second, true), {
+    replaceVisibleContent: true,
+    delayMs: 0
+  });
+  assert.equal(planTooltipTransition(second, second, true).replaceVisibleContent, false);
 });

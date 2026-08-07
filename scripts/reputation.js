@@ -170,6 +170,7 @@ export function openReputationDialog(app, actor) {
   const key = actor.uuid ?? actor.id;
   const existing = OPEN_DIALOGS.get(key);
   if (existing) {
+    existing.bringToFront?.();
     existing.bringToTop?.();
     return existing;
   }
@@ -212,11 +213,17 @@ export function openReputationDialog(app, actor) {
   const dialog = createFoundryDialog({
     title: qaLocalize("Reputation.Title", "Репутация: {name}", { name: actor.name ?? "" }),
     content,
-    buttons: {},
+    buttons: {
+      close: {
+        icon: '<i class="fas fa-times"></i>',
+        label: qaLocalize("Common.Close", "Закрыть")
+      }
+    },
+    default: "close",
     render: (html) => {
       dialogRoot = extractElement(html);
       if (!dialogRoot) return;
-      dialogRoot.closest?.(".app")?.classList.add("fblqa-reputation-dialog");
+      dialogRoot.closest?.(".app, .application")?.classList.add("fblqa-reputation-dialog");
       const resize = () => scheduleReputationDialogAutoSize(dialog, dialogRoot);
       setupDialogInteractions({
         app,
@@ -640,7 +647,7 @@ function updateSheetReputationPresentation(app, actor, entries) {
 
 function scheduleReputationDialogAutoSize(dialog, element) {
   const resize = () => {
-    const appElement = element?.closest?.(".app");
+    const appElement = element?.closest?.(".app, .application");
     if (!appElement?.isConnected) return;
 
     const content = appElement.querySelector?.(".window-content");
