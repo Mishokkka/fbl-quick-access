@@ -239,12 +239,24 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
       createdAt: Date.now()
     };
     await auth.createSocketProof("walletTransferDecision", validDecision.requestId, validDecision, recipient);
+
+    const originalGmSetFlag = gm.setFlag.bind(gm);
+    let resultProofAttempts = 0;
+    gm.setFlag = async (scope, key, value) => {
+      if (key.includes("walletTransferResult")) {
+        resultProofAttempts += 1;
+        if (resultProofAttempts === 1) throw new Error("transient result-proof failure");
+      }
+      return originalGmSetFlag(scope, key, value);
+    };
+
     listener({ ...validDecision, packetId: "packet-valid-decision" });
-    await tick();
+    await new Promise((resolve) => setTimeout(resolve, 80));
     await tick();
 
     assert.equal(FakeActor.calls.length, 1);
     assert.equal(FakeActor.calls[0].length, 2, "both wallets must be updated in one embedded batch");
+    assert.equal(resultProofAttempts, 2, "result proof creation should receive one bounded retry");
     assert.ok(emitted.some((message) => message.type === "wallet-transfer-result" && message.requestId === validOffer.requestId));
   } finally {
     globalThis.game = previousGame;
@@ -263,7 +275,7 @@ test("biography rich text is sanitized before rendering and persistence", async 
     const biography = await import(`../scripts/biography.js?security=${Date.now()}`);
     const malicious = `<p onclick="steal()">Text<a href="java\nscript:steal()">bad</a><img src=x onerror=steal()></p><svg/onload=steal()><script>steal()</script>`;
     const clean = biography.sanitizeBiographyRichHtml(malicious);
-    assert.doesNotMatch(clean, /script|onclick|onerror|javascript|<svg/iu);
+    assert.doesNotMatch(clean, /script|onclick|onerror|javascript|<svg|\/\/evil\.example/iu);
 
     let update = null;
     const actor = {

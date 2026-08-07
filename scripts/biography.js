@@ -29,6 +29,7 @@ const FLOATING_ACTIONS = new WeakMap();
 const ACTIVE_RICH_EDITORS = new WeakMap();
 const BIO_SCROLL_POSITIONS = new Map();
 const BIO_VIEWPORT_TRACKERS = new WeakMap();
+const BIO_VIEWPORT_RESTORES = new WeakMap();
 const LANGUAGE_LAYOUT_FRAMES = new WeakMap();
 const LANGUAGE_LAYOUT_OBSERVERS = new WeakMap();
 
@@ -568,6 +569,7 @@ function languageRow(entry, index, editable) {
 function rumorRow(entry, index, editable) {
   const disabled = editable ? "" : " disabled";
   return `<div class="fblqa-rumor-row">
+    <label class="fblqa-row-field fblqa-rumor-source"><span>${escapeHtml(t("Bio.Rumors.Source", "Имя или источник"))}</span><input type="text" data-bio-path="rumors.${index}.name" value="${escapeHtml(entry.name)}" placeholder="${escapeHtml(t("Bio.Rumors.SourcePlaceholder", "Кто рассказывает"))}"${disabled}></label>
     <label class="fblqa-row-field fblqa-rumor-text"><span>${escapeHtml(t("Bio.Rumors.Text", "Слух"))}</span><input type="text" data-bio-path="rumors.${index}.text" value="${escapeHtml(plainTextFromHtml(entry.text))}" placeholder="${escapeHtml(t("Bio.Rumors.Text", "Слух"))}"${disabled}></label>
     ${editable ? `<button type="button" class="fblqa-row-remove" data-bio-action="remove-rumor" data-index="${index}" aria-label="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}" title="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}"><i class="fa-solid fa-xmark"></i></button>` : ""}
   </div>`;
@@ -748,17 +750,13 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
   const name = control.dataset.bioName;
   if (!path || !name) return;
   const originalValue = String(control.dataset.bioValue ?? "");
-  const displayHtml = richTextHasContent(originalValue) ? originalValue : "<p><br></p>";
+  const displayHtml = richTextHasContent(originalValue) ? sanitizeRichHtml(originalValue) : "<p><br></p>";
   const preview = control.querySelector(".fblqa-rich-preview");
   const editButton = control.querySelector(".fblqa-rich-edit");
 
   const shell = document.createElement("div");
   shell.className = "fblqa-rich-editor-shell";
-  const editor = document.createElement("prose-mirror");
-  editor.setAttribute("name", name);
-  editor.setAttribute("data-bio-path", path);
-  editor.setAttribute("value", originalValue);
-  editor.innerHTML = displayHtml;
+  const editor = createBiographyProseMirror({ name, path, value: originalValue, enriched: displayHtml });
   editor.style.setProperty("--fblqa-editor-height", `${estimateRichEditorHeight(originalValue)}px`);
 
   const actions = document.createElement("div");
@@ -767,18 +765,49 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
     <button type="button" data-bio-action="save-rich"><i class="fa-solid fa-floppy-disk"></i><span>${escapeHtml(t("Bio.Save.Button", "Сохранить"))}</span></button>
     <button type="button" data-bio-action="cancel-rich"><i class="fa-solid fa-xmark"></i><span>${escapeHtml(t("Bio.Cancel", "Отмена"))}</span></button>`;
 
+  let dirty = false;
+  let editorReady = false;
+  let closed = false;
+  const markDirty = (event) => {
+    if (!editorReady) return;
+    const target = event.target instanceof HTMLElement ? event.target : null;
+    if (target && !target.closest?.(".ProseMirror, [contenteditable='true'], prose-mirror")) return;
+    dirty = true;
+  };
+  shell.addEventListener("input", markDirty, true);
+  shell.addEventListener("change", markDirty, true);
+
   shell.append(editor, actions);
   control.classList.add("is-editing");
   if (preview instanceof HTMLElement) preview.hidden = true;
   if (editButton instanceof HTMLElement) editButton.hidden = true;
   control.append(shell);
 
+  // Foundry upgrades <prose-mirror> after it is connected. Wait until the next
+  // frame before treating input events as user edits, then restore the stored
+  // value only when the upgraded control is still blank.
+  requestAnimationFrame(() => {
+    if (!editor.isConnected || closed) return;
+    try {
+      if (typeof editor.value === "string" && !richTextHasContent(editor.value) && richTextHasContent(originalValue)) {
+        editor.value = originalValue;
+      }
+    } catch (_error) {
+      // The value attribute and sanitized light-DOM fallback remain authoritative.
+    }
+    editorReady = true;
+    editor.querySelector(".ProseMirror, [contenteditable='true']")?.focus?.();
+  });
+
   const close = ({ save = false } = {}) => {
+    if (closed) return;
+    closed = true;
     if (save) {
-      const value = sanitizeRichHtml(normalizeRichText(String(editor.value ?? editor.getAttribute("value") ?? originalValue)));
+      const rawValue = readBiographyEditorValue(editor, { originalValue, dirty });
+      const value = sanitizeRichHtml(normalizeRichText(rawValue));
       setPath(state, path, value);
       control.dataset.bioValue = value;
-      if (preview instanceof HTMLElement) preview.innerHTML = richTextHasContent(value) ? sanitizeRichHtml(value) : "<p><br></p>";
+      if (preview instanceof HTMLElement) preview.innerHTML = richTextHasContent(value) ? value : "<p><br></p>";
       syncTwinControl(twinScope, path, value, control);
       queueProfileSave(actor, state, saveState, 0);
     }
@@ -795,7 +824,10 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
 
   actions.querySelector('[data-bio-action="save-rich"]')?.addEventListener("click", record.commit);
   actions.querySelector('[data-bio-action="cancel-rich"]')?.addEventListener("click", record.cancel);
-  editor.addEventListener("save", record.commit, { once: true });
+  editor.addEventListener("save", (event) => {
+    event.stopPropagation?.();
+    queueMicrotask(() => record.commit());
+  }, { once: true });
   editor.addEventListener("keydown", (event) => {
     if (event.key === "Escape") {
       event.preventDefault();
@@ -808,6 +840,71 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
   editor.addEventListener("open", () => {
     requestAnimationFrame(() => editor.querySelector(".ProseMirror, [contenteditable='true']")?.focus?.());
   }, { once: true });
+}
+
+function createBiographyProseMirror({ name, path, value, enriched }) {
+  const ElementClass = globalThis.foundry?.applications?.elements?.HTMLProseMirrorElement;
+  let editor = null;
+  if (typeof ElementClass?.create === "function") {
+    try {
+      const created = ElementClass.create({ name, value, enriched, toggled: false });
+      // A fresh clone avoids retaining disconnected custom-element state from
+      // HTMLProseMirrorElement.create before the editor is mounted in the sheet.
+      if (created instanceof HTMLElement) editor = created.cloneNode(true);
+    } catch (error) {
+      console.warn(`${MODULE_ID} | could not create Foundry ProseMirror element; using markup fallback`, error);
+    }
+  }
+
+  editor ??= document.createElement("prose-mirror");
+  editor.removeAttribute("toggled");
+  editor.setAttribute("name", name);
+  editor.setAttribute("data-bio-path", path);
+  editor.setAttribute("value", value);
+  if (!editor.innerHTML.trim()) editor.innerHTML = enriched;
+  return editor;
+}
+
+export function resolveBiographyEditorValue({
+  originalValue = "",
+  propertyValue = "",
+  attributeValue = "",
+  editableHtml = null,
+  dirty = false
+} = {}) {
+  const original = String(originalValue ?? "");
+  const property = String(propertyValue ?? "");
+  const attribute = String(attributeValue ?? "");
+  const editable = editableHtml == null ? null : String(editableHtml);
+
+  // An explicit user edit, including deleting all text, must win. Without a
+  // user edit, blank placeholder markup from a newly upgraded ProseMirror must
+  // never overwrite previously stored biography text.
+  if (dirty) return editable ?? property;
+  for (const candidate of [property, attribute, editable]) {
+    if (candidate != null && richTextHasContent(candidate)) return candidate;
+  }
+  return original;
+}
+
+function readBiographyEditorValue(editor, { originalValue = "", dirty = false } = {}) {
+  const editable = editor?.querySelector?.(".ProseMirror, [contenteditable='true']");
+  let propertyValue = "";
+  let editorDirty = false;
+  try {
+    if (typeof editor?.value === "string") propertyValue = editor.value;
+    if (typeof editor?.isDirty === "function") editorDirty = Boolean(editor.isDirty());
+  } catch (_error) {
+    propertyValue = "";
+  }
+
+  return resolveBiographyEditorValue({
+    originalValue,
+    propertyValue,
+    attributeValue: editor?.getAttribute?.("value") ?? "",
+    editableHtml: editable instanceof HTMLElement ? editable.innerHTML : null,
+    dirty: dirty || editorDirty
+  });
 }
 
 function commitActiveRichEditor(scope) {
@@ -907,9 +1004,13 @@ function captureBiographyViewport(bioTab, actor) {
 }
 
 function restoreBiographyViewport(bioTab, actor, viewport) {
+  BIO_VIEWPORT_RESTORES.get(bioTab)?.();
+
   const key = drawerKey(actor);
   const target = viewport ?? BIO_SCROLL_POSITIONS.get(key) ?? { top: 0, left: 0 };
   let focusRestored = false;
+  let frame = null;
+  const timers = [];
   const restore = () => {
     if (!bioTab.isConnected) return;
     bioTab.scrollTop = Math.max(0, Number(target.top) || 0);
@@ -924,9 +1025,18 @@ function restoreBiographyViewport(bioTab, actor, viewport) {
       focusRestored = true;
     }
   };
-  requestAnimationFrame(restore);
-  window.setTimeout(restore, 60);
-  window.setTimeout(restore, 240);
+
+  if (typeof globalThis.requestAnimationFrame === "function") frame = globalThis.requestAnimationFrame(restore);
+  else timers.push(globalThis.setTimeout(restore, 0));
+  timers.push(globalThis.setTimeout(restore, 60));
+  timers.push(globalThis.setTimeout(restore, 240));
+
+  const cleanup = () => {
+    if (frame != null) globalThis.cancelAnimationFrame?.(frame);
+    for (const timer of timers) globalThis.clearTimeout?.(timer);
+    if (BIO_VIEWPORT_RESTORES.get(bioTab) === cleanup) BIO_VIEWPORT_RESTORES.delete(bioTab);
+  };
+  BIO_VIEWPORT_RESTORES.set(bioTab, cleanup);
 }
 
 function setupBiographyViewportTracking(bioTab, actor) {
@@ -1254,7 +1364,9 @@ function sanitizeRichHtmlWithoutDom(html) {
 
 function isSafeRichUrl(value, attributeName) {
   const raw = String(value ?? "").replace(/[\u0000-\u001F\u007F\s]+/gu, "").trim();
-  if (!raw || raw.startsWith("#") || raw.startsWith("/") || raw.startsWith("./") || raw.startsWith("../")) return true;
+  if (!raw || raw.startsWith("#") || raw.startsWith("./") || raw.startsWith("../")) return true;
+  if (raw.startsWith("//")) return false;
+  if (raw.startsWith("/")) return true;
   if (!/^[a-z][a-z0-9+.-]*:/iu.test(raw)) return true;
   if (/^https?:/iu.test(raw)) return true;
   if (attributeName === "href" && /^mailto:/iu.test(raw)) return true;
@@ -1263,6 +1375,8 @@ function isSafeRichUrl(value, attributeName) {
 }
 
 function cleanupBiographyMount(bioTab) {
+  BIO_VIEWPORT_RESTORES.get(bioTab)?.();
+  BIO_VIEWPORT_RESTORES.delete(bioTab);
   BIO_VIEWPORT_TRACKERS.get(bioTab)?.();
   BIO_VIEWPORT_TRACKERS.delete(bioTab);
   FLOATING_ACTIONS.get(bioTab)?.();

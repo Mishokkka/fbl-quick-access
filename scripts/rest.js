@@ -4,7 +4,7 @@ import { qaLocalize } from "./i18n.js";
 import { findConditionControl, findRestButton } from "./sheet-adapter/forbidden-lands-v1.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.js";
 import { openNewDayDialog } from "./new-day.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
@@ -146,46 +146,79 @@ export async function openRestDialog(app, actor, root = null) {
 
   return new Promise((resolve) => {
     let resolved = false;
+    let applying = false;
     let dialog = null;
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
       resolve(value);
     };
+    const closeDialog = async (renderedDialog = null) => {
+      const target = renderedDialog ?? dialog;
+      try {
+        await target?.close?.();
+      } catch (error) {
+        console.warn(`${MODULE_ID} | could not close rest dialog cleanly`, error);
+      }
+    };
 
     dialog = createFoundryDialog({
       title: qaLocalize("Rest.Title", "Отдых: {actor}", { actor: actor?.name ?? "" }),
       content,
+      closeOnSubmit: false,
       buttons: {
         apply: {
           icon: '<i class="fas fa-campground"></i>',
           label: qaLocalize("Rest.Apply", "Применить отдых"),
-          callback: async (html) => {
-            const form = extractDialogElement(html)?.querySelector("form.fblqa-rest-form");
+          callback: async (html, _event, _button, renderedDialog) => {
+            if (applying) return false;
+            applying = true;
+
+            const form = findDialogForm(renderedDialog ?? html, "form.fblqa-rest-form");
+            if (!form) {
+              console.error(`${MODULE_ID} | rest form was not available in the rendered dialog`);
+              ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+              applying = false;
+              return false;
+            }
+
             const options = readRestOptionsFromForm(form);
             const result = await applyRest(app, actor, options, {
               root,
               allowResetShortQuarter: canResetShortRestLimit(actor)
             });
-            finish(result);
 
-            if (options.type === "long" && options.startsNewDay && result && !result.failed && !result.errors?.length) {
-              window.setTimeout(() => openNewDayDialog(app, actor), 80);
+            if (!result || result.failed || result.errors?.length) {
+              applying = false;
+              return false;
             }
+
+            const startsNewDay = options.type === "long" && options.startsNewDay;
+            finish(result);
+            await runPostRestWorkflow({
+              startsNewDay,
+              closeDialog: () => closeDialog(renderedDialog),
+              openNewDay: () => openNewDayDialog(app, actor)
+            });
+            return false;
           }
         },
         cancel: {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Отмена"),
-          callback: () => finish(null)
+          callback: async (_html, _event, _button, renderedDialog) => {
+            finish(null);
+            await closeDialog(renderedDialog);
+            return false;
+          }
         }
       },
       default: "apply",
-      render: (html) => {
-        const element = extractDialogElement(html);
-        element?.closest?.(".app")?.classList.add("fblqa-rest-dialog");
+      render: (html, renderedDialog) => {
+        const element = extractDialogElement(renderedDialog ?? html);
+        element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog");
         const resize = () => scheduleRestDialogAutoSize(dialog, element);
-        setupRestDialogInteractivity(element, resize);
+        setupRestDialogInteractivity(renderedDialog ?? element, resize);
         resize();
       },
       close: () => finish(null)
@@ -198,6 +231,12 @@ export async function openRestDialog(app, actor, root = null) {
 
     dialog.render(true);
   });
+}
+
+
+export async function runPostRestWorkflow({ startsNewDay = false, closeDialog, openNewDay } = {}) {
+  if (typeof closeDialog === "function") await closeDialog();
+  if (startsNewDay && typeof openNewDay === "function") await openNewDay();
 }
 
 function buildRestDialogContent(actor, snapshot, permissions = {}) {
@@ -306,10 +345,11 @@ function renderLongAttributeRow(actor, snapshot, attribute) {
   `;
 }
 
-function setupRestDialogInteractivity(element, onLayoutChange = null) {
+function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
+  const element = extractDialogElement(dialogOrElement);
   setupRestDialogHeader(element);
 
-  const form = element?.querySelector?.("form.fblqa-rest-form");
+  const form = findDialogForm(dialogOrElement, "form.fblqa-rest-form");
   if (!form) return;
 
   const updatePanes = () => {
@@ -340,7 +380,7 @@ function setupRestDialogInteractivity(element, onLayoutChange = null) {
 
 function scheduleRestDialogAutoSize(dialog, element) {
   const resize = () => {
-    const appElement = element?.closest?.(".app");
+    const appElement = element?.closest?.(".app, .application");
     if (!appElement?.isConnected) return;
 
     const content = appElement.querySelector?.(".window-content");
@@ -372,7 +412,7 @@ function scheduleRestDialogAutoSize(dialog, element) {
 }
 
 function setupRestDialogHeader(element) {
-  const app = element?.closest?.(".app");
+  const app = element?.closest?.(".app, .application");
   const header = app?.querySelector?.(".window-header");
   const template = element?.querySelector?.(".fblqa-rest-header-template");
   if (!header || !template) return;
@@ -387,7 +427,7 @@ function setupRestDialogHeader(element) {
   container.setAttribute("aria-label", qaLocalize("Rest.CurrentConditions", "Текущие состояния"));
   container.innerHTML = template.innerHTML;
 
-  const close = header.querySelector(".close");
+  const close = header.querySelector('[data-action="close"], .close');
   if (close) header.insertBefore(container, close);
   else header.appendChild(container);
 }
@@ -914,12 +954,6 @@ async function postRestChatMessage(actor, result, options) {
     speaker: ChatMessage.getSpeaker?.({ actor }) ?? undefined,
     content
   });
-}
-
-function extractDialogElement(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
-  return null;
 }
 
 function localizeAttribute(attribute) {

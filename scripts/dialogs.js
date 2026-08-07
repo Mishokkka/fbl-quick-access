@@ -5,6 +5,29 @@ export function hasFoundryDialogApi() {
   return Boolean(globalThis.foundry?.applications?.api?.DialogV2 || globalThis.Dialog);
 }
 
+export function extractDialogElement(value) {
+  const HTMLElementClass = globalThis.HTMLElement;
+  if (!HTMLElementClass) return null;
+  if (value instanceof HTMLElementClass) return value;
+  if (value?.element instanceof HTMLElementClass) return value.element;
+  if (value?.form instanceof HTMLElementClass) return value.form;
+  if (value?.[0] instanceof HTMLElementClass) return value[0];
+  return null;
+}
+
+export function findDialogForm(value, selector = "form") {
+  const HTMLElementClass = globalThis.HTMLElement;
+  if (!HTMLElementClass) return null;
+  const candidates = [value?.form, value?.element, value, value?.[0]];
+  for (const candidate of candidates) {
+    if (!(candidate instanceof HTMLElementClass)) continue;
+    if (candidate.matches?.(selector)) return candidate;
+    const found = candidate.querySelector?.(selector);
+    if (found instanceof HTMLElementClass) return found;
+  }
+  return null;
+}
+
 export function createFoundryDialog(data = {}, options = {}) {
   const DialogV2 = globalThis.foundry?.applications?.api?.DialogV2;
   if (!DialogV2) return globalThis.Dialog ? new globalThis.Dialog(data, options) : null;
@@ -44,7 +67,7 @@ export function createFoundryDialog(data = {}, options = {}) {
 
   dialog.addEventListener("render", () => {
     applyDialogFormMetadata(dialog.form, normalized.formMetadata);
-    data.render?.(dialog.element);
+    data.render?.(dialog.element, dialog);
   });
   dialog.addEventListener("close", () => data.close?.());
   return dialog;
@@ -142,7 +165,7 @@ export async function confirmDangerAction({
         render: (html) => {
           const HTMLElementClass = globalThis.HTMLElement;
           const element = HTMLElementClass && html instanceof HTMLElementClass ? html : html?.[0];
-          element?.closest?.(".app")?.classList.add("fblqa-delete-dialog");
+          element?.closest?.(".app, .application")?.classList.add("fblqa-delete-dialog");
         },
         close: () => finish(false)
       }, {

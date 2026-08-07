@@ -210,7 +210,7 @@ with a `TypeError`; pass `null` or an empty string to clear a selection.
 
 ## Biography profile helpers
 
-Quick Access 1.7.11 replaces the native BIO tab presentation with a structured
+Quick Access 1.7.12 replaces the native BIO tab presentation with a structured
 biography dossier and a sliding Pilgrim Card. Importers can write the complete
 profile through the public API:
 

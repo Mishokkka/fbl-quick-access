@@ -22,6 +22,7 @@ import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integr
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
 import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, releaseBiographyState, saveBiographyProfile, setupBiographyTab } from "./biography.js";
+import { pruneOwnSocketProofs } from "./socket-auth.js";
 
 Hooks.once("init", () => {
   registerCoreSettings();
@@ -74,6 +75,7 @@ Hooks.once("ready", async () => {
   refreshPilgrimFontChoices();
   registerIntegrationSocket();
   registerMoneyTransferSocket();
+  await pruneOwnSocketProofs();
   await readyExpandedConditions();
   await pruneWorldActorReferences();
 });

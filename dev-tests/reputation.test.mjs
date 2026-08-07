@@ -72,3 +72,89 @@ test("remote checks round fractional Reputation down", () => {
 
 if (PreviousGame === undefined) delete globalThis.game;
 else globalThis.game = PreviousGame;
+
+test("native header Reputation control opens the ledger dialog", () => {
+  const previous = {
+    HTMLElement: globalThis.HTMLElement,
+    foundry: globalThis.foundry,
+    ui: globalThis.ui
+  };
+  let rendered = 0;
+
+  class FakeElement {
+    constructor() {
+      this.dataset = {};
+      this.attributes = new Map();
+      this.listeners = new Map();
+      this.classList = { add: () => {}, contains: () => false };
+      this.previousElementSibling = null;
+      this.parentCell = null;
+      this.title = "";
+      this.value = "";
+      this.readOnly = false;
+    }
+    addEventListener(type, callback) { this.listeners.set(type, callback); }
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    closest(selector) { return selector === "td" ? this.parentCell : null; }
+    querySelector() { return null; }
+    dispatch(type, extra = {}) {
+      this.listeners.get(type)?.({
+        key: extra.key,
+        preventDefault() {},
+        stopImmediatePropagation() {},
+        stopPropagation() {}
+      });
+    }
+  }
+
+  class FakeDialogV2 {
+    constructor(config) {
+      this.config = config;
+      this.listeners = new Map();
+      this.element = null;
+      this.form = null;
+    }
+    addEventListener(type, callback) { this.listeners.set(type, callback); }
+    render(force) { assert.equal(force, true); rendered += 1; return Promise.resolve(this); }
+  }
+
+  const input = new FakeElement();
+  const inputCell = new FakeElement();
+  const labelCell = new FakeElement();
+  const nativeRoll = new FakeElement();
+  input.parentCell = inputCell;
+  inputCell.previousElementSibling = labelCell;
+  labelCell.querySelector = (selector) => selector === ".roll-reputation" ? nativeRoll : null;
+
+  const root = {
+    querySelector(selector) {
+      if (selector === 'input[name="system.bio.reputation.value"]') return input;
+      return null;
+    }
+  };
+  const actor = {
+    id: "reputation-click-test",
+    uuid: "Actor.reputation-click-test",
+    name: "Tester",
+    isOwner: true,
+    system: { bio: { reputation: { value: 3 } } },
+    getFlag: () => []
+  };
+
+  try {
+    globalThis.HTMLElement = FakeElement;
+    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+    globalThis.ui = { notifications: {} };
+
+    reputation.setupReputationManager({}, actor, root);
+    assert.equal(input.dataset.fblqaReputationBound, "true");
+    assert.equal(nativeRoll.dataset.fblqaReputationBound, "true");
+
+    nativeRoll.dispatch("click");
+    assert.equal(rendered, 1);
+  } finally {
+    globalThis.HTMLElement = previous.HTMLElement;
+    globalThis.foundry = previous.foundry;
+    globalThis.ui = previous.ui;
+  }
+});

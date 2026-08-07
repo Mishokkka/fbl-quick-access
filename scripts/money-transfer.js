@@ -10,8 +10,9 @@ import {
   consumeSocketProof,
   createSocketProof,
   scheduleSocketProofCleanup,
-  verifySocketProof
+  verifySocketProofWithRetry
 } from "./socket-auth.js";
+import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
@@ -227,7 +228,7 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
   if (!primaryGm) return { ok: false, error: "no-gm" };
   if (!game.socket?.emit) return { ok: false, error: "socket-unavailable" };
 
-  const requestId = makeRequestId();
+  const requestId = makeSocketRequestId();
   const offer = {
     type: OFFER_TYPE,
     requestId,
@@ -296,11 +297,9 @@ async function handleTransferOffer(message) {
   const isRecipient = message.recipientUserId === game.user?.id;
   if (!isPrimaryGm && !isRecipient) return;
 
-  const requester = findUser(message.requesterId);
+  const requester = findGameUser(message.requesterId);
   if (!requester?.active) return;
-  const proof = verifySocketProof(requester, OFFER_PROOF_KIND, message.requestId, withoutPacketId(message), {
-    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
-  });
+  const proof = await verifyTransferProof(requester, OFFER_PROOF_KIND, message.requestId, withoutPacketId(message));
   if (!proof.ok) return;
   if (!consumeSocketProof(requester.id, OFFER_PROOF_KIND, message.requestId)) return;
 
@@ -349,11 +348,9 @@ async function handleTransferDecision(message) {
   const primaryGm = getPrimaryActiveGm();
   if (!game.user?.isGM || primaryGm?.id !== game.user.id || message.primaryGmId !== game.user.id) return;
 
-  const recipientUser = findUser(message.recipientUserId);
+  const recipientUser = findGameUser(message.recipientUserId);
   if (!recipientUser?.active || recipientUser.isGM) return;
-  const proof = verifySocketProof(recipientUser, DECISION_PROOF_KIND, message.requestId, withoutPacketId(message), {
-    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
-  });
+  const proof = await verifyTransferProof(recipientUser, DECISION_PROOF_KIND, message.requestId, withoutPacketId(message));
   if (!proof.ok) return;
   if (!consumeSocketProof(recipientUser.id, DECISION_PROOF_KIND, message.requestId)) return;
 
@@ -385,7 +382,7 @@ async function processTransferDecision(offer, message) {
     return;
   }
 
-  const recipientUser = findUser(offer.recipientUserId);
+  const recipientUser = findGameUser(offer.recipientUserId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   if (!recipientUser || !recipientUser.active || !userOwnsActor(recipientUser, targetActor)) {
     await finalizeTransferOffer(offer, { ok: false, error: "invalid-recipient" });
@@ -403,14 +400,12 @@ async function handleTransferResult(message) {
   const isRecipient = message.recipientUserId === game.user?.id;
   if (!isRequester && !isRecipient) return;
 
-  const primaryGm = findUser(message.primaryGmId);
+  const primaryGm = findGameUser(message.primaryGmId);
   if (!primaryGm?.isGM) return;
   const currentPrimaryGm = getPrimaryActiveGm();
   if (currentPrimaryGm?.id !== primaryGm.id) return;
 
-  const proof = verifySocketProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message), {
-    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS
-  });
+  const proof = await verifyTransferProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message));
   if (!proof.ok) return;
   if (!consumeSocketProof(primaryGm.id, RESULT_PROOF_KIND, message.requestId)) return;
 
@@ -544,8 +539,8 @@ function buildIncomingMoneyTransferDialogContent(offer) {
 }
 
 function validateIncomingOffer(message) {
-  const requester = findUser(message.requesterId);
-  const recipient = findUser(message.recipientUserId);
+  const requester = findGameUser(message.requesterId);
+  const recipient = findGameUser(message.recipientUserId);
   const sourceActor = game.actors?.get?.(message.sourceActorId);
   const targetActor = game.actors?.get?.(message.targetActorId);
 
@@ -558,7 +553,7 @@ function validateIncomingOffer(message) {
 }
 
 function validateRecipientOffer(message) {
-  const recipient = findUser(message.recipientUserId);
+  const recipient = findGameUser(message.recipientUserId);
   const targetActor = game.actors?.get?.(message.targetActorId);
   if (!recipient || recipient.id !== game.user?.id || !targetActor) return { ok: false, error: "invalid-recipient" };
   if (!recipient.active || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
@@ -592,15 +587,14 @@ async function finalizeTransferOffer(offer, result) {
   };
 
   try {
-    await createSocketProof(RESULT_PROOF_KIND, offer.requestId, resultMessage, game.user);
+    await sendAuthenticatedTransferResultWithRetry(resultMessage, game.user);
     scheduleSocketProofCleanup(game.user, RESULT_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
-    await sendSocketMessage(resultMessage);
   } catch (error) {
-    console.error(`${MODULE_ID} | money transfer result could not be authenticated`, error);
+    console.error(`${MODULE_ID} | money transfer result delivery failed`, offer.requestId, error);
   }
 
-  const requester = findUser(offer.requesterId);
-  const recipient = findUser(offer.recipientUserId);
+  const requester = findGameUser(offer.requesterId);
+  const recipient = findGameUser(offer.recipientUserId);
   scheduleSocketProofCleanup(requester, OFFER_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   scheduleSocketProofCleanup(recipient, DECISION_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   await postTransferWhisper(offer, completeResult);
@@ -779,21 +773,12 @@ function userOwnsActor(user, actor) {
   return Number(ownership[user.id] ?? ownership.default ?? 0) >= 3;
 }
 
-function findUser(id) {
-  const users = globalThis.game?.users;
-  return users?.get?.(id) ?? Array.from(users ?? []).find((user) => user?.id === id) ?? null;
-}
-
 function withoutPacketId(message) {
   return Object.fromEntries(Object.entries(message ?? {}).filter(([key]) => key !== "packetId"));
 }
 
-function isValidRequestId(value) {
-  return /^[a-z0-9][a-z0-9_-]{5,127}$/i.test(String(value ?? ""));
-}
-
 function isValidOfferMessage(message) {
-  return isValidRequestId(message?.requestId)
+  return isValidSocketRequestId(message?.requestId)
     && message?.type === OFFER_TYPE
     && typeof message.requesterId === "string"
     && typeof message.recipientUserId === "string"
@@ -805,7 +790,7 @@ function isValidOfferMessage(message) {
 }
 
 function isValidDecisionMessage(message) {
-  return isValidRequestId(message?.requestId)
+  return isValidSocketRequestId(message?.requestId)
     && message?.type === DECISION_TYPE
     && typeof message.requesterId === "string"
     && typeof message.recipientUserId === "string"
@@ -815,7 +800,7 @@ function isValidDecisionMessage(message) {
 }
 
 function isValidResultMessage(message) {
-  return isValidRequestId(message?.requestId)
+  return isValidSocketRequestId(message?.requestId)
     && message?.type === RESULT_TYPE
     && typeof message.requesterId === "string"
     && typeof message.recipientUserId === "string"
@@ -872,8 +857,36 @@ function localizeWhisperStatus(status, error) {
   });
 }
 
+async function verifyTransferProof(user, kind, requestId, payload) {
+  const result = await verifySocketProofWithRetry(user, kind, requestId, payload, {
+    ttlMs: REQUEST_TIMEOUT_MS + PROOF_GRACE_MS,
+    retries: 2,
+    retryDelayMs: 40
+  });
+  if (!result.ok) {
+    console.warn(`${MODULE_ID} | money transfer proof rejected`, requestId, kind, result.error);
+  }
+  return result;
+}
+
+async function sendAuthenticatedTransferResultWithRetry(payload, user, attempts = 2) {
+  let lastError = null;
+  const maximumAttempts = Math.max(1, Math.min(3, Math.floor(Number(attempts) || 2)));
+  for (let attempt = 1; attempt <= maximumAttempts; attempt += 1) {
+    try {
+      await createSocketProof(RESULT_PROOF_KIND, payload.requestId, payload, user);
+      await sendSocketMessage(payload);
+      return;
+    } catch (error) {
+      lastError = error;
+      if (attempt < maximumAttempts) await new Promise((resolve) => globalThis.setTimeout(resolve, 40));
+    }
+  }
+  throw lastError ?? new Error("Socket result delivery failed");
+}
+
 async function sendSocketMessage(payload) {
-  const message = { ...payload, packetId: payload.packetId ?? makeRequestId() };
+  const message = { ...payload, packetId: payload.packetId ?? makeSocketRequestId() };
   await handleSocketMessage(message);
   game.socket?.emit?.(SOCKET_CHANNEL, message);
 }
@@ -888,12 +901,6 @@ function rememberPacket(packetId) {
     seenPackets.delete(oldest);
   }
   return true;
-}
-
-function makeRequestId() {
-  return globalThis.foundry?.utils?.randomID?.(20)
-    ?? globalThis.crypto?.randomUUID?.()
-    ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
 
 function extractDialogElement(html) {
