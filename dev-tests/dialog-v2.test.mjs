@@ -161,3 +161,51 @@ test("dialog adapter reapplies outer form class, id, and dataset in DialogV2", a
     globalThis.document = previousDocument;
   }
 });
+
+test("dialog adapter gives buttonless DialogV2 windows an inert compatibility sentinel", async () => {
+  const previousFoundry = globalThis.foundry;
+  const previousDialog = globalThis.Dialog;
+  const previousDocument = globalThis.document;
+  let receivedConfig = null;
+
+  class FakeDialogV2 {
+    constructor(config) {
+      receivedConfig = config;
+      if (!Array.isArray(config.buttons) || config.buttons.length === 0) {
+        throw new Error("DialogV2 requires a non-empty buttons configuration in this v13 fixture");
+      }
+      this.element = null;
+      this.form = null;
+      this.listeners = new Map();
+    }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    async render(force) { assert.equal(force, true); return this; }
+  }
+
+  globalThis.document = undefined;
+  globalThis.Dialog = undefined;
+  globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+
+  try {
+    const dialog = dialogs.createFoundryDialog({
+      title: "Ledger",
+      content: "<p>Body</p>",
+      buttons: {}
+    }, {
+      classes: ["fblqa-reputation-dialog"],
+      buttonless: true
+    });
+
+    assert.ok(dialog instanceof FakeDialogV2);
+    assert.equal(receivedConfig.buttons.length, 1);
+    assert.equal(receivedConfig.buttons[0].action, "__fblqa_buttonless");
+    assert.equal(receivedConfig.buttons[0].disabled, true);
+    assert.equal(receivedConfig.buttons[0].label, "");
+    await dialog.render(true);
+  } finally {
+    globalThis.foundry = previousFoundry;
+    globalThis.Dialog = previousDialog;
+    globalThis.document = previousDocument;
+  }
+});
+

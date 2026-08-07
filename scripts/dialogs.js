@@ -38,6 +38,35 @@ export function createFoundryDialog(data = {}, options = {}) {
   if (options.width != null) position.width = options.width;
   if (options.height != null) position.height = options.height;
 
+  const configuredButtons = Object.entries(data.buttons ?? {}).map(([action, button]) => ({
+    action,
+    label: String(button?.label ?? action),
+    icon: normalizeDialogIcon(button?.icon),
+    class: [button?.class, action].filter(Boolean).join(" "),
+    style: button?.style,
+    type: button?.type,
+    disabled: Boolean(button?.disabled),
+    default: action === defaultAction,
+    callback: typeof button?.callback === "function"
+      ? (event, renderedButton, renderedDialog) => button.callback(renderedDialog.element, event, renderedButton, renderedDialog)
+      : undefined
+  }));
+
+  // DialogV2 is designed around a button footer and some v13 builds reject an
+  // empty buttons array during render. Long-lived utility windows such as the
+  // Reputation ledger deliberately have no footer actions, so give DialogV2 one
+  // inert, hidden sentinel while the caller hides the footer entirely.
+  if (options.buttonless === true && configuredButtons.length === 0) {
+    configuredButtons.push({
+      action: "__fblqa_buttonless",
+      label: "",
+      class: "fblqa-dialog-buttonless-sentinel",
+      type: "button",
+      disabled: true,
+      default: false
+    });
+  }
+
   const dialog = new DialogV2({
     classes: Array.isArray(options.classes) ? options.classes : [],
     position,
@@ -50,19 +79,7 @@ export function createFoundryDialog(data = {}, options = {}) {
     },
     modal: Boolean(data.modal),
     content: normalized.content,
-    buttons: Object.entries(data.buttons ?? {}).map(([action, button]) => ({
-      action,
-      label: String(button?.label ?? action),
-      icon: normalizeDialogIcon(button?.icon),
-      class: [button?.class, action].filter(Boolean).join(" "),
-      style: button?.style,
-      type: button?.type,
-      disabled: Boolean(button?.disabled),
-      default: action === defaultAction,
-      callback: typeof button?.callback === "function"
-        ? (event, renderedButton, renderedDialog) => button.callback(renderedDialog.element, event, renderedButton, renderedDialog)
-        : undefined
-    }))
+    buttons: configuredButtons
   });
 
   dialog.addEventListener("render", () => {

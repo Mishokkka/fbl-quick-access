@@ -12,12 +12,32 @@
   cursor: pointer;
 }
 
+
+.fblqa-reputation-dialog .window-header,
+.app.fblqa-reputation-dialog .window-header,
+.application.fblqa-reputation-dialog .window-header {
+  min-height: 34px;
+  background: rgba(221, 217, 211, 0.98);
+  color: var(--fblqa-rest-text);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.34);
+}
+
 .fblqa-reputation-dialog .window-header .close,
 .fblqa-reputation-dialog .window-header .header-button.close,
 .fblqa-reputation-dialog .window-header [data-action="close"],
 .app.fblqa-reputation-dialog .window-header .close,
 .app.fblqa-reputation-dialog .window-header [data-action="close"] {
   color: #111 !important;
+}
+
+
+.fblqa-reputation-dialog .form-footer,
+.fblqa-reputation-dialog .dialog-buttons,
+.app.fblqa-reputation-dialog .form-footer,
+.app.fblqa-reputation-dialog .dialog-buttons,
+.application.fblqa-reputation-dialog .form-footer,
+.application.fblqa-reputation-dialog .dialog-buttons {
+  display: none;
 }
 
 .fblqa-reputation-dialog .window-content,

@@ -174,7 +174,7 @@ export async function openRestDialog(app, actor, root = null) {
             if (applying) return false;
             applying = true;
 
-            const form = findDialogForm(renderedDialog ?? html, "form.fblqa-rest-form");
+            const form = findDialogForm(_button?.form ?? renderedDialog ?? html, "form");
             if (!form) {
               console.error(`${MODULE_ID} | rest form was not available in the rendered dialog`);
               ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
@@ -218,7 +218,7 @@ export async function openRestDialog(app, actor, root = null) {
         const element = extractDialogElement(renderedDialog ?? html);
         element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog");
         const resize = () => scheduleRestDialogAutoSize(dialog, element);
-        setupRestDialogInteractivity(renderedDialog ?? element, resize);
+        setupRestDialogInteractivity(renderedDialog?.form ?? renderedDialog ?? element, resize);
         resize();
       },
       close: () => finish(null)
@@ -288,7 +288,7 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
         <p class="fblqa-rest-note">${qaLocalize("Rest.LongConditionRemoval", "Sleepy снимается сном. Cold снимается только при источнике тепла. Эти состояния всё равно блокируют восстановление на текущем Long Rest.")}</p>
       </section>
 
-      <section class="fblqa-rest-pane" data-rest-pane="short" hidden>
+      <section class="fblqa-rest-pane" data-rest-pane="short" hidden aria-hidden="true">
         <div class="fblqa-rest-pane-head">
           <h2>${qaLocalize("Rest.ShortHeading", "Short Rest — 15 минут передышки")}</h2>
           <p>${qaLocalize("Rest.ShortDescription", "Можно выполнить продолжительные действия. Один раз в четверть дня можно восстановить 1 единицу одной характеристики, если потрачен подходящий расходник или выполнено подходящее условие.")}</p>
@@ -349,13 +349,16 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
   const element = extractDialogElement(dialogOrElement);
   setupRestDialogHeader(element);
 
-  const form = findDialogForm(dialogOrElement, "form.fblqa-rest-form");
+  const form = findDialogForm(dialogOrElement, "form");
   if (!form) return;
+  form.classList.add("fblqa-rest-form");
 
   const updatePanes = () => {
     const type = form.querySelector('input[name="restType"]:checked')?.value ?? "long";
     for (const pane of form.querySelectorAll("[data-rest-pane]")) {
-      pane.hidden = pane.dataset.restPane !== type;
+      const hidden = pane.dataset.restPane !== type;
+      pane.hidden = hidden;
+      pane.setAttribute("aria-hidden", String(hidden));
     }
     onLayoutChange?.();
   };
@@ -366,6 +369,9 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
     if (input && !input.dataset.touched) input.value = localizeDefaultConsumable(REST_ATTRIBUTES[attributeKey] ?? REST_ATTRIBUTES.strength);
   };
 
+  form.addEventListener("input", (event) => {
+    if (event.target?.name === "restType") updatePanes();
+  });
   form.addEventListener("change", (event) => {
     if (event.target?.name === "restType") updatePanes();
     if (event.target?.name === "shortAttribute") updateConsumable();

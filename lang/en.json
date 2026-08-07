@@ -386,8 +386,6 @@
         "Title": "Rumors",
         "Add": "Add rumor",
         "Empty": "No rumors recorded.",
-        "Source": "Name or source",
-        "SourcePlaceholder": "Who tells it",
         "Text": "Rumor",
         "Remove": "Remove rumor"
       },
@@ -420,7 +418,10 @@
         "Hair": "Hair",
         "DistinguishingMarks": "Distinguishing marks",
         "BirthDateMissing": "Birth date not recorded",
-        "Validity": "Valid in all ports"
+        "Validity": "Valid in all ports",
+        "EditBirthDate": "Set birth date",
+        "BirthDate": "Birth date",
+        "BirthDatePlaceholder": "For example: 14 Znoerost 842"
       },
       "PrideRoll": "Roll Pride",
       "Save": {

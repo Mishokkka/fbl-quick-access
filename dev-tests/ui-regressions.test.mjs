@@ -63,13 +63,123 @@ test("Long Rest closes before opening the separate new-day workflow", async () =
 });
 
 
-test("Short Rest dynamically returns the Dialog to auto height after switching panes", () => {
+test("Rest switching is state-driven, keeps circular radios, and reads the DialogV2 form", () => {
   const rest = readFileSync(join(root, "scripts", "rest.js"), "utf8");
+  const css = readFileSync(join(root, "styles", "10-rest.css"), "utf8");
 
   assert.match(rest, /height:\s*"auto"/);
   assert.match(rest, /scheduleRestDialogAutoSize/);
   assert.match(rest, /setPosition\?\.\(\{ height: "auto" \}\)/);
+  assert.match(rest, /pane\.hidden = hidden/);
   assert.match(rest, /if \(event\.target\?\.name === "restType"\) updatePanes\(\)/);
+  assert.match(rest, /findDialogForm\(_button\?\.form \?\? renderedDialog \?\? html, "form"\)/);
+  assert.match(css, /input\[type="radio"\][\s\S]*?appearance:\s*none;[\s\S]*?border-radius:\s*50%/);
+  assert.match(css, /\.fblqa-rest-form \.fblqa-rest-pane\[hidden\][\s\S]*?display:\s*none/);
+  assert.doesNotMatch(css, /:has\([^)]*restType[^)]*\)[^{]*\.fblqa-rest-pane/);
+  assert.match(css, /fblqa-rest-dialog \.window-header \[data-action="close"\][\s\S]*?color:\s*#111/);
+});
+
+test("Rest Apply consumes the native DialogV2 button.form and performs the actor update", async () => {
+  const previous = {
+    game: globalThis.game,
+    foundry: globalThis.foundry,
+    HTMLElement: globalThis.HTMLElement,
+    ui: globalThis.ui,
+    ChatMessage: globalThis.ChatMessage
+  };
+  let dialogConfig = null;
+  const updates = [];
+
+  class FakeElement {
+    matches(selector) { return selector === "form"; }
+    querySelector() { return null; }
+  }
+
+  class FakeForm extends FakeElement {
+    constructor() {
+      super();
+      this.controls = {
+        restType: { value: "long", checked: true },
+        hasHeatSource: { checked: false },
+        startsNewDay: { checked: false },
+        useShortRecovery: { checked: false },
+        shortAttribute: { value: "strength" },
+        shortConsumable: { value: "" },
+        resetShortQuarter: { checked: false }
+      };
+    }
+    querySelector(selector) {
+      if (selector === 'input[name="restType"]:checked') return this.controls.restType;
+      const name = selector.match(/name="([^"]+)"/)?.[1];
+      return name ? this.controls[name] ?? null : null;
+    }
+  }
+
+  class FakeDialogV2 {
+    constructor(config) {
+      dialogConfig = config;
+      this.element = new FakeElement();
+      this.form = new FakeForm();
+      this.listeners = new Map();
+    }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    render() { return Promise.resolve(this); }
+    close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
+  }
+
+  try {
+    globalThis.HTMLElement = FakeElement;
+    globalThis.game = {
+      user: { id: "gm", isGM: true },
+      i18n: { localize: (key) => key, format: (_key, data) => JSON.stringify(data) },
+      settings: { get: () => false },
+      time: { worldTime: 0 },
+      modules: new Map()
+    };
+    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+    globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
+    delete globalThis.ChatMessage;
+
+    const actor = {
+      id: "rest-dialog-actor",
+      name: "Rest Tester",
+      isOwner: true,
+      system: {
+        attribute: {
+          strength: { value: 2, max: 3 },
+          agility: { value: 3, max: 3 },
+          wits: { value: 3, max: 3 },
+          empathy: { value: 3, max: 3 }
+        },
+        condition: {}
+      },
+      effects: [],
+      getFlag: () => null,
+      async update(update) { updates.push(update); },
+      async deleteEmbeddedDocuments() {},
+      async setFlag() {},
+      async unsetFlag() {}
+    };
+
+    const rest = await import(`../scripts/rest.js?dialog-apply=${Date.now()}`);
+    const completion = rest.openRestDialog(null, actor, null);
+    assert.ok(dialogConfig, "Rest DialogV2 configuration must be created synchronously");
+    const apply = dialogConfig.buttons.find((button) => button.action === "apply");
+    assert.ok(apply, "Rest Apply button must exist");
+
+    const fakeButton = { form: new FakeForm() };
+    await apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => {} });
+    const result = await completion;
+
+    assert.equal(result?.type, "long");
+    assert.deepEqual(updates, [{ "system.attribute.strength.value": 3 }]);
+  } finally {
+    globalThis.game = previous.game;
+    globalThis.foundry = previous.foundry;
+    globalThis.HTMLElement = previous.HTMLElement;
+    globalThis.ui = previous.ui;
+    globalThis.ChatMessage = previous.ChatMessage;
+  }
 });
 
 test("STAT edits suppress full sheet renders and persist stable row order", () => {
@@ -124,7 +234,9 @@ test("Reputation replaces the native header roll with a ledger dialog", () => {
   assert.match(reputation, /selectRandomReputation\(entries, 2\)/);
   assert.match(reputation, /selectRandomReputation\(entries, 3\)/);
   assert.match(reputation, /new Roll\(`\$\{diceCount\}d6cs=6`\)/);
-  assert.match(reputation, /buttons:\s*\{[\s\S]*close:[\s\S]*Common\.Close/);
+  assert.match(reputation, /buttons:\s*\{\}/);
+  assert.match(reputation, /buttonless:\s*true/);
+  assert.doesNotMatch(reputation, /Common\.Close/);
   assert.match(reputation, /scheduleReputationDialogAutoSize/);
   assert.match(reputation, /setupReputationNoteSummary/);
   assert.match(reputation, /ChatMessage\?\.create/);
@@ -136,9 +248,15 @@ test("Reputation replaces the native header roll with a ledger dialog", () => {
 });
 
 
-test("Reputation dialog close control is forced to black", () => {
+test("Reputation dialog uses a light header and only the window close control", () => {
   const css = readFileSync(join(root, "styles", "12-reputation.css"), "utf8");
+  const reputation = readFileSync(join(root, "scripts", "reputation.js"), "utf8");
+  assert.match(css, /fblqa-reputation-dialog \.window-header[\s\S]*?background:\s*rgba\(221, 217, 211, 0\.98\)/);
   assert.match(css, /fblqa-reputation-dialog[\s\S]*?\[data-action="close"\][\s\S]*?color:\s*#111\s*!important/);
+  assert.match(reputation, /buttons:\s*\{\}/);
+  assert.match(reputation, /buttonless:\s*true/);
+  assert.doesNotMatch(reputation, /label:\s*qaLocalize\("Common\.Close"/);
+  assert.match(css, /fblqa-reputation-dialog \.form-footer,[\s\S]*?display:\s*none/);
 });
 
 test("Pilgrim font choices refresh the registered setting and live select", async () => {

@@ -1,7 +1,20 @@
 # Forbidden Lands Quick Access
 
-## Version 1.7.12
+## Version 1.7.14
 
+- Fixes the Reputation ledger failing to open after its footer Close button was removed. Buttonless Reputation windows now use an inert DialogV2 compatibility sentinel while the footer itself stays hidden.
+- Adds a calendar button to the Pilgrim Card title bar for editing the character birth date directly from the card.
+- Enlarges the APPROVED stamp into a prominent double-ring document seal.
+- Rebuilds the Long Rest / Short Rest selector with module-scoped circular radio controls and DOM-state-driven pane switching. Rest submission reads the native DialogV2 button form directly, so changing rest type and applying either rest no longer depends on wrapper-class restoration.
+- Makes the Rest window close control explicitly black in both DialogV2 and legacy fallback shells.
+- Makes the language Level control reserve room for Foundry's dropdown arrow, reduces the Cost/delete tracks, and gives the remaining width back to Name.
+- Applies all still-valid CodeRabbit findings from pull request #9: backslash URL normalization, immediate BIO dirty tracking, the dirty-value fallback test, bounded socket-retry polling with cleanup, read-only rumor-grid collapse, and direct DialogV2 Reputation regression coverage.
+
+## Version 1.7.13
+
+- Removes the footer Close button from the Reputation ledger and restores a light Foundry/Forbidden Lands-style window header.
+- Removes rumor source/name data from the BIO UI and normalized profile model; rumor rows now contain only the rumor text and remove control.
+- Makes each language Level select reserve only the width needed by its visible label/value; the Name field receives all remaining row width.
 - Preserves existing BIO rich text when Foundry mounts or saves the ProseMirror editor, while still allowing intentional replacement and deletion.
 - Restores deterministic Long Rest completion: updates finish first, the Rest dialog closes, and the New Day progression dialog opens afterward when selected.
 - Restores DialogV2 form metadata and styling for Rest, New Day, money transfer, and Reputation windows.
@@ -153,7 +166,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.12:
+Available methods in 1.7.14:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`

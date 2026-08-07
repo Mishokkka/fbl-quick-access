@@ -213,13 +213,7 @@ export function openReputationDialog(app, actor) {
   const dialog = createFoundryDialog({
     title: qaLocalize("Reputation.Title", "Репутация: {name}", { name: actor.name ?? "" }),
     content,
-    buttons: {
-      close: {
-        icon: '<i class="fas fa-times"></i>',
-        label: qaLocalize("Common.Close", "Закрыть")
-      }
-    },
-    default: "close",
+    buttons: {},
     render: (html) => {
       dialogRoot = extractElement(html);
       if (!dialogRoot) return;
@@ -264,7 +258,8 @@ export function openReputationDialog(app, actor) {
     classes: ["fblqa-reputation-dialog"],
     width: 780,
     height: "auto",
-    resizable: false
+    resizable: false,
+    buttonless: true
   });
 
   OPEN_DIALOGS.set(key, dialog);

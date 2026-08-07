@@ -80,6 +80,7 @@ test("native header Reputation control opens the ledger dialog", () => {
     ui: globalThis.ui
   };
   let rendered = 0;
+  let dialogConfig = null;
 
   class FakeElement {
     constructor() {
@@ -109,6 +110,8 @@ test("native header Reputation control opens the ledger dialog", () => {
 
   class FakeDialogV2 {
     constructor(config) {
+      dialogConfig = config;
+      assert.ok(Array.isArray(config.buttons) && config.buttons.length > 0, "v13 fixture rejects empty DialogV2 button arrays");
       this.config = config;
       this.listeners = new Map();
       this.element = null;
@@ -152,6 +155,9 @@ test("native header Reputation control opens the ledger dialog", () => {
 
     nativeRoll.dispatch("click");
     assert.equal(rendered, 1);
+    assert.equal(dialogConfig.buttons.length, 1);
+    assert.equal(dialogConfig.buttons[0].action, "__fblqa_buttonless");
+    assert.equal(dialogConfig.buttons[0].disabled, true);
   } finally {
     globalThis.HTMLElement = previous.HTMLElement;
     globalThis.foundry = previous.foundry;
