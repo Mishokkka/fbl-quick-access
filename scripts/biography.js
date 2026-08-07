@@ -1,4 +1,4 @@
-import { FLAG_BIOGRAPHY_PROFILE, MODULE_ID } from "./constants.js";
+import { FLAG_BIOGRAPHY_PROFILE, FLAG_PILGRIM_CARD_PROFILE, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
@@ -32,6 +32,8 @@ const BIO_VIEWPORT_TRACKERS = new WeakMap();
 const BIO_VIEWPORT_RESTORES = new WeakMap();
 const LANGUAGE_LAYOUT_FRAMES = new WeakMap();
 const LANGUAGE_LAYOUT_OBSERVERS = new WeakMap();
+const PILGRIM_SAVE_TIMERS = new Map();
+const PILGRIM_SAVE_CHAINS = new Map();
 
 export function normalizeBiographyProfile(value = {}) {
   const source = value && typeof value === "object" ? value : {};
@@ -78,6 +80,55 @@ export function normalizeBiographyProfile(value = {}) {
       clothing: String(legacy.clothing ?? "")
     }
   };
+}
+
+
+export function normalizePilgrimCardProfile(value = {}) {
+  const source = value && typeof value === "object" ? value : {};
+  const identity = source.identity && typeof source.identity === "object" ? source.identity : {};
+  const physical = source.physical && typeof source.physical === "object" ? source.physical : {};
+
+  return {
+    version: PROFILE_VERSION,
+    identity: {
+      name: String(identity.name ?? source.name ?? ""),
+      kin: String(identity.kin ?? ""),
+      kinVariant: String(identity.kinVariant ?? identity.subrace ?? ""),
+      issuingCountry: String(identity.issuingCountry ?? identity.country ?? identity.citizenship ?? ""),
+      birthDate: normalizeBirthDate(identity.birthDate)
+    },
+    physical: {
+      appearance: String(physical.appearance ?? source.appearance ?? ""),
+      height: String(physical.height ?? ""),
+      weight: String(physical.weight ?? ""),
+      skin: String(physical.skin ?? ""),
+      eyes: String(physical.eyes ?? ""),
+      hair: String(physical.hair ?? ""),
+      distinguishingMarks: String(physical.distinguishingMarks ?? physical.marks ?? "")
+    }
+  };
+}
+
+export function getPilgrimCardProfile(actor, fallbackBiography = null) {
+  const stored = actor?.getFlag?.(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
+  if (stored && typeof stored === "object") return normalizePilgrimCardProfile(stored);
+
+  // Compatibility migration: on the first open after upgrading, take one snapshot
+  // of the card's old values. From that point on the card has its own flag and no
+  // longer follows Actor.name or system.bio fields.
+  const fallback = fallbackBiography && typeof fallbackBiography === "object"
+    ? fallbackBiography
+    : getBiographyProfile(actor);
+  return normalizePilgrimCardProfile(fallback);
+}
+
+export async function savePilgrimCardProfile(actor, value, { render = false } = {}) {
+  if (!actor?.update) return false;
+  const profile = normalizePilgrimCardProfile(value);
+  await actor.update({
+    [`flags.${MODULE_ID}.${FLAG_PILGRIM_CARD_PROFILE}`]: profile
+  }, { render });
+  return true;
 }
 
 export function getBiographyProfile(actor) {
@@ -158,6 +209,10 @@ export function releaseBiographyState(actorOrId) {
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
   SAVE_CHAINS.delete(key);
+  const pilgrimTimer = PILGRIM_SAVE_TIMERS.get(key);
+  if (pilgrimTimer) globalThis.clearTimeout?.(pilgrimTimer);
+  PILGRIM_SAVE_TIMERS.delete(key);
+  PILGRIM_SAVE_CHAINS.delete(key);
   COLLAPSED_SECTIONS.delete(key);
   BIO_SCROLL_POSITIONS.delete(key);
 }
@@ -173,8 +228,31 @@ export function closeBiographyDrawer(actorOrId) {
   DRAWERS.delete(key);
 }
 
+function readLegacyImporterProfile(actor) {
+  const scope = "air-islands-character-importer";
+
+  // Foundry v13 validates getFlag scopes and throws when the owning module is
+  // disabled or no longer installed. Legacy importer data can still remain on
+  // the Actor, so read that inert flag payload directly first.
+  const persisted = actor?.flags?.[scope]?.profile;
+  if (persisted && typeof persisted === "object") return persisted;
+
+  const importer = globalThis.game?.modules?.get?.(scope);
+  if (!importer?.active || typeof actor?.getFlag !== "function") return null;
+
+  try {
+    const value = actor.getFlag(scope, "profile");
+    return value && typeof value === "object" ? value : null;
+  } catch {
+    // A stale or half-initialized module registry must never prevent BIO from
+    // mounting. Missing legacy importer data simply means there is nothing to
+    // migrate.
+    return null;
+  }
+}
+
 function profileFromActor(actor) {
-  const imported = actor?.getFlag?.("air-islands-character-importer", "profile");
+  const imported = readLegacyImporterProfile(actor);
   const bio = imported?.biography ?? {};
   const identity = imported?.identity ?? {};
   const legacyFace = actorBioHtml(actor, "face");
@@ -321,7 +399,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   setupBiographyViewportTracking(bioTab, actor);
   setupLanguageLayout(bioTab);
 
-  bioTab.querySelector('[data-bio-action="pilgrim"]')?.addEventListener("click", () => openPilgrimCard(actor, root, state, editable, bioTab));
+  bioTab.querySelector('[data-bio-action="pilgrim"]')?.addEventListener("click", () => openPilgrimCard(actor, root, state, editable));
   bioTab.querySelector('[data-bio-action="archive"]')?.addEventListener("click", (event) => {
     const button = event.currentTarget;
     const archive = bioTab.querySelector("[data-bio-archive]");
@@ -384,14 +462,22 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   }
 }
 
-function openPilgrimCard(actor, root, state, editable, bioTab) {
+function openPilgrimCard(actor, root, biographyState, editable) {
   closeBiographyDrawer(actor);
   const application = findApplicationRoot(root) ?? root;
+  const stored = actor?.getFlag?.(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
+  const cardState = getPilgrimCardProfile(actor, biographyState);
+
+  // Persist the one-time migration snapshot immediately. The same mutable state
+  // object is used by later edits, so a quick edit before this timer fires cannot
+  // overwrite the user's newer value with the migration seed.
+  if (!(stored && typeof stored === "object") && editable) queuePilgrimSave(actor, cardState, 0);
+
   const drawer = document.createElement("aside");
   drawer.className = "fblqa-pilgrim-drawer";
   drawer.dataset.actorId = actor.id;
   drawer.dataset.attached = "true";
-  drawer.innerHTML = pilgrimCardHtml(actor, state, editable);
+  drawer.innerHTML = pilgrimCardHtml(actor, cardState, editable);
   document.body.append(drawer);
   applyPilgrimCardFont(drawer, getPilgrimCardFontFamily());
 
@@ -407,9 +493,8 @@ function openPilgrimCard(actor, root, state, editable, bioTab) {
     updatePilgrimAttachmentUi(drawer);
     if (drawer.dataset.attached === "true") positionPilgrimDrawer(drawer, application);
   });
-  setupPilgrimBirthDateEditor(drawer, actor, state, editable);
-  bindSimpleControls(drawer, actor, state, editable, null, bioTab);
-  bindRichEditors(drawer, actor, state, editable, null, bioTab);
+  setupPilgrimBirthDateEditor(drawer, actor, cardState, editable);
+  bindPilgrimControls(drawer, actor, cardState, editable);
 }
 
 function pilgrimCardHtml(actor, profile, editable) {
@@ -488,7 +573,7 @@ function setupPilgrimBirthDateEditor(drawer, actor, state, editable) {
     if (label instanceof HTMLElement) {
       label.textContent = birthDateLabel(state.identity.birthDate) || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана");
     }
-    queueProfileSave(actor, state, null);
+    queuePilgrimSave(actor, state);
   });
 
   input.addEventListener("keydown", (event) => {
@@ -766,18 +851,44 @@ function captureNativeHeadingSpec(bioTab) {
   return { tag: allowedTag, className };
 }
 
+function bindPilgrimControls(scope, actor, state, editable) {
+  for (const control of scope.querySelectorAll("[data-bio-path]:not(prose-mirror)")) {
+    if (control.matches("textarea[data-bio-autosize]")) schedulePlainTextareaResize(control);
+    const discreteControl = control.matches("select, input[type='checkbox'], input[type='number']");
+    const eventName = discreteControl ? "change" : "input";
+    control.addEventListener(eventName, (event) => {
+      event.stopPropagation();
+      if (control.matches("textarea[data-bio-autosize]")) autoSizePlainTextarea(control);
+      if (!editable) return;
+      const value = control.type === "checkbox" ? control.checked : control.value;
+      setPath(state, control.dataset.bioPath, value);
+      queuePilgrimSave(actor, state, discreteControl ? 0 : 350);
+    });
+  }
+}
+
 function bindSimpleControls(scope, actor, state, editable, saveState, twinScope = null) {
   for (const control of scope.querySelectorAll("[data-bio-path]:not(prose-mirror)")) {
     if (control.matches("textarea[data-bio-autosize]")) schedulePlainTextareaResize(control);
-    const eventName = control.matches("select, input[type='checkbox'], input[type='number']") ? "change" : "input";
-    control.addEventListener(eventName, () => {
+    const discreteControl = control.matches("select, input[type='checkbox'], input[type='number']");
+    const eventName = discreteControl ? "change" : "input";
+    control.addEventListener(eventName, (event) => {
+      // These controls live inside the system actor-sheet form. Letting their
+      // events bubble into the native FormApplication handler can submit and
+      // rerender the whole sheet before the Quick Access flag save completes.
+      // That is especially visible on language <select>s: the first choice
+      // appears to snap back, while the delayed flag save makes the second try
+      // work. Keep module-owned BIO controls isolated from the parent form.
+      event.stopPropagation();
       if (control.matches("textarea[data-bio-autosize]")) autoSizePlainTextarea(control);
-      scheduleLanguageLayout(scope);
       if (!editable) return;
       const value = control.type === "checkbox" ? control.checked : control.value;
       setPath(state, control.dataset.bioPath, value);
       syncTwinControl(twinScope, control.dataset.bioPath, value, control);
-      queueProfileSave(actor, state, saveState);
+      scheduleLanguageLayout(scope);
+      // Discrete choices should be persisted immediately. Free-text fields keep
+      // the debounce so typing does not create an Actor update per keystroke.
+      queueProfileSave(actor, state, saveState, discreteControl ? 0 : 350);
     });
   }
   setupLanguageLayout(scope);
@@ -1206,6 +1317,24 @@ function queueProfileSave(actor, state, status, delay = 350) {
     SAVE_CHAINS.set(key, chain);
   }, delay);
   SAVE_TIMERS.set(key, timeout);
+}
+
+function queuePilgrimSave(actor, state, delay = 350) {
+  const key = drawerKey(actor);
+  const existing = PILGRIM_SAVE_TIMERS.get(key);
+  if (existing) window.clearTimeout(existing);
+  const timeout = window.setTimeout(() => {
+    PILGRIM_SAVE_TIMERS.delete(key);
+    const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve())
+      .catch(() => false)
+      .then(() => savePilgrimCardProfile(actor, state, { render: false }))
+      .catch((error) => {
+        console.error(`${MODULE_ID} | pilgrim card save failed`, error);
+        return false;
+      });
+    PILGRIM_SAVE_CHAINS.set(key, chain);
+  }, delay);
+  PILGRIM_SAVE_TIMERS.set(key, timeout);
 }
 
 function setSaveStatus(element, text, className) {

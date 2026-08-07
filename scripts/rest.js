@@ -7,6 +7,7 @@ import { escapeHtml, rerenderSheet } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.js";
 import { openNewDayDialog } from "./new-day.js";
+import { usesCalendariaStateProgression } from "./state-progression.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
 
 export const REST_ATTRIBUTES = {
@@ -193,7 +194,7 @@ export async function openRestDialog(app, actor, root = null) {
               return false;
             }
 
-            const startsNewDay = options.type === "long" && options.startsNewDay;
+            const startsNewDay = options.type === "long" && options.startsNewDay && !usesCalendariaStateProgression();
             finish(result);
             await runPostRestWorkflow({
               startsNewDay,
@@ -259,6 +260,16 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
       })
     : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
 
+  const newDayControl = usesCalendariaStateProgression()
+    ? `<div class="fblqa-rest-progression-note"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>${escapeHtml(qaLocalize("Rest.StateProgressionCalendaria", "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."))}</span></div>`
+    : `<label class="fblqa-rest-check fblqa-rest-new-day-check">
+          <input type="checkbox" name="startsNewDay">
+          <span>
+            <strong>${qaLocalize("Rest.StartsNewDay", "Этот отдых начинает новый день")}</strong>
+            <small>${qaLocalize("Rest.StartsNewDayHint", "После Long Rest откроется отдельное окно ежедневного продвижения травм, помытости, состояний и зависимостей.")}</small>
+          </span>
+        </label>`;
+
   return `
     <form class="fblqa-rest-form">
       <div class="fblqa-rest-header-template" hidden>${conditionChips}</div>
@@ -277,13 +288,7 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
           <input type="checkbox" name="hasHeatSource">
           <span>${qaLocalize("Rest.HeatSource", "Есть источник тепла. В конце отдыха снять Cold.")}</span>
         </label>
-        <label class="fblqa-rest-check fblqa-rest-new-day-check">
-          <input type="checkbox" name="startsNewDay">
-          <span>
-            <strong>${qaLocalize("Rest.StartsNewDay", "Этот отдых начинает новый день")}</strong>
-            <small>${qaLocalize("Rest.StartsNewDayHint", "После Long Rest откроется отдельное окно ежедневного продвижения травм, помытости, состояний и зависимостей.")}</small>
-          </span>
-        </label>
+        ${newDayControl}
         <div class="fblqa-rest-attribute-table">${longRows}</div>
         <p class="fblqa-rest-note">${qaLocalize("Rest.LongConditionRemoval", "Sleepy снимается сном. Cold снимается только при источнике тепла. Эти состояния всё равно блокируют восстановление на текущем Long Rest.")}</p>
       </section>

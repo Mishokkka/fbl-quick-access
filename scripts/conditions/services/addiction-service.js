@@ -18,13 +18,15 @@ export async function performAddictionMorning(actor, item, options = {}) {
   const autoAdvanceOnControlled = Boolean(options.autoAdvanceOnControlled);
   const advanceFlatPhase = Boolean(options.advanceFlatPhase);
   const documentOptions = options.documentOptions ?? {};
+  const postChat = options.postChat !== false;
+  const notify = options.notify !== false;
 
   if (state.phase === "flat") {
     const content = buildAddictionFlatMessage(actor.name, item.name, state);
-    await createChatMessage({ speaker, content });
+    if (postChat) await createChatMessage({ speaker, content });
 
     const progression = advanceFlatPhase
-      ? await advanceAddictionCycle(actor, item, { documentOptions })
+      ? await advanceAddictionCycle(actor, item, { documentOptions, notify })
       : null;
 
     return {
@@ -41,13 +43,13 @@ export async function performAddictionMorning(actor, item, options = {}) {
   const roll = await new Roll(`1d${state.die}`).evaluate();
   const controlled = shouldAdvanceAddictionAfterRoll(roll.total);
   const progression = autoAdvanceOnControlled && controlled
-    ? await advanceAddictionCycle(actor, item, { documentOptions })
+    ? await advanceAddictionCycle(actor, item, { documentOptions, notify })
     : null;
   const flavor = buildAddictionRollMessage(actor.name, item.name, state, roll.total, {
     autoAdvanced: Boolean(progression?.changed),
     cured: Boolean(progression?.cured)
   });
-  await rollToMessage(roll, { speaker, flavor });
+  if (postChat) await rollToMessage(roll, { speaker, flavor });
 
   return {
     changed: Boolean(progression?.changed),
@@ -120,7 +122,7 @@ export async function advanceAddictionCycle(actor, item, options = {}) {
   const result = calculateNextAddictionState(previousState);
 
   if (result.cured) {
-    ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
+    if (options.notify !== false) ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
       actor: escapeHTML(actor.name),
       condition: escapeHTML(item.name)
     }));

@@ -957,9 +957,12 @@
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
-  .fblqa-pilgrim-details > .fblqa-bio-field,
-  .fblqa-pilgrim-details > .fblqa-pilgrim-hair {
+  .fblqa-pilgrim-details > .fblqa-bio-field {
     grid-column: span 1;
+  }
+
+  .fblqa-pilgrim-details > .fblqa-pilgrim-hair {
+    grid-column: 1 / -1;
   }
 }
 

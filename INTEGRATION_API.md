@@ -110,8 +110,9 @@ Contract:
 - `buildActions` must return public-safe, serializable action data. Do not include the true diagnosis, secret rolls, or other GM-only state.
 - Action ids are automatically namespaced as `provider:<providerId>:<actionId>`.
 - `applyAction` receives the original action object returned by `buildActions`.
+- `applyAction` context includes `suppressChat`. It is `true` for Calendaria-driven progression, so providers should avoid creating chat messages or other duplicate presentation and return structured `summary` data instead.
 - `summary` is included in the public New Day chat card.
-- `privateSummary` is whispered to GMs by the active GM. It is not returned to a non-GM requester.
+- `privateSummary` is normally whispered to GMs by the active GM. When `context.suppressChat` is true the whisper is suppressed and the summary remains available to the active GM for the calendar result/summary pipeline. It is not exposed as a private summary to a non-GM requester.
 - Provider failures are isolated. One failed provider or action does not stop native or other provider actions.
 - The registration call returns an unregister function.
 

@@ -92,6 +92,32 @@ test("automatic addiction progression happens only after a controlled craving ro
   }
 });
 
+test("Calendaria-style addiction processing can roll without creating chat output", async () => {
+  const originalRoll = globalThis.Roll;
+  const originalChatMessage = globalThis.ChatMessage;
+  const originalGet = globalThis.game.settings.get;
+  try {
+    globalThis.game.settings.get = () => true;
+    globalThis.ChatMessage = {
+      getSpeaker: () => ({}),
+      create: async () => { throw new Error("chat must stay silent"); }
+    };
+    globalThis.Roll = class MockRoll {
+      async evaluate() { this.total = 2; return this; }
+      async toMessage() { throw new Error("roll must stay silent"); }
+    };
+
+    const item = makeAddictionItem({ phase: "down", die: 12, daysLeft: 0, severity: 5 });
+    const result = await addiction.processAddictionNewDay({ name: "Tester" }, item, { postChat: false, notify: false });
+    assert.equal(result.total, 2);
+    assert.equal(result.advanced, false);
+  } finally {
+    globalThis.Roll = originalRoll;
+    globalThis.ChatMessage = originalChatMessage;
+    globalThis.game.settings.get = originalGet;
+  }
+});
+
 test("automatic addiction chat does not ask for manual cycle advancement", () => {
   const flavor = addictionChat.buildAddictionRollMessage("Tester", "Addiction", { die: 12 }, 4, {
     autoAdvanced: true

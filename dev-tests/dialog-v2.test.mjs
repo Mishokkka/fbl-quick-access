@@ -99,7 +99,10 @@ test("dialog adapter reapplies outer form class, id, and dataset in DialogV2", a
       this.dataset = {};
       this.innerHTML = "";
       this.classList = new FakeClassList(this);
+      this.formChild = null;
     }
+    matches(selector) { return selector === "form" && this.tagName === "FORM"; }
+    querySelector(selector) { return selector === "form" ? this.formChild : null; }
   }
 
   class FakeTemplate {
@@ -126,7 +129,11 @@ test("dialog adapter reapplies outer form class, id, and dataset in DialogV2", a
     constructor(config) {
       this.config = config;
       this.element = new FakeElement("dialog");
-      this.form = new FakeElement("form");
+      this.renderedForm = new FakeElement("form");
+      this.element.formChild = this.renderedForm;
+      // Reproduce the v13 timing observed in-world: the accessor is still null
+      // during render even though the native form already exists under element.
+      this.form = null;
       this.listeners = new Map();
     }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
@@ -150,10 +157,10 @@ test("dialog adapter reapplies outer form class, id, and dataset in DialogV2", a
     });
     await dialog.render(true);
 
-    assert.equal(dialog.form.classList.contains("fblqa-rest-form"), true);
-    assert.equal(dialog.form.classList.contains("extra"), true);
-    assert.equal(dialog.form.id, "rest-form");
-    assert.equal(dialog.form.dataset.mode, "long");
+    assert.equal(dialog.renderedForm.classList.contains("fblqa-rest-form"), true);
+    assert.equal(dialog.renderedForm.classList.contains("extra"), true);
+    assert.equal(dialog.renderedForm.id, "rest-form");
+    assert.equal(dialog.renderedForm.dataset.mode, "long");
     assert.equal(dialog.config.content, "<p>Body</p>");
   } finally {
     globalThis.foundry = previousFoundry;
