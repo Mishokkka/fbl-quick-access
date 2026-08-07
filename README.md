@@ -1,5 +1,10 @@
 # Forbidden Lands Quick Access
 
+## Version 1.7.22
+
+- Applies verified PR #11 review fixes: protects GM-only new-day provider summaries from player-controlled suppression, preserves in-flight BIO/Pilgrim save ordering across remounts, reports failed wash cleanup as a failed transition, guards duplicate BIO mounting in the same render pass, bounds automatic multi-day simulation by default, and closes stale GM progression summaries.
+- Keeps Calendaria public `getCurrentDateTime()` handling 1-indexed as required by Calendaria 1.0.17; only raw `calendaria.dayChange` components are converted from zero-based fields.
+
 ## Version 1.7.21
 
 - Fixes STAT duration controls inheriting/stretching against Foundry/system form widths. Injury and custom-condition timers are now content-sized and pinned to the right-side control cluster while the condition name owns the flexible space.
@@ -207,7 +212,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.20:
+Available methods in 1.7.22:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`

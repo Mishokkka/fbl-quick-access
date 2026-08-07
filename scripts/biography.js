@@ -208,11 +208,12 @@ export function releaseBiographyState(actorOrId) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
-  SAVE_CHAINS.delete(key);
+  // Do not drop an in-flight save chain here. A rapid close/reopen could let a
+  // newer write bypass it and then be overwritten by the older request. The
+  // queue removes itself only after the promise actually settles.
   const pilgrimTimer = PILGRIM_SAVE_TIMERS.get(key);
   if (pilgrimTimer) globalThis.clearTimeout?.(pilgrimTimer);
   PILGRIM_SAVE_TIMERS.delete(key);
-  PILGRIM_SAVE_CHAINS.delete(key);
   COLLAPSED_SECTIONS.delete(key);
   BIO_SCROLL_POSITIONS.delete(key);
 }
@@ -1315,6 +1316,9 @@ function queueProfileSave(actor, state, status, delay = 350) {
         return false;
       });
     SAVE_CHAINS.set(key, chain);
+    chain.finally(() => {
+      if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key);
+    });
   }, delay);
   SAVE_TIMERS.set(key, timeout);
 }
@@ -1333,6 +1337,9 @@ function queuePilgrimSave(actor, state, delay = 350) {
         return false;
       });
     PILGRIM_SAVE_CHAINS.set(key, chain);
+    chain.finally(() => {
+      if (PILGRIM_SAVE_CHAINS.get(key) === chain) PILGRIM_SAVE_CHAINS.delete(key);
+    });
   }, delay);
   PILGRIM_SAVE_TIMERS.set(key, timeout);
 }

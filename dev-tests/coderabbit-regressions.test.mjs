@@ -240,3 +240,45 @@ test("nested CONDITIONS headings remain discoverable for the decorative-border t
     else globalThis.HTMLElement = previousHTMLElement;
   }
 });
+
+test("PR11: BIO save queues survive release until the active write settles", () => {
+  const source = read("scripts", "biography.js");
+  const release = source.slice(source.indexOf("export function releaseBiographyState"), source.indexOf("export function closeBiographyDrawer"));
+
+  assert.doesNotMatch(release, /SAVE_CHAINS\.delete\(key\)/);
+  assert.doesNotMatch(release, /PILGRIM_SAVE_CHAINS\.delete\(key\)/);
+  assert.match(source, /chain\.finally\(\(\) => \{\s*if \(SAVE_CHAINS\.get\(key\) === chain\) SAVE_CHAINS\.delete\(key\);/);
+  assert.match(source, /chain\.finally\(\(\) => \{\s*if \(PILGRIM_SAVE_CHAINS\.get\(key\) === chain\) PILGRIM_SAVE_CHAINS\.delete\(key\);/);
+});
+
+test("PR11: failed wash cleanup cannot fall through to the success path", () => {
+  const source = read("scripts", "conditions", "features", "wash.js");
+  const cleanupCatch = source.slice(source.indexOf("could not remove stale wash states"), source.indexOf("Notifications.WashChanged"));
+  assert.match(cleanupCatch, /return \{[\s\S]*changed:\s*false,[\s\S]*reason:\s*"cleanup-failed"/);
+});
+
+test("PR11: only a GM requester may suppress provider private summaries", () => {
+  const source = read("scripts", "integration", "new-day-providers.js");
+  assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && Boolean\(context\.requestUser\?\.isGM\)/);
+  assert.match(source, /suppressChat\s*\n\s*\}\)\) \?\? \{\}/);
+  assert.match(source, /if \(!suppressChat\) await postPrivateSummary/);
+});
+
+test("PR11: BIO mounting is guarded against duplicate hooks in one render pass", () => {
+  const source = read("scripts", "main.js");
+  assert.match(source, /bioTab\.dataset\.fblqaBiographyMounted === "true"/);
+  assert.match(source, /bioTab\.querySelector\?\.\("\.fblqa-bio-shell"\)/);
+  assert.match(source, /if \(!alreadyMounted\) setupBiographyTab\(app, actor, root\)/);
+});
+
+test("PR11: addiction result formatter has a local state formatter", () => {
+  const source = read("scripts", "new-day.js");
+  assert.match(source, /function formatAddictionNewDayResult\(result\)/);
+  assert.match(source, /function formatAddictionState\(state\)/);
+});
+
+test("PR11: README API heading tracks the packaged release", () => {
+  const readme = read("README.md");
+  const manifest = JSON.parse(read("module.json"));
+  assert.ok(readme.includes(`Available methods in ${manifest.version}:`));
+});

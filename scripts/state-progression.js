@@ -47,6 +47,7 @@ const REPORT_OPERATION = "state-progression.report-calendaria-pending";
 const PLAYER_RESULT_TYPE = "state-progression-player-result";
 const PLAYER_RESULT_PROOF_KIND = "stateProgressionResult";
 const RESULT_PROOF_TTL_MS = 2 * 60_000;
+const DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT = 90;
 const MAX_AUTOMATIC_CALENDAR_DAYS = 365;
 
 let initialized = false;
@@ -407,7 +408,9 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
     }
 
     updateGMSummaryStatus(summary, entry.actor.id, { state: "processing", days });
-    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days);
+    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
+      maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
+    });
     updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
       ? { state: "error", days: 0, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
       : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
@@ -416,17 +419,22 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
   }
 }
 
-async function processActorAutomaticDays(actor, startDate, context, requestedDays) {
+async function processActorAutomaticDays(actor, startDate, context, requestedDays, options = {}) {
   return enqueueStateProgressionOperation(actor, () =>
-    processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays)
+    processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays, options)
   );
 }
 
-async function processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays) {
+async function processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays, options = {}) {
   const api = getCalendariaApi();
   const dayResults = [];
   let cursor = normalizeCalendariaDate(startDate);
-  let remaining = Math.max(0, Math.floor(Number(requestedDays) || 0));
+  const requested = Math.max(0, Math.floor(Number(requestedDays) || 0));
+  const configuredLimit = Number.isFinite(Number(options.maxDays))
+    ? Math.max(0, Math.floor(Number(options.maxDays)))
+    : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT;
+  const effectiveLimit = Math.min(configuredLimit, MAX_AUTOMATIC_CALENDAR_DAYS);
+  let remaining = Math.min(requested, effectiveLimit);
   let failedDays = 0;
   let failedActions = 0;
 
@@ -473,7 +481,9 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
 
   return {
     mode: "automatic",
+    requestedDays: requested,
     processedDays: dayResults.length,
+    limitedDays: Math.max(0, requested - dayResults.length),
     failedDays,
     failedActions,
     days: dayResults
@@ -704,6 +714,20 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
 
 function openOrRefreshGMSummary(context, entries, reason) {
   const key = summaryKey(context);
+
+  // Only one calendar-progression summary is useful at a time. Close and drop
+  // older dates before opening a newer one, including stale map entries from
+  // environments where the Foundry dialog API was unavailable.
+  for (const [existingKey, existingState] of gmSummaryWindows) {
+    if (existingKey === key) continue;
+    gmSummaryWindows.delete(existingKey);
+    try {
+      existingState.dialog?.close?.();
+    } catch (error) {
+      console.warn(`${MODULE_ID} | could not close stale state progression summary`, error);
+    }
+  }
+
   let state = gmSummaryWindows.get(key);
   if (!state) {
     state = {
@@ -947,7 +971,9 @@ async function resolveActorFromGMSummary(state, actorId) {
     if (!confirmed) return;
 
     updateGMSummaryStatus(state, actorId, { state: "processing", days });
-    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days);
+    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
+      maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
+    });
     updateGMSummaryStatus(state, actorId, result.failedActions
       ? { state: "error", days: 0, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
       : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
@@ -1096,6 +1122,8 @@ function getCalendariaContext(dateOverride = null) {
   const api = getCalendariaApi();
   if (!api?.getCurrentDateTime || !api?.getActiveCalendar) return null;
   try {
+    // Calendaria's public getCurrentDateTime() is already 1-indexed. Only the
+    // raw dayChange hook payload requires calendariaHookComponentToPublicDate().
     const date = normalizeCalendariaDate(dateOverride ?? api.getCurrentDateTime());
     const calendar = api.getActiveCalendar();
     const calendarId = String(calendar?.metadata?.id ?? calendar?.id ?? "").trim();

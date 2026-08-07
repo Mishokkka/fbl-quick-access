@@ -194,12 +194,15 @@ async function handleApplyProviderAction(payload, context) {
   const actor = await resolveActor(payload);
   assertRequesterCanManageActor(actor, context.requestUser);
 
+  // Private provider summaries are GM-visible audit output. A remote player
+  // must not be able to suppress them merely by forging a socket payload.
+  const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM);
   const result = await provider.applyAction(actor, payload?.action ?? {}, Object.freeze({
     requesterId: context.requesterId,
     requestUser: context.requestUser,
     activeGM: context.activeGM,
     isRemote: context.isRemote,
-    suppressChat: Boolean(payload?.suppressChat)
+    suppressChat
   })) ?? {};
 
   const normalized = {
@@ -208,7 +211,7 @@ async function handleApplyProviderAction(payload, context) {
   };
 
   if (result.privateSummary) {
-    if (!payload?.suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
+    if (!suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
     if (context.requestUser?.isGM) normalized.privateSummary = String(result.privateSummary);
   }
 
