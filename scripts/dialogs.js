@@ -83,7 +83,12 @@ export function createFoundryDialog(data = {}, options = {}) {
   });
 
   dialog.addEventListener("render", () => {
-    applyDialogFormMetadata(dialog.form, normalized.formMetadata);
+    // In Foundry v13 the form accessor can still be null at the render event in
+    // some dialog paths even though the native <form> is already in the DOM.
+    // Recover it from the rendered root so metadata and module-scoped styling do
+    // not depend on accessor timing.
+    const renderedForm = dialog.form ?? dialog.element?.querySelector?.("form") ?? null;
+    applyDialogFormMetadata(renderedForm, normalized.formMetadata);
     data.render?.(dialog.element, dialog);
   });
   dialog.addEventListener("close", () => data.close?.());

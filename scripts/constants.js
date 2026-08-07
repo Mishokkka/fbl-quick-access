@@ -7,12 +7,15 @@ export const FLAG_COMPACT_BORDERS = "compactDecorativeBorders";
 export const FLAG_SHORT_REST_RECOVERY = "shortRestRecovery";
 export const FLAG_REPUTATION_ENTRIES = "reputationEntries";
 export const FLAG_BIOGRAPHY_PROFILE = "biographyProfile";
+export const FLAG_PILGRIM_CARD_PROFILE = "pilgrimCardProfile";
+export const FLAG_STATE_PROGRESSION_CALENDAR = "stateProgressionCalendaria";
 export const SYSTEM_ID = "forbidden-lands";
 
 export const SETTINGS = Object.freeze({
   PLAYERS_CAN_RESET_SHORT_REST: "playersCanResetShortRest",
   POST_NO_CHANGE_REST_CARDS: "postNoChangeRestCards",
-  PILGRIM_CARD_FONT: "pilgrimCardFont"
+  PILGRIM_CARD_FONT: "pilgrimCardFont",
+  STATE_PROGRESSION_MODE: "stateProgressionMode"
 });
 
 export const MAX_SLOTS = 10;

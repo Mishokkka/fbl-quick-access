@@ -2,7 +2,7 @@ import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID, flagDeletePath, 
 import { confirmDangerAction } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
-import { migrateActorData, runWorldMigration } from "./migrations.js";
+import { runWorldMigration } from "./migrations.js";
 import {
   applyActorAttributeDamage,
   canUserEditActor,
@@ -62,6 +62,7 @@ export async function handleExpandedConditionsCreateItem(item, options, userId) 
   if (game.user.id !== userId) return;
   if (item.type !== "criticalInjury") return;
   if (!isWashCondition(item)) return;
+  if (options?.fblqaWashTransition) return;
 
   const actor = item.parent;
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return;
@@ -94,14 +95,13 @@ export async function renderExpandedConditions(app, html) {
     window.setTimeout(() => syncConditionsTabChrome(html), 0);
   });
 
-  if (game.user.isGM || app.actor.isOwner) await migrateActorData(app.actor);
-
   const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(app.actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
   let customConditions = customNormalization.list;
-  await persistNormalizedCustomConditions(app.actor, customConditions, {
-    changed: customNormalization.changed,
-    editable
-  });
+  // Rendering must remain read-only. Performing embedded-document migrations
+  // here can race a wash-state create/delete sequence and leave Foundry trying
+  // to update an Item that was removed milliseconds earlier. World/actor data
+  // migration is handled outside the render lifecycle; normalized values are
+  // still used locally for a stable UI.
 
   let layoutColumns = Number(app.actor.getFlag(MODULE_ID, FLAGS.LAYOUT_COLUMNS)) === 2 ? 2 : 1;
   const scrollKey = getStatScrollKey(app);

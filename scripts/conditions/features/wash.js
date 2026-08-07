@@ -77,6 +77,9 @@ export async function removeOtherWashStates(actor, activeItem) {
 }
 
 export async function transitionWashLevel(actor, currentName, documentOptions = {}) {
+  const suppressNotifications = Boolean(documentOptions?.fblqaSuppressNotifications);
+  const safeDocumentOptions = { ...(documentOptions ?? {}) };
+  delete safeDocumentOptions.fblqaSuppressNotifications;
   if (!isFeatureEnabled(SETTINGS.FEATURE_WASH)) return { changed: false, reason: "feature-disabled" };
 
   const nextName = getNextWashName(currentName);
@@ -84,7 +87,7 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
 
   const newItemSource = await findWashConditionSource(nextName);
   if (!newItemSource) {
-    ui.notifications.warn(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: escapeHTML(nextName) }));
+    if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: escapeHTML(nextName) }));
     return { changed: false, reason: "source-missing", previousName: getWashDisplayName(currentName), nextName };
   }
 
@@ -93,10 +96,17 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
 
   let createdItems;
   try {
-    createdItems = await actor.createEmbeddedDocuments("Item", [itemData], documentOptions);
+    createdItems = await actor.createEmbeddedDocuments("Item", [itemData], {
+      ...safeDocumentOptions,
+      // The createItem hook normally enforces wash exclusivity. During an
+      // explicit transition this function owns the whole create -> cleanup
+      // sequence, so suppress the hook to avoid two concurrent deletions of the
+      // same embedded Item collection.
+      fblqaWashTransition: true
+    });
   } catch (error) {
     console.error(`${MODULE_ID} | could not create replacement wash state`, error);
-    ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
+    if (!suppressNotifications) ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
     return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
   }
 
@@ -107,13 +117,13 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
 
   if (staleIds.length) {
     try {
-      await actor.deleteEmbeddedDocuments("Item", staleIds, documentOptions);
+      await actor.deleteEmbeddedDocuments("Item", staleIds, safeDocumentOptions);
     } catch (error) {
       console.error(`${MODULE_ID} | could not remove stale wash states`, error);
-      ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
+      if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
     }
   }
 
-  ui.notifications.info(localize("Notifications.WashChanged", "Wash state changed: {previous} ➔ {next}.", { previous: escapeHTML(getWashDisplayName(currentName)), next: escapeHTML(nextName) }));
+  if (!suppressNotifications) ui.notifications.info(localize("Notifications.WashChanged", "Wash state changed: {previous} ➔ {next}.", { previous: escapeHTML(getWashDisplayName(currentName)), next: escapeHTML(nextName) }));
   return { changed: true, previousName: getWashDisplayName(currentName), nextName };
 }

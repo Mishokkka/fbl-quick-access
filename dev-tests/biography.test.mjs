@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getBiographyProfile, normalizeBiographyProfile, resolveBiographyEditorValue } from "../scripts/biography.js";
+import { getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, normalizePilgrimCardProfile, resolveBiographyEditorValue, savePilgrimCardProfile } from "../scripts/biography.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -64,6 +64,39 @@ test("backfills legacy BIO fields even when a stored profile already exists", ()
   assert.equal(profile.legacy.face, "<p><strong>Лицо</strong></p>");
   assert.equal(profile.legacy.body, "<p>Тело</p>");
   assert.equal(profile.legacy.clothing, "<p>Одежда</p>");
+});
+
+test("BIO migration tolerates an inactive legacy importer flag scope", () => {
+  const actor = {
+    name: "Legacy Actor",
+    flags: {
+      "air-islands-character-importer": {
+        profile: { biography: { concept: "Imported concept" } }
+      }
+    },
+    getFlag(moduleId) {
+      if (moduleId === "fbl-quick-access") return null;
+      throw new Error(`Flag scope "${moduleId}" is not valid or not currently active`);
+    },
+    system: { bio: {} }
+  };
+
+  const profile = getBiographyProfile(actor);
+  assert.equal(profile.concept, "Imported concept");
+});
+
+test("BIO renders without legacy importer data when the importer scope is inactive", () => {
+  const actor = {
+    name: "Plain Actor",
+    getFlag(moduleId) {
+      if (moduleId === "fbl-quick-access") return null;
+      throw new Error(`Flag scope "${moduleId}" is not valid or not currently active`);
+    },
+    system: { bio: { kin: { value: "Human" } } }
+  };
+
+  assert.doesNotThrow(() => getBiographyProfile(actor));
+  assert.equal(getBiographyProfile(actor).identity.kin, "Human");
 });
 
 test("targets BIO only and never falls back to NOTE", async () => {
@@ -187,7 +220,7 @@ test("Pilgrim Card exposes birth-date editing in its header and uses a full-size
 
   assert.match(source, /data-bio-action="edit-birth-date"/);
   assert.match(source, /data-pilgrim-birth-editor/);
-  assert.match(source, /setupPilgrimBirthDateEditor\(drawer, actor, state, editable\)/);
+  assert.match(source, /setupPilgrimBirthDateEditor\(drawer, actor, cardState, editable\)/);
   assert.match(css, /\.fblqa-pilgrim-card::after\s*\{[\s\S]*?width:\s*98px;[\s\S]*?height:\s*98px;[\s\S]*?border:\s*4px double/);
 });
 
@@ -261,4 +294,83 @@ test("Pilgrim font labels resolve to the actual Foundry family key", async () =>
     globalThis.CONFIG = previous.CONFIG;
     globalThis.game = previous.game;
   }
+});
+
+
+test("Pilgrim Card is stored independently from Actor name and Forbidden Lands BIO fields", async () => {
+  const storedCard = normalizePilgrimCardProfile({
+    identity: { name: "Имя в карте", kin: "Human", issuingCountry: "Нованд", birthDate: "7 Хладохода 844" },
+    physical: { hair: "Black", appearance: "Card-only appearance" }
+  });
+  const actor = {
+    id: "pilgrim-independent",
+    name: "Имя на листе",
+    system: { bio: { kin: { value: "Elf" }, profession: { value: "Hunter" } } },
+    getFlag(moduleId, key) {
+      if (moduleId === "fbl-quick-access" && key === "pilgrimCardProfile") return storedCard;
+      return null;
+    },
+    updates: [],
+    async update(data, options) { this.updates.push({ data, options }); }
+  };
+
+  const card = getPilgrimCardProfile(actor);
+  assert.equal(card.identity.name, "Имя в карте");
+  assert.equal(card.identity.kin, "Human");
+  assert.equal(card.physical.appearance, "Card-only appearance");
+
+  card.identity.name = "Новое имя только в карте";
+  await savePilgrimCardProfile(actor, card, { render: false });
+
+  assert.equal(actor.updates.length, 1);
+  assert.deepEqual(Object.keys(actor.updates[0].data), ["flags.fbl-quick-access.pilgrimCardProfile"]);
+  assert.equal(actor.updates[0].data["flags.fbl-quick-access.pilgrimCardProfile"].identity.name, "Новое имя только в карте");
+  assert.equal("name" in actor.updates[0].data, false);
+  assert.equal(Object.keys(actor.updates[0].data).some((key) => key.startsWith("system.bio.")), false);
+  assert.deepEqual(actor.updates[0].options, { render: false });
+});
+
+test("Pilgrim Card migration snapshots the old card values once, then stored card wins over later sheet edits", () => {
+  let storedCard = null;
+  const actor = {
+    id: "pilgrim-migration",
+    name: "Sheet Name A",
+    system: { bio: { kin: { value: "Human" }, profession: { value: "Rogue" } } },
+    getFlag(moduleId, key) {
+      if (moduleId === "fbl-quick-access" && key === "pilgrimCardProfile") return storedCard;
+      if (moduleId === "fbl-quick-access" && key === "biographyProfile") return null;
+      return null;
+    }
+  };
+  const biographySnapshot = normalizeBiographyProfile({
+    identity: { name: "Sheet Name A", kin: "Human", kinVariant: "Variant A", issuingCountry: "Country A" },
+    physical: { eyes: "Grey" }
+  });
+
+  const initial = getPilgrimCardProfile(actor, biographySnapshot);
+  assert.equal(initial.identity.name, "Sheet Name A");
+  assert.equal(initial.identity.kinVariant, "Variant A");
+
+  storedCard = structuredClone(initial);
+  actor.name = "Sheet Name B";
+  actor.system.bio.kin.value = "Elf";
+  const afterSheetEdit = getPilgrimCardProfile(actor, normalizeBiographyProfile({
+    identity: { name: "Sheet Name B", kin: "Elf", kinVariant: "Variant B" }
+  }));
+
+  assert.equal(afterSheetEdit.identity.name, "Sheet Name A");
+  assert.equal(afterSheetEdit.identity.kin, "Human");
+  assert.equal(afterSheetEdit.identity.kinVariant, "Variant A");
+});
+
+test("BIO mounts through its own actor-sheet hook and self-heals on BIO tab activation", () => {
+  const main = readFileSync(join(root, "scripts", "main.js"), "utf8");
+
+  assert.match(main, /Hooks\.on\("renderActorSheet", renderBiographySafely\)/);
+  assert.match(main, /Hooks\.on\("renderApplicationV2", renderBiographySafely\)/);
+  assert.match(main, /function renderBiographySafely\([\s\S]*?setupBiographyTab\(app, actor, root\)/);
+  assert.match(main, /function setupBiographyActivationGuard\([\s\S]*?data-tab="bio"[\s\S]*?queueMicrotask\([\s\S]*?fblqaBiographyMounted/);
+
+  const quickAccessBody = main.match(/function renderQuickAccess\([\s\S]*?\n}\n\nfunction renderBiographySafely/)?.[0] ?? "";
+  assert.doesNotMatch(quickAccessBody, /setupBiographyTab\(/);
 });

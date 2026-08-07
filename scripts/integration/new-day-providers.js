@@ -61,7 +61,7 @@ export async function buildNewDayProviderActions(actor) {
   return { actions, errors };
 }
 
-export async function applyNewDayProviderAction(actor, action) {
+export async function applyNewDayProviderAction(actor, action, options = {}) {
   const provider = getNewDayProvider(action?.providerId);
   if (!provider) throw new Error(`Missing new-day provider: ${action?.providerId ?? "<empty>"}`);
 
@@ -69,7 +69,8 @@ export async function applyNewDayProviderAction(actor, action) {
     providerId: provider.id,
     actorUuid: actor?.uuid ?? "",
     actorId: actor?.id ?? "",
-    action: action.providerAction ?? stripQuickAccessActionFields(action)
+    action: action.providerAction ?? stripQuickAccessActionFields(action),
+    suppressChat: Boolean(options.suppressChat)
   });
 }
 
@@ -197,7 +198,8 @@ async function handleApplyProviderAction(payload, context) {
     requesterId: context.requesterId,
     requestUser: context.requestUser,
     activeGM: context.activeGM,
-    isRemote: context.isRemote
+    isRemote: context.isRemote,
+    suppressChat: Boolean(payload?.suppressChat)
   })) ?? {};
 
   const normalized = {
@@ -206,7 +208,7 @@ async function handleApplyProviderAction(payload, context) {
   };
 
   if (result.privateSummary) {
-    await postPrivateSummary(actor, provider, String(result.privateSummary));
+    if (!payload?.suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
     if (context.requestUser?.isGM) normalized.privateSummary = String(result.privateSummary);
   }
 

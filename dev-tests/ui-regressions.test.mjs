@@ -334,3 +334,151 @@ test("moving directly to another item replaces the visible tooltip without delay
   });
   assert.equal(planTooltipTransition(second, second, true).replaceVisibleContent, false);
 });
+
+test("BIO discrete controls do not bubble into the native sheet form and compact Hair fills its row", () => {
+  const biography = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
+
+  assert.match(biography, /const discreteControl = control\.matches\("select, input\[type='checkbox'\], input\[type='number'\]"\)/);
+  assert.match(biography, /event\.stopPropagation\(\)/);
+  assert.match(biography, /queueProfileSave\(actor, state, saveState, discreteControl \? 0 : 350\)/);
+  assert.match(css, /@container \(max-width: 430px\)[\s\S]*?\.fblqa-pilgrim-details > \.fblqa-pilgrim-hair\s*\{[\s\S]*?grid-column:\s*1 \/ -1/);
+});
+
+test("Rest selector removes the duplicate black pseudo-dot and New Day reads button.form", () => {
+  const css = readFileSync(join(root, "styles", "10-rest.css"), "utf8");
+  const newDay = readFileSync(join(root, "scripts", "new-day.js"), "utf8");
+
+  assert.match(css, /input\[type="radio"\]::before[\s\S]*?content:\s*none;[\s\S]*?display:\s*none;/);
+  assert.doesNotMatch(css, /input\[type="radio"\]:checked::before[\s\S]*?background:\s*#29251f/);
+  assert.match(newDay, /const formSource = _button\?\.form \?\? _event\?\.currentTarget\?\.form \?\? renderedDialog\?\.form/);
+  assert.match(newDay, /findDialogForm\(formSource, "form\.fblqa-new-day-form"\)[\s\S]*?findDialogForm\(formSource, "form"\)/);
+});
+
+test("STAT render performs no migration writes and explicit wash transitions own their cleanup", () => {
+  const main = readFileSync(join(root, "scripts", "conditions", "main.js"), "utf8");
+  const wash = readFileSync(join(root, "scripts", "conditions", "features", "wash.js"), "utf8");
+
+  const renderFunction = main.match(/export async function renderExpandedConditions\([\s\S]*?\n}\n\nfunction getStatScrollKey/)?.[0] ?? "";
+  assert.ok(renderFunction, "renderExpandedConditions body must be found");
+  assert.doesNotMatch(renderFunction, /migrateActorData\(/);
+  assert.doesNotMatch(renderFunction, /persistNormalizedCustomConditions\(/);
+  assert.match(main, /if \(options\?\.fblqaWashTransition\) return;/);
+  assert.match(wash, /createEmbeddedDocuments\("Item", \[itemData\], \{[\s\S]*?fblqaWashTransition:\s*true/);
+});
+
+test("New Day Apply consumes DialogV2 button.form and advances a selected injury timer", async () => {
+  const previous = {
+    game: globalThis.game,
+    foundry: globalThis.foundry,
+    HTMLElement: globalThis.HTMLElement,
+    ui: globalThis.ui,
+    ChatMessage: globalThis.ChatMessage,
+    document: globalThis.document
+  };
+  let dialogConfig = null;
+
+  class FakeElement {
+    matches(selector) { return selector === "form"; }
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+  }
+
+  class FakeForm extends FakeElement {
+    constructor(values) {
+      super();
+      this.values = values;
+    }
+    querySelectorAll(selector) {
+      if (selector === 'input[name="newDayAction"]:checked') {
+        return this.values.map((value) => ({ value }));
+      }
+      return [];
+    }
+  }
+
+  class FakeDialogV2 {
+    constructor(config) {
+      dialogConfig = config;
+      this.element = new FakeElement();
+      this.form = new FakeForm([]);
+      this.listeners = new Map();
+    }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    render() { return Promise.resolve(this); }
+  }
+
+  const injury = {
+    id: "injury-dialog-test",
+    name: "Broken Arm",
+    type: "criticalInjury",
+    system: { healingTime: "2 days", lethal: "no", limit: "0" },
+    updates: [],
+    getFlag() { return undefined; },
+    async update(data) { this.updates.push(data); }
+  };
+  const actor = {
+    id: "new-day-dialog-actor",
+    name: "New Day Tester",
+    isOwner: true,
+    items: [injury],
+    getFlag(_moduleId, key) { return key === "conditions.list" ? [] : null; },
+    async unsetFlag() {}
+  };
+
+  try {
+    globalThis.HTMLElement = FakeElement;
+    delete globalThis.document;
+    globalThis.game = {
+      user: { id: "gm", isGM: true },
+      i18n: { localize: (key) => key, format: (_key, data) => JSON.stringify(data) },
+      settings: {
+        get: (_moduleId, key) => key === "chatMessages" ? false : false
+      },
+      modules: new Map()
+    };
+    globalThis.foundry = {
+      applications: { api: { DialogV2: FakeDialogV2 } },
+      utils: {
+        deepClone: (value) => structuredClone(value),
+        mergeObject: (base, patch) => ({ ...base, ...(patch ?? {}) })
+      }
+    };
+    globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
+    delete globalThis.ChatMessage;
+
+    const newDay = await import(`../scripts/new-day.js?dialog-apply=${Date.now()}`);
+    const completion = newDay.openNewDayDialog(null, actor);
+    await Promise.resolve();
+    await Promise.resolve();
+    assert.ok(dialogConfig, "New Day DialogV2 configuration must be created");
+
+    const apply = dialogConfig.buttons.find((button) => button.action === "apply");
+    assert.ok(apply, "New Day Apply button must exist");
+    await apply.callback({}, { form: new FakeForm(["injury:injury-dialog-test:healing"]) }, { element: new FakeElement() });
+    const result = await completion;
+
+    assert.equal(result.failed.length, 0);
+    assert.equal(result.succeeded.length, 1);
+    assert.deepEqual(injury.updates, [{ "system.healingTime": "1 day" }]);
+  } finally {
+    globalThis.game = previous.game;
+    globalThis.foundry = previous.foundry;
+    globalThis.HTMLElement = previous.HTMLElement;
+    globalThis.ui = previous.ui;
+    globalThis.ChatMessage = previous.ChatMessage;
+    if (previous.document === undefined) delete globalThis.document;
+    else globalThis.document = previous.document;
+  }
+});
+
+test("STAT duration controls stay content-sized and pin to the right edge", () => {
+  const css = readFileSync(join(root, "styles", "11-expanded-conditions.css"), "utf8");
+
+  assert.match(css, /\.fblec-stat-tab \.injury-header\s*\{[\s\S]*?justify-content:\s*flex-start;[\s\S]*?gap:\s*8px;/);
+  assert.match(css, /\.fblec-stat-tab \.injury-title-block\s*\{[\s\S]*?flex:\s*1 1 0;[\s\S]*?min-width:\s*0;/);
+  assert.match(css, /\.fblec-stat-tab \.injury-healing-inline\s*\{[\s\S]*?flex:\s*0 0 auto;[\s\S]*?width:\s*max-content;[\s\S]*?min-width:\s*max-content;[\s\S]*?margin-left:\s*auto;/);
+  assert.match(css, /\.fblec-stat-tab \.healing-time-input\s*\{[\s\S]*?flex:\s*0 0 70px;[\s\S]*?width:\s*70px;[\s\S]*?max-width:\s*70px;/);
+  assert.match(css, /\.fblec-stat-tab \.heal-btn\s*\{[\s\S]*?flex:\s*0 0 22px;[\s\S]*?width:\s*22px;[\s\S]*?max-width:\s*22px;/);
+  assert.match(css, /\.fblec-stat-tab\.fblec-columns-2 \.condition-time-inline,[\s\S]*?\.fblec-stat-tab\.fblec-columns-2 \.injury-healing-inline[\s\S]*?\{[\s\S]*?width:\s*auto;[\s\S]*?min-width:\s*0;/);
+});

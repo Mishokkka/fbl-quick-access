@@ -4,6 +4,20 @@ import { qaLocalize } from "./i18n.js";
 const DEFAULT_PILGRIM_FONT = "Georgia";
 
 export function registerCoreSettings() {
+  game.settings.register(MODULE_ID, SETTINGS.STATE_PROGRESSION_MODE, {
+    name: qaLocalize("Settings.StateProgressionMode.Name", "State progression"),
+    hint: qaLocalize("Settings.StateProgressionMode.Hint", "Choose whether daily states advance after Long Rest or when Calendaria registers a new day."),
+    scope: "world",
+    config: true,
+    type: String,
+    choices: {
+      "long-rest": qaLocalize("Settings.StateProgressionMode.ChoiceLongRest", "Long Rest"),
+      calendaria: qaLocalize("Settings.StateProgressionMode.ChoiceCalendaria", "Calendaria — new day")
+    },
+    default: "long-rest",
+    onChange: (mode) => globalThis.Hooks?.callAll?.("fblQuickAccess.stateProgressionModeChanged", mode)
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.PLAYERS_CAN_RESET_SHORT_REST, {
     name: qaLocalize("Settings.PlayersCanResetShortRest.Name", "Players can reset the Short Rest limit"),
     hint: qaLocalize("Settings.PlayersCanResetShortRest.Hint", "Allow character owners to manually clear the once-per-Quarter-Day Short Rest recovery limit. GMs can always reset it."),

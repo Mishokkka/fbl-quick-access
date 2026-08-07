@@ -5,7 +5,7 @@ import { setupGearCardView, setupGearViewConsumableToggle } from "./gear-cards.j
 import { setupGearContextMenu } from "./gear-context-menu.js";
 import { applySavedGearOrder, setupGearOrdering } from "./gear-order.js";
 import { registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips } from "./tooltips.js";
-import { findActorSheetRoot, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
 import { registerWalletListeners } from "./wallet.js";
 import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
@@ -23,6 +23,7 @@ import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSock
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
 import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, releaseBiographyState, saveBiographyProfile, setupBiographyTab } from "./biography.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
+import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
 
 Hooks.once("init", () => {
   registerCoreSettings();
@@ -30,6 +31,7 @@ Hooks.once("init", () => {
   registerTooltipListeners();
   initExpandedConditions();
   initializeNewDayProviderBridge();
+  initializeStateProgression();
 
   const module = game.modules.get(MODULE_ID);
   if (module) {
@@ -41,7 +43,8 @@ Hooks.once("init", () => {
         newDayProviders: true,
         activeGmExecution: true,
         characterImport: true,
-        biographyProfile: true
+        biographyProfile: true,
+        stateProgression: true
       }),
       refreshGearPresentation,
       registerStatProvider,
@@ -56,6 +59,7 @@ Hooks.once("init", () => {
       openNewDayDialog,
       buildNewDayPlan,
       buildNewDayPlanWithProviders,
+      getStateProgressionMode,
       openMoneyTransferDialog,
       getReputationEntries,
       saveReputationEntries,
@@ -75,6 +79,7 @@ Hooks.once("ready", async () => {
   refreshPilgrimFontChoices();
   registerIntegrationSocket();
   registerMoneyTransferSocket();
+  await readyStateProgression();
   await pruneOwnSocketProofs();
   await readyExpandedConditions();
   await pruneWorldActorReferences();
@@ -95,7 +100,9 @@ Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInject
 // twice.
 Hooks.on("renderActorSheet", renderQuickAccess);
 Hooks.on("renderActorSheet", renderExpandedConditionsSafely);
+Hooks.on("renderActorSheet", renderBiographySafely);
 Hooks.on("renderApplicationV2", renderQuickAccess);
+Hooks.on("renderApplicationV2", renderBiographySafely);
 Hooks.on("closeActorSheet", closeQuickAccessActorSheet);
 Hooks.on("closeApplicationV2", closeQuickAccessActorSheet);
 
@@ -129,7 +136,6 @@ function renderQuickAccess(app, htmlOrElement) {
     setupStartWillpowerButton(app, actor, root);
     setupRestButton(app, actor, root);
     setupReputationManager(app, actor, root);
-    setupBiographyTab(app, actor, root);
 
     const gearTab = findGearTab(root);
     if (gearTab) setupGearTab(app, actor, gearTab);
@@ -148,6 +154,44 @@ function renderQuickAccess(app, htmlOrElement) {
   } catch (error) {
     console.error(`${MODULE_ID} | render failed`, error);
   }
+}
+
+function renderBiographySafely(app, htmlOrElement) {
+  try {
+    const actor = getActorFromApp(app);
+    if (!isForbiddenLandsCharacter(actor)) return;
+
+    const root = findActorSheetRoot(htmlOrElement);
+    if (!root) return;
+
+    setupBiographyTab(app, actor, root);
+    setupBiographyActivationGuard(app, actor, root);
+  } catch (error) {
+    console.error(`${MODULE_ID} | BIO render failed`, error);
+  }
+}
+
+function setupBiographyActivationGuard(app, actor, root) {
+  const navigation = root.querySelector?.('.sheet-tabs.tabs, .sheet-tabs, nav.tabs[data-group="primary"], .tabs[data-group="primary"]');
+  const bioButton = navigation?.querySelector?.('[data-tab="bio"]');
+  if (!(bioButton instanceof HTMLElement) || bioButton.dataset.fblqaBiographyGuard === "true") return;
+
+  bioButton.dataset.fblqaBiographyGuard = "true";
+  bioButton.addEventListener("click", () => {
+    // Other sheet integrations can replace tab contents after the actor render
+    // hook. Re-check only when BIO is actually opened, with no polling.
+    queueMicrotask(() => {
+      try {
+        const currentRoot = findActorSheetRoot(app?.element) ?? root;
+        const bioTab = findBiographyTab(currentRoot);
+        if (!(bioTab instanceof HTMLElement)) return;
+        if (bioTab.dataset.fblqaBiographyMounted === "true" || bioTab.querySelector?.('.fblqa-bio-shell')) return;
+        setupBiographyTab(app, actor, currentRoot);
+      } catch (error) {
+        console.error(`${MODULE_ID} | BIO remount failed`, error);
+      }
+    });
+  });
 }
 
 function setupGearTab(app, actor, gearTab) {

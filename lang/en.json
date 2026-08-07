@@ -239,7 +239,8 @@
       "TimeSourceManual": "manual mode",
       "ResetNotAllowed": "Only the GM can reset the Short Rest limit.",
       "StartsNewDay": "This rest starts a new day",
-      "StartsNewDayHint": "After Long Rest, open a separate window for daily injury, wash-state, condition, and addiction progression."
+      "StartsNewDayHint": "After Long Rest, open a separate window for daily injury, wash-state, condition, and addiction progression.",
+      "StateProgressionCalendaria": "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."
     },
     "Dialog": {
       "ConfirmTitle": "Confirm",
@@ -260,6 +261,12 @@
       "PilgrimCardFont": {
         "Name": "Pilgrim Card font",
         "Hint": "Choose the font used inside Pilgrim Cards from the fonts available in Foundry VTT."
+      },
+      "StateProgressionMode": {
+        "Name": "State progression",
+        "Hint": "Choose whether daily injuries, conditions, wash states, addictions and connected new-day effects advance after Long Rest or when Calendaria registers a new day.",
+        "ChoiceLongRest": "Long Rest",
+        "ChoiceCalendaria": "Calendaria — new day"
       }
     },
     "NewDay": {
@@ -267,6 +274,7 @@
       "UnnamedCondition": "Unnamed condition",
       "ShortRestReset": "Reset the Short Rest recovery limit",
       "DialogUnavailable": "The new-day dialog is unavailable in this environment.",
+      "FormUnavailable": "Could not read the selected new-day changes.",
       "Title": "New day: {actor}",
       "Apply": "Process new day",
       "CompletedWithErrors": "New day processed: {success} succeeded, {failed} failed.",
@@ -307,7 +315,14 @@
       "ConditionExpired": "Condition time: {beforeText} → {afterText}. The condition has ended and will be deleted.",
       "AddictionDayFlat": "Morning Endurance check; the withdrawal cycle then advances automatically.",
       "AddictionDayRoll": "Automatic craving roll 1d{die}: on 1–2 the cycle does not change; on 3+ it advances automatically.",
-      "ProviderBuildErrors": "Some connected modules could not prepare new-day actions: {count}."
+      "ProviderBuildErrors": "Some connected modules could not prepare new-day actions: {count}.",
+      "AddictionAdvanced": "cycle advanced",
+      "AddictionFlatResult": "Addiction cycle: {from} → {to}",
+      "AddictionHeld": "cycle unchanged",
+      "AddictionRollResult": "Craving roll: {total}; {outcome}. {from} → {to}",
+      "UnknownError": "Unknown error",
+      "DelegatedStale": "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.",
+      "DelegatedFailed": "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window."
     },
     "Reputation": {
       "OpenTitle": "Open reputation ledger",
@@ -434,6 +449,65 @@
       "Collapse": "Collapse",
       "Edit": "Edit",
       "Cancel": "Cancel"
+    },
+    "StateProgression": {
+      "ApplyFailed": "Could not apply Calendaria state progression.",
+      "Baselined": "Baseline set to the current Calendaria date.",
+      "CalendarChanged": "Calendaria changed its active calendar. Player state progression was re-baselined to the current date; no states were advanced.",
+      "CalendariaUnavailable": "Calendaria progression is selected, but Calendaria is unavailable. Daily state progression is paused until Calendaria is available or the mode is changed.",
+      "CompletedWithErrors": "Processed with {count} failed daily actions.",
+      "GMSummaryHeading": "Player states",
+      "GMSummaryHint": "Only characters assigned to non-GM users are included. Player results are kept out of chat.",
+      "GMSummaryTitle": "New day — player state summary",
+      "ModeConfirmApply": "Change mode",
+      "ModeConfirmCalendaria": "State progression will be triggered by Calendaria. The current date becomes the starting point; earlier calendar days will not be processed.",
+      "ModeConfirmHeading": "Use {mode}?",
+      "ModeConfirmLongRest": "State progression will be triggered only by Long Rest. Calendaria day changes will no longer advance player states.",
+      "ModeConfirmTitle": "Change state progression",
+      "ModeConfirmWarning": "The two progression modes are mutually exclusive.",
+      "MultiplePendingGM": "Multiple calendar days are pending; GM resolution is required.",
+      "MultiplePendingPlayer": "Several Calendaria days are pending for {actor}. The GM summary can resolve the accumulated progression.",
+      "NoStateChanges": "No selected state changes were needed.",
+      "PendingDays": "Pending days: {days}",
+      "PendingTimeSkip": "Time skip left pending by the GM.",
+      "PlayerResultHeading": "State progression",
+      "PlayerResultHint": "These changes were applied without posting individual messages to chat.",
+      "PlayerResultNotification": "Calendar state progression completed for {actor}.",
+      "PlayerResultTitle": "New day — {actor}",
+      "ProcessedDays": "Processed {days} calendar days.",
+      "Resolve": "Resolve",
+      "ResolveHeading": "Process {days} days for {actor}?",
+      "ResolveMessage": "The missing calendar days will be simulated sequentially using the currently applicable daily actions.",
+      "ResolveTitle": "Resolve pending state progression",
+      "RewindIgnored": "Calendaria moved backwards. Player states were not reversed and already processed days will not be processed again.",
+      "StalePlayerDialog": "The calendar changed while this window was open. The GM summary now holds the pending progression.",
+      "TimeSkipApply": "Process time skip",
+      "TimeSkipHeading": "Advance player states by {days} days?",
+      "TimeSkipLater": "Leave pending",
+      "TimeSkipMessage": "Calendaria moved from {from} to {to}. Quick Access can process the missing days sequentially for all assigned player characters.",
+      "TimeSkipTitle": "Calendaria time skip",
+      "TimeSkipWarning": "This can resolve injuries, wash states, addictions and other daily conditions. Moving the calendar backwards will not undo these changes.",
+      "TooManyDays": "The time skip is too large for automatic processing.",
+      "TooManyDaysWarning": "Calendaria advanced by {days} days. Quick Access will not automatically simulate more than {max} days at once.",
+      "Status": {
+        "pending": "Waiting for player",
+        "offline": "Player offline",
+        "processing": "Processing",
+        "done": "Done",
+        "error": "Completed with errors",
+        "baseline": "Baseline set",
+        "blocked": "Needs manual resolution",
+        "absent": "Absent"
+      },
+      "GMChanges": "Changes: {count}",
+      "GMChangesWithErrors": "Changes: {count}; errors: {failed}",
+      "Absent": "Absent",
+      "AbsentDetail": "Skipped {days} calendar days; character states were not changed.",
+      "AbsentFailed": "Could not mark the character absent for this calendar batch.",
+      "AbsentUndone": "Absence was undone; state progression is pending again.",
+      "UndoAbsent": "Undo",
+      "UndoAbsentFailed": "Could not restore the pending calendar progression.",
+      "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent."
     }
   },
   "FBLEC.UI.AddCustom": "+ condition",

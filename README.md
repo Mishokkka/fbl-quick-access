@@ -1,6 +1,39 @@
 # Forbidden Lands Quick Access
 
-## Version 1.7.14
+## Version 1.7.21
+
+- Fixes STAT duration controls inheriting/stretching against Foundry/system form widths. Injury and custom-condition timers are now content-sized and pinned to the right-side control cluster while the condition name owns the flexible space.
+- Hardens the `- / duration / +` controls with explicit intrinsic widths and preserves the separate wrapping behavior of the two-column STAT layout.
+
+## Version 1.7.20
+
+- Fixes BIO failing to mount when legacy `air-islands-character-importer` data exists but that module is disabled or no longer installed. Foundry v13 throws for `Actor#getFlag` calls against inactive flag scopes; Quick Access now reads persisted legacy importer flags directly and only calls `getFlag` when that module is actually active.
+- Missing or stale importer data is now treated as an optional migration source and can never abort BIO rendering.
+
+## Version 1.7.19
+
+- Fixes BIO mounting isolation: the redesigned BIO now renders through its own actor-sheet hook and rechecks itself when the BIO tab is opened, so failures in unrelated sheet enhancements cannot leave the native Forbidden Lands BIO behind.
+- Fixes a Calendaria startup race: an enabled Calendaria module is no longer reported as unavailable while its `CalendarManager` is still initializing; Quick Access waits for `calendaria.ready` and reuses the API supplied by that hook.
+- Adds a world-level **State progression** setting with mutually exclusive **Long Rest** and **Calendaria — new day** modes.
+- Calendaria integration is event-driven through `calendaria.dayChange`; Quick Access does not poll world time or scan actors in the background.
+- Calendaria mode processes only `character` Actors assigned through `user.character` to non-GM users. NPCs, monsters and GM-only characters are ignored.
+- A normal new calendar day opens the New Day selection only for the affected player, while the deterministic active GM receives one live group summary. Calendar-driven results do not create Quick Access chat cards or Addiction roll messages.
+- Offline players remain visible as pending in the GM summary. Closing the player window postpones progression instead of silently consuming the day; the GM can resolve it later.
+- The GM summary can mark a pending character **Absent** for the current accumulated calendar batch. Those days are recorded as intentionally skipped without changing the character states, with an Undo action while the calendar remains on the same date.
+- Multi-day Calendaria jumps require one GM confirmation and are simulated sequentially. Calendar rewind never reverses states or replays already processed days.
+- Switching to Calendaria baselines every assigned player character at the current date, preventing retroactive catch-up. If Calendaria is unavailable while selected, state progression pauses rather than falling back to Long Rest.
+- Stores one per-character calendar marker for idempotency and reconnect recovery; no recurring timers or periodic world writes are introduced.
+
+## Version 1.7.16
+
+- Fixes New Day submission in Foundry v13 when DialogV2 exposes its native form before the restored `fblqa-new-day-form` CSS class is visible. The workflow now falls back to the dialog's single native form instead of aborting Rest progression.
+- Separates Pilgrim Card data into its own `pilgrimCardProfile` Actor flag. Existing card values are snapshotted once on first open after upgrade; later changes to the card never rename the Actor or update Forbidden Lands BIO fields, and later sheet edits never overwrite the saved card.
+
+- Fixes BIO language-level selects snapping back on the first choice by isolating module-owned controls from the parent Forbidden Lands sheet form and persisting discrete choices immediately.
+- Pilgrim Card Hair now fills the complete final row in the compact two-column card layout.
+- Removes the duplicate black dot from the Long Rest / Short Rest selector while retaining the existing selected-state styling.
+- New Day now reads checked actions from the native DialogV2 button form, restoring injury, wash, custom-condition and addiction progression after a Long Rest that starts a new day.
+- STAT rendering is read-only again: migrations no longer write embedded Item data during sheet render, preventing update/delete races when wash state changes. Explicit wash transitions also suppress the exclusivity hook for their own create-cleanup sequence.
 
 - Fixes the Reputation ledger failing to open after its footer Close button was removed. Buttonless Reputation windows now use an inert DialogV2 compatibility sentinel while the footer itself stays hidden.
 - Adds a calendar button to the Pilgrim Card title bar for editing the character birth date directly from the card.
@@ -64,7 +97,7 @@ Small quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Optional Gear card view. Gear edit, post-to-chat, duplicate, delete, and Item Piles transfer actions are available through a right-click context menu.
 - Manual Gear ordering inside the current Gear section.
 - Right-clicking Gear rows or Gear cards opens a compact light context menu: Edit, Post to Chat, Duplicate, Delete, Transfer. The Delete trash icon is red, and Delete uses a styled confirmation dialog.
-- The native Rest button is replaced with a house-rule Rest dialog: Long Rest and Short Rest. Long Rest can optionally continue into a separate New Day assistant.
+- The native Rest button is replaced with a house-rule Rest dialog: Long Rest and Short Rest. A world setting chooses whether daily state progression is triggered by Long Rest or by Calendaria new-day events.
 - Transfer uses Item Piles when active, opening its item-specific give/transfer dialog.
 - Double-clicking supported item rows opens the embedded item sheet.
 - Compact optional Main-tab restyling scoped to the character sheet.
@@ -102,6 +135,8 @@ Actor flags:
 - `flags.fbl-quick-access.willpowerTalents`
 - `flags.fbl-quick-access.shortRestRecovery`
 - `flags.fbl-quick-access.biographyProfile`
+- `flags.fbl-quick-access.pilgrimCardProfile`
+- `flags.fbl-quick-access.stateProgressionCalendaria` (per-player-character Calendaria baseline/last processed date)
 - `flags.fbl-quick-access.conditions.*` for the integrated STAT tab and Expanded Conditions data
 
 Client-side `localStorage`:
@@ -116,7 +151,13 @@ The module intercepts the native Forbidden Lands Rest button on the character sh
 
 Long Rest is treated as 6 hours of sleep. It restores 1 point of each damaged attribute unless that attribute is blocked by conditions. Hungry blocks Strength, Thirsty blocks Agility, Sleepy blocks Wits, and Cold blocks Strength and Wits. Sleepy is cleared at the end of Long Rest. Cold is cleared at the end only when the heat-source checkbox is enabled. Blocked attributes do not recover during that same rest even if the condition is cleared at the end.
 
-Long Rest has an optional **starts a new day** checkbox. After a successful rest, it opens a separate preview window. That window proposes daily changes for injury healing timers, day-based lethal limits, wash-state progression, timed custom STAT conditions, Addiction morning checks and Addiction cycle progression. It also resets the module's Short Rest recovery lock. Every action is individually selectable. Heat, Mor, ARC entries, permanent timers, dice formulas, and non-day lethal limits are not advanced automatically.
+Daily state progression is controlled by the world-level **State progression** setting. In **Long Rest** mode, Long Rest has the familiar **starts a new day** checkbox and opens the separate New Day preview after a successful rest. In **Calendaria — new day** mode that checkbox is removed: Long Rest never advances daily states, and Quick Access listens to Calendaria's `calendaria.dayChange` hook instead.
+
+The New Day plan proposes daily changes for injury healing timers, day-based lethal limits, wash-state progression, timed custom STAT conditions, Addiction morning checks and Addiction cycle progression. It also resets the module's Short Rest recovery lock. Every action is individually selectable during a normal single-day player prompt. Heat, Mor, ARC entries, permanent timers, dice formulas, and non-day lethal limits are not advanced automatically.
+
+Calendaria mode handles only `character` Actors assigned to non-GM users through `user.character`. Each online player receives only the prompt/result for their own character. The deterministic active GM receives one live summary for the group. Quick Access suppresses its New Day chat card, Addiction roll/chat output, wash notifications and provider private-summary chat while processing calendar-driven days. Registered New Day providers receive `context.suppressChat === true` so integrations can suppress their own presentation as well.
+
+No polling is used. The module sleeps until Calendaria emits a day-change hook. A per-Actor marker records the processed calendar date, making normal reload/reconnect and duplicate hook delivery idempotent. A multi-day jump is confirmed once by the GM and then simulated day-by-day; a backwards calendar move never rolls states back. Switching into Calendaria mode sets the current date as the baseline instead of processing old calendar history.
 
 Short Rest is treated as a 15 minute breather. It can be used for extended actions outside this module. Once per Quarter Day, the actor may restore 1 point in one damaged and unblocked attribute if the player enters an appropriate consumable or justification. The module records the once-per-Quarter-Day use in an actor flag and uses Foundry world time in 6-hour blocks when available. A manual reset checkbox is included for tables that do not advance world time. It is GM-only by default; a world setting can allow actor owners to use it.
 
@@ -166,7 +207,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.14:
+Available methods in 1.7.20:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `registerStatProvider(definition)`
@@ -181,6 +222,7 @@ Available methods in 1.7.14:
 - `openNewDayDialog(app, actor)`
 - `buildNewDayPlan(actor)`
 - `buildNewDayPlanWithProviders(actor)`
+- `getStateProgressionMode()`
 - `openMoneyTransferDialog(app, actor)`
 - `getReputationEntries(actor)`
 - `saveReputationEntries(actor, entries, options?)`

@@ -229,10 +229,12 @@ export async function buildNewDayPlanWithProviders(actor) {
   return plan;
 }
 
-export async function applyNewDayPlan(actor, plan, selectedActionIds) {
+export async function applyNewDayPlan(actor, plan, selectedActionIds, options = {}) {
   const selected = new Set(selectedActionIds ?? []);
   const actions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
+  const postChat = options.postChat !== false;
+  const suppressNotifications = Boolean(options.suppressNotifications);
 
   if (!actions.length) return { changed: false, selected: 0, succeeded: [], failed: [] };
 
@@ -264,7 +266,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds) {
 
     try {
       if (action.providerId) {
-        const providerResult = await applyNewDayProviderAction(actor, action);
+        const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
         results.push(successResult(action, providerResult));
         continue;
       }
@@ -285,10 +287,18 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds) {
       } else if (action.kind === "lethal-limit") {
         await item.update({ "system.limit": action.afterText });
       } else if (action.kind === "wash-transition") {
-        const transition = await transitionWashLevel(actor, item.name);
+        const transition = await transitionWashLevel(actor, item.name, { fblqaSuppressNotifications: suppressNotifications });
         if (!transition?.changed) throw new Error(transition?.reason ?? "Wash transition failed");
       } else if (action.kind === "addiction-day") {
-        await processAddictionNewDay(actor, item);
+        const addictionResult = await processAddictionNewDay(actor, item, {
+          postChat,
+          notify: !suppressNotifications
+        });
+        results.push(successResult(action, {
+          changed: addictionResult?.changed,
+          summary: formatAddictionNewDayResult(addictionResult)
+        }));
+        continue;
       }
 
       results.push(successResult(action));
@@ -300,7 +310,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds) {
 
   const succeeded = results.filter((entry) => entry.ok);
   const failed = results.filter((entry) => !entry.ok);
-  await postNewDaySummary(actor, succeeded, failed);
+  if (postChat) await postNewDaySummary(actor, succeeded, failed);
 
   return {
     changed: succeeded.some((entry) => entry.changed !== false),
@@ -310,8 +320,50 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds) {
   };
 }
 
-export async function openNewDayDialog(app, actor) {
-  if (!canModifyActor(actor)) {
+export function serializeNewDayResult(result) {
+  const succeeded = Array.isArray(result?.succeeded) ? result.succeeded : [];
+  const failed = Array.isArray(result?.failed) ? result.failed : [];
+  return {
+    changed: Boolean(result?.changed),
+    selected: Number(result?.selected) || 0,
+    successCount: succeeded.length,
+    failedCount: failed.length,
+    entries: [
+      ...succeeded.map((entry) => ({
+        ok: true,
+        itemName: String(entry?.action?.itemName ?? ""),
+        detail: String(entry?.summary || actionDetail(entry?.action ?? {}))
+      })),
+      ...failed.map((entry) => ({
+        ok: false,
+        itemName: String(entry?.action?.itemName ?? ""),
+        detail: String(entry?.error ?? qaLocalize("NewDay.UnknownError", "Unknown error"))
+      }))
+    ]
+  };
+}
+
+function formatAddictionNewDayResult(result) {
+  if (!result) return "";
+  if (result.cured) return qaLocalize("NewDay.AddictionCured", "Addiction resolved.");
+  const from = formatAddictionState(result.state);
+  const to = formatAddictionState(result.nextState);
+  if (Number.isFinite(Number(result.total))) {
+    const outcome = result.advanced
+      ? qaLocalize("NewDay.AddictionAdvanced", "cycle advanced")
+      : qaLocalize("NewDay.AddictionHeld", "cycle unchanged");
+    return qaLocalize("NewDay.AddictionRollResult", "Craving roll: {total}; {outcome}. {from} → {to}", {
+      total: Number(result.total),
+      outcome,
+      from,
+      to
+    });
+  }
+  return qaLocalize("NewDay.AddictionFlatResult", "Addiction cycle: {from} → {to}", { from, to });
+}
+
+export async function openNewDayDialog(app, actor, options = {}) {
+  if (!canModifyActor(actor) && !options.allowDelegatedApply) {
     warnCannotModifyActor();
     return null;
   }
@@ -347,25 +399,59 @@ export async function openNewDayDialog(app, actor) {
           icon: '<i class="fas fa-sun"></i>',
           label: qaLocalize("NewDay.Apply", "Провести новый день"),
           callback: async (html, _event, _button, renderedDialog) => {
-            const form = findDialogForm(renderedDialog ?? html, "form.fblqa-new-day-form");
+            // DialogV2 exposes the submitted native form most reliably through
+            // the rendered button. Reading only from the dialog can produce an
+            // empty selection in Foundry v13, making every checked daily action
+            // look as though it did nothing.
+            // Foundry v13 may expose the DialogV2-owned form before our render
+            // metadata class has been re-applied. Prefer the named form, but fall
+            // back to the dialog's sole native form instead of aborting the day.
+            const formSource = _button?.form ?? _event?.currentTarget?.form ?? renderedDialog?.form ?? renderedDialog ?? html;
+            const form = findDialogForm(formSource, "form.fblqa-new-day-form")
+              ?? findDialogForm(formSource, "form");
+            if (!form) {
+              console.error(`${MODULE_ID} | new-day form was not available in the rendered dialog`);
+              ui.notifications?.error?.(qaLocalize("NewDay.FormUnavailable", "Не удалось прочитать выбранные изменения нового дня."));
+              return false;
+            }
             const selectedIds = [...(form?.querySelectorAll('input[name="newDayAction"]:checked') ?? [])]
               .map((input) => input.value);
-            const result = await applyNewDayPlan(actor, plan, selectedIds);
-
-            if (result.failed.length) {
-              ui.notifications?.warn?.(qaLocalize("NewDay.CompletedWithErrors", "Новый день обработан: {success} успешно, {failed} с ошибкой.", {
-                success: result.succeeded.length,
-                failed: result.failed.length
-              }));
-            } else if (result.succeeded.length) {
-              ui.notifications?.info?.(qaLocalize("NewDay.Completed", "Новый день обработан. Выполнено действий: {count}.", {
-                count: result.succeeded.length
-              }));
-            } else {
-              ui.notifications?.info?.(qaLocalize("NewDay.NoActionsSelected", "Ни одно действие нового дня не выбрано."));
+            let result;
+            try {
+              result = typeof options.applyHandler === "function"
+                ? await options.applyHandler({ actor, plan, selectedIds, source: options.source ?? "manual", targetDate: options.targetDate ?? null })
+                : await applyNewDayPlan(actor, plan, selectedIds, {
+                    postChat: options.postChat !== false,
+                    suppressNotifications: Boolean(options.suppressNotifications),
+                    source: options.source ?? "manual"
+                  });
+            } catch (error) {
+              console.error(`${MODULE_ID} | new-day delegated apply failed`, error);
+              const stale = ["stale-calendar-day", "multi-day-pending"].includes(String(error?.code ?? ""));
+              const message = stale
+                ? qaLocalize("NewDay.DelegatedStale", "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.")
+                : qaLocalize("NewDay.DelegatedFailed", "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.");
+              (stale ? ui.notifications?.warn : ui.notifications?.error)?.call?.(ui.notifications, message);
+              return false;
             }
 
-            rerenderSheet(app);
+            const calendarMode = String(options.source ?? "").startsWith("calendaria");
+            if (!calendarMode) {
+              if (result?.failed?.length) {
+                ui.notifications?.warn?.(qaLocalize("NewDay.CompletedWithErrors", "Новый день обработан: {success} успешно, {failed} с ошибкой.", {
+                  success: result.succeeded.length,
+                  failed: result.failed.length
+                }));
+              } else if (result?.succeeded?.length) {
+                ui.notifications?.info?.(qaLocalize("NewDay.Completed", "Новый день обработан. Выполнено действий: {count}.", {
+                  count: result.succeeded.length
+                }));
+              } else {
+                ui.notifications?.info?.(qaLocalize("NewDay.NoActionsSelected", "Ни одно действие нового дня не выбрано."));
+              }
+            }
+
+            if (app) rerenderSheet(app);
             finish(result);
           }
         },
@@ -557,7 +643,8 @@ function coreCategoryLabel(category) {
 }
 
 function setupNewDayDialogInteractivity(dialogOrElement) {
-  const form = findDialogForm(dialogOrElement, "form.fblqa-new-day-form");
+  const form = findDialogForm(dialogOrElement, "form.fblqa-new-day-form")
+    ?? findDialogForm(dialogOrElement, "form");
   if (!form) return;
 
   form.querySelector('[data-action="select-all"]')?.addEventListener("click", () => {
