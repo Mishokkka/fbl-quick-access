@@ -449,7 +449,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
 
   bioTab.querySelector('[data-bio-action="add-rumor"]')?.addEventListener("click", () => {
     if (!editable) return warnCannotModifyActor();
-    state.rumors.push({ id: makeId("rumor"), text: "" });
+    state.rumors.push({ id: makeId("rumor"), text: "", truth: "uncertain" });
     render();
     queueProfileSave(actor, state, null, 0);
   });
@@ -1464,11 +1464,17 @@ function normalizeLanguages(value) {
 function normalizeRumors(value) {
   if (!Array.isArray(value)) return [];
   return value.map((entry, index) => typeof entry === "string"
-    ? { id: makeId(`rumor-${index + 1}`), text: entry }
+    ? { id: makeId(`rumor-${index + 1}`), text: entry, truth: "uncertain" }
     : {
         id: String(entry?.id ?? makeId(`rumor-${index + 1}`)),
-        text: String(entry?.text ?? entry?.rumor ?? "")
+        text: String(entry?.text ?? entry?.rumor ?? ""),
+        truth: normalizeRumorTruth(entry?.truth)
       });
+}
+
+function normalizeRumorTruth(value) {
+  const truth = String(value ?? "uncertain").toLowerCase();
+  return ["true", "false", "uncertain"].includes(truth) ? truth : "uncertain";
 }
 
 function normalizeBirthDate(value) {

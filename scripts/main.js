@@ -21,7 +21,7 @@ import { handleStatProviderActorDeleted, refreshStat, registerStatProvider } fro
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
-import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, releaseBiographyState, saveBiographyProfile, setupBiographyTab } from "./biography.js";
+import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
 
@@ -45,6 +45,7 @@ Hooks.once("init", () => {
         activeGmExecution: true,
         characterImport: true,
         biographyProfile: true,
+        pilgrimCardProfile: true,
         stateProgression: true
       }),
       refreshGearPresentation,
@@ -67,6 +68,8 @@ Hooks.once("init", () => {
       openReputationDialog,
       getBiographyProfile,
       saveBiographyProfile,
+      getPilgrimCardProfile,
+      savePilgrimCardProfile,
       getWillpowerTalents,
       saveWillpowerTalents,
       pruneActorReferences,
