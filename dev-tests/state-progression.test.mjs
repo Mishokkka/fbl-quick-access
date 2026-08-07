@@ -184,3 +184,24 @@ test("Calendaria readiness does not misreport an enabled module as unavailable",
   assert.match(source, /function warnCalendariaUnavailable\([\s\S]*?if \(isCalendariaModuleActive\(\)\) return;/);
   assert.match(source, /globalThis\.CALENDARIA\?\.api \?\? calendariaReadyApi/);
 });
+
+test("PR11: automatic multi-day work has a low default cap and a hard ceiling", () => {
+  assert.match(source, /DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT\s*=\s*90/);
+  assert.match(source, /MAX_AUTOMATIC_CALENDAR_DAYS\s*=\s*365/);
+  assert.match(source, /const effectiveLimit = Math\.min\(configuredLimit, MAX_AUTOMATIC_CALENDAR_DAYS\)/);
+  assert.match(source, /let remaining = Math\.min\(requested, effectiveLimit\)/);
+  assert.match(source, /maxDays:\s*days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT \? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT/);
+});
+
+test("PR11: a newer GM progression summary closes and evicts stale summary windows", () => {
+  assert.match(source, /for \(const \[existingKey, existingState\] of gmSummaryWindows\)/);
+  assert.match(source, /if \(existingKey === key\) continue/);
+  assert.match(source, /gmSummaryWindows\.delete\(existingKey\)/);
+  assert.match(source, /existingState\.dialog\?\.close\?\.\(\)/);
+});
+
+test("PR11: Calendaria public current date is not double-converted", () => {
+  const contextSection = source.slice(source.indexOf("function getCalendariaContext"), source.indexOf("function isCalendariaModuleActive"));
+  assert.match(contextSection, /normalizeCalendariaDate\(dateOverride \?\? api\.getCurrentDateTime\(\)\)/);
+  assert.doesNotMatch(contextSection, /calendariaHookComponentToPublicDate\(.*getCurrentDateTime/);
+});

@@ -25,6 +25,7 @@ import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, release
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
 
+
 Hooks.once("init", () => {
   registerCoreSettings();
   registerWalletListeners();
@@ -164,7 +165,15 @@ function renderBiographySafely(app, htmlOrElement) {
     const root = findActorSheetRoot(htmlOrElement);
     if (!root) return;
 
-    setupBiographyTab(app, actor, root);
+    // Foundry can emit both the document-sheet and generic ApplicationV2 render
+    // hooks for the same DOM pass. Once our shell is mounted, the second hook is
+    // a no-op. A later real sheet render replaces the tab DOM, removing this
+    // marker and allowing a fresh mount without relying on timing assumptions.
+    const bioTab = findBiographyTab(root);
+    const alreadyMounted = bioTab instanceof HTMLElement
+      && bioTab.dataset.fblqaBiographyMounted === "true"
+      && bioTab.querySelector?.(".fblqa-bio-shell");
+    if (!alreadyMounted) setupBiographyTab(app, actor, root);
     setupBiographyActivationGuard(app, actor, root);
   } catch (error) {
     console.error(`${MODULE_ID} | BIO render failed`, error);

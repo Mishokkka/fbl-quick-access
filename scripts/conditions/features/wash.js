@@ -121,6 +121,12 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
     } catch (error) {
       console.error(`${MODULE_ID} | could not remove stale wash states`, error);
       if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
+      return {
+        changed: false,
+        reason: "cleanup-failed",
+        previousName: getWashDisplayName(currentName),
+        nextName
+      };
     }
   }
 
