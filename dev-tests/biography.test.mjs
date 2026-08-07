@@ -7,7 +7,7 @@ import { getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, 
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
-test("normalizes imported biography rows without exposing rumor truth", () => {
+test("normalizes imported biography rows while keeping rumor truth out of the visible row model", () => {
   const profile = normalizeBiographyProfile({
     identity: { name: "Люсьен", subrace: "Конквист", citizenship: "Сангрен" },
     appearance: "Высокий полуэльф",
@@ -29,8 +29,10 @@ test("normalizes imported biography rows without exposing rumor truth", () => {
   });
   assert.deepEqual(profile.rumors[0], {
     id: profile.rumors[0].id,
-    text: "Боится механизмов"
+    text: "Боится механизмов",
+    truth: "true"
   });
+  assert.equal("name" in profile.rumors[0], false);
 });
 
 test("keeps legacy BIO archive and tolerates old string rumors", () => {
@@ -41,8 +43,18 @@ test("keeps legacy BIO archive and tolerates old string rumors", () => {
 
   assert.equal("name" in profile.rumors[0], false);
   assert.equal(profile.rumors[0].text, "Старый слух");
+  assert.equal(profile.rumors[0].truth, "uncertain");
   assert.equal(profile.legacy.face, "<p>Face text</p>");
   assert.equal(profile.legacy.body, "Body text");
+});
+
+test("normalizes invalid rumor truth to uncertain without exposing a source field", () => {
+  const profile = normalizeBiographyProfile({
+    rumors: [{ id: "r1", name: "Скрытый источник", text: "Слух", truth: "maybe" }]
+  });
+
+  assert.deepEqual(profile.rumors[0], { id: "r1", text: "Слух", truth: "uncertain" });
+  assert.equal("name" in profile.rumors[0], false);
 });
 
 test("backfills legacy BIO fields even when a stored profile already exists", () => {
@@ -212,6 +224,17 @@ test("BIO editor accepts new text and intentional deletion after a user edit", (
     editableHtml: null,
     dirty: true
   }), "<p>Из свойства</p>");
+});
+
+test("public integration API exposes the independent Pilgrim Card profile helpers", () => {
+  const main = readFileSync(join(root, "scripts", "main.js"), "utf8");
+  const apiDoc = readFileSync(join(root, "INTEGRATION_API.md"), "utf8");
+
+  assert.match(main, /pilgrimCardProfile:\s*true/);
+  assert.match(main, /getPilgrimCardProfile,/);
+  assert.match(main, /savePilgrimCardProfile,/);
+  assert.match(apiDoc, /qa\.savePilgrimCardProfile\(actor/);
+  assert.match(apiDoc, /truth.*persisted/s);
 });
 
 test("Pilgrim Card exposes birth-date editing in its header and uses a full-size stamp", () => {

@@ -4,6 +4,8 @@
 
 - Applies verified PR #11 review fixes: protects GM-only new-day provider summaries from player-controlled suppression, preserves in-flight BIO/Pilgrim save ordering across remounts, reports failed wash cleanup as a failed transition, guards duplicate BIO mounting in the same render pass, bounds automatic multi-day simulation by default, and closes stale GM progression summaries.
 - Keeps Calendaria public `getCurrentDateTime()` handling 1-indexed as required by Calendaria 1.0.17; only raw `calendaria.dayChange` components are converted from zero-based fields.
+- Preserves imported rumor truth (`true` / `false` / `uncertain`) in the structured biography profile without rendering it in the character BIO; rumor source/name remains outside the Quick Access model.
+- Exposes `getPilgrimCardProfile` and `savePilgrimCardProfile` through the public API so importers can explicitly refresh the independent Pilgrim Card after replacing an existing Actor.
 
 ## Version 1.7.21
 
@@ -200,7 +202,7 @@ The native Forbidden Lands BIO tab is replaced at render time; system templates 
 
 The compact Pilgrim Card opens beside the actor sheet and contains name, kin, subrace, issuing country, birth date, overall appearance, height, weight, skin, eyes, hair, and a full-width distinguishing-marks field. It deliberately has no portrait. It follows the actor sheet while linked and can be detached into an independently draggable window. The transparent sticky BIO footer contains only the archive and Pilgrim Card controls.
 
-The visible dossier contains Pride, Dark Secret, Background, Family, motivation, party connections, languages, character questions, and rumors. Concept and the public Note remain accepted by the import API for backward compatibility but are not displayed in BIO; the native NOTE tab remains the place for public information. Rumor truth is not stored or displayed by Quick Access.
+The visible dossier contains Pride, Dark Secret, Background, Family, motivation, party connections, languages, character questions, and rumors. Concept remains accepted and stored for importer/GM data but is not displayed in BIO. The public Note is synchronized to the native Forbidden Lands NOTE field and is not displayed as a separate Quick Access BIO field. Rumor truth is stored as `true`, `false`, or `uncertain` but is deliberately not displayed by Quick Access; rumor source/name is not stored in the Quick Access profile.
 
 All multiline dossier fields use Foundry's native `<prose-mirror>` editor, including its formatting and explicit save workflow. Legacy Face, Body, and Clothing values are not shown as active editing fields. Existing non-empty values are available through an explicit archive toggle, including actors that already had an older Quick Access biography profile flag. Archive text is selectable and each field also has a copy button.
 
@@ -234,12 +236,14 @@ Available methods in 1.7.23:
 - `openReputationDialog(app, actor)`
 - `getBiographyProfile(actor)`
 - `saveBiographyProfile(actor, profile, options?)`
+- `getPilgrimCardProfile(actor, fallbackBiography?)`
+- `savePilgrimCardProfile(actor, profile, options?)`
 - `getWillpowerTalents(actor)`
 - `saveWillpowerTalents(actor, talents, options?)`
 - `pruneActorReferences(actor)`
 - `pruneWorldActorReferences()`
 
-Use `api.capabilities` to detect provider, active-GM, and character-import support. Data helpers operate on Actor documents and plain data; the `open*` and presentation helpers also accept Foundry application or sheet context. The full provider and importer contracts are documented in `INTEGRATION_API.md`.
+Use `api.capabilities` to detect provider, active-GM, character-import, biography-profile, and Pilgrim-Card-profile support. Data helpers operate on Actor documents and plain data; the `open*` and presentation helpers also accept Foundry application or sheet context. The full provider and importer contracts are documented in `INTEGRATION_API.md`.
 
 ## Known limitations
 

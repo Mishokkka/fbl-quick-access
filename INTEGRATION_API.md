@@ -23,6 +23,8 @@ qa.capabilities.statProviders;
 qa.capabilities.newDayProviders;
 qa.capabilities.activeGmExecution;
 qa.capabilities.characterImport;
+qa.capabilities.biographyProfile;
+qa.capabilities.pilgrimCardProfile;
 ```
 
 ## STAT providers
@@ -258,7 +260,7 @@ await qa.saveBiographyProfile(actor, {
     notes: "..."
   },
   rumors: [
-    { id: "rumor-1", name: "Ничак", text: "..." }
+    { id: "rumor-1", text: "...", truth: "uncertain" }
   ]
 }, { render: false });
 ```
@@ -271,8 +273,52 @@ qa.getBiographyProfile(actor);
 
 `qa.capabilities.biographyProfile` is `true` when these methods are available.
 The API also synchronizes Actor name and the native `kin`, `profession`,
-`pride`, `darkSecret`, and `note` system fields. Concept and publicNote remain
-accepted for importer compatibility but are not rendered in BIO. Rumor truth
-is ignored. The legacy `face`, `body`, and `clothing` fields are no longer shown
-as active fields; pre-existing content is kept in an explicitly toggleable
-read-only archive inside the redesigned BIO tab.
+`pride`, `darkSecret`, and `note` system fields. `concept` remains accepted and
+persisted for importer/GM data but is not rendered in BIO. `publicNote` is
+persisted and synchronized to the native `note` field; it is not rendered as a
+separate Quick Access BIO field.
+
+Rumor rows use `{ id, text, truth }`. `truth` accepts `"true"`, `"false"`, or
+`"uncertain"`, is persisted in the biography profile, and is deliberately not
+rendered in the character BIO or Pilgrim Card. Importers and GM-only tools may
+read it back through `qa.getBiographyProfile(actor)`. Rumor source/name is not
+part of the Quick Access data model. Old string rumors normalize to
+`truth: "uncertain"`.
+
+The legacy `face`, `body`, and `clothing` fields are no longer shown as active
+fields; pre-existing content is kept in an explicitly toggleable read-only
+archive inside the redesigned BIO tab.
+
+### Pilgrim Card profile helpers
+
+Since Quick Access 1.7.16 the Pilgrim Card has its own stored profile. Once it
+has been saved, later BIO or Actor edits do not implicitly rewrite it. Character
+importers that replace an existing imported Actor should therefore update the
+card explicitly:
+
+```js
+await qa.savePilgrimCardProfile(actor, {
+  identity: {
+    name: "Lucien",
+    kin: "Half-Elf",
+    kinVariant: "Conquist",
+    issuingCountry: "Sangren",
+    birthDate: { day: 12, month: "Теплорост", year: 850, label: "12 Теплороста 850 П.П." }
+  },
+  physical: {
+    appearance: "...",
+    height: "...",
+    weight: "...",
+    skin: "...",
+    eyes: "...",
+    hair: "...",
+    distinguishingMarks: "..."
+  }
+}, { render: false });
+
+const card = qa.getPilgrimCardProfile(actor);
+```
+
+`qa.capabilities.pilgrimCardProfile` is `true` when these helpers are available.
+Only the fields currently displayed by the card are normalized and stored. The
+card has no portrait field and does not render a portrait.
