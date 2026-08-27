@@ -2,7 +2,6 @@ import { FLAG_COMPACT_BORDERS, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { findApplicationRoot, findConditionHeader, findSheetHeaderCandidates } from "./sheet-adapter/forbidden-lands-v1.js";
-import { rerenderSheet } from "./utils.js";
 
 /**
  * Visual cleanup for native Forbidden Lands sheet sections.
@@ -92,7 +91,6 @@ export function setupDecorativeBorderToggle(app, actor, mainTab) {
       ui.notifications?.error(qaLocalize("MainTab.BorderToggleSaveFailed", "Не удалось сохранить режим декоративных рамок."));
       return;
     }
-    rerenderSheet(app);
   });
 
   label.append(input, slider);

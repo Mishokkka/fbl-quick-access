@@ -163,10 +163,55 @@ test("selected new-day actions update timers without applying unselected actions
     { "system.limit": "1 day" }
   ]);
   assert.equal(actor.savedConditions.find((condition) => condition.id === "custom").time, "1 day");
-  assert.deepEqual(actor.unsetFlags, [["fbl-quick-access", "shortRestRecovery"]]);
+  assert.deepEqual(actor.unsetFlags, [], "an already-absent Short Rest flag must not trigger a Document write");
 
   const wash = actor.items.find((item) => item.id === "wash");
   assert.deepEqual(wash.updates, [], "unselected wash progression must not run");
+});
+
+
+test("Short Rest reset is idempotent and avoids Foundry flag-deletion update paths", async () => {
+  const updates = [];
+  const actor = {
+    id: "short-rest-actor",
+    name: "Short Rest Tester",
+    items: [],
+    flags: { "fbl-quick-access": { shortRestRecovery: { quarterKey: "q1", attribute: "strength" } } },
+    getFlag(moduleId, key) {
+      return this.flags?.[moduleId]?.[key];
+    },
+    async update(data, options) {
+      updates.push({ data, options });
+      this.flags["fbl-quick-access"].shortRestRecovery = data["flags.fbl-quick-access.shortRestRecovery"];
+    },
+    async unsetFlag() {
+      throw new Error("unsetFlag must not be used for Short Rest reset");
+    }
+  };
+  const plan = {
+    actions: [{
+      id: "system:short-rest-reset",
+      kind: "short-rest-reset",
+      category: "system",
+      checked: true,
+      itemName: "Reset Short Rest"
+    }]
+  };
+
+  const first = await newDay.applyNewDayPlan(actor, plan, ["system:short-rest-reset"], {
+    postChat: false,
+    documentOptions: { render: false }
+  });
+  assert.equal(first.failed.length, 0);
+  assert.deepEqual(updates, [{
+    data: { "flags.fbl-quick-access.shortRestRecovery": null },
+    options: { render: false }
+  }]);
+  assert.equal(Object.keys(updates[0].data).some((key) => key.includes(".-=")), false);
+
+  const second = await newDay.applyNewDayPlan(actor, plan, ["system:short-rest-reset"], { postChat: false });
+  assert.equal(second.failed.length, 0);
+  assert.equal(updates.length, 1, "repeating the reset after the flag is cleared must be a no-op write");
 });
 
 
@@ -266,3 +311,71 @@ function makeAddictionItem(initialState) {
     }
   };
 }
+
+test("New Day combines contiguous simple Item updates into one Foundry bulk write", async () => {
+  const item = makeItem("bulk-injury", "Bulk Injury", { healingTime: "3 days", lethal: "yes", limit: "2 days" });
+  const calls = [];
+  const items = new Map([[item.id, item]]);
+  const actor = {
+    id: "bulk-actor",
+    name: "Bulk Tester",
+    items,
+    async updateEmbeddedDocuments(type, updates, options) {
+      calls.push({ type, updates, options });
+      return updates;
+    }
+  };
+  const plan = {
+    actions: [
+      { id: "heal", kind: "injury-healing", itemId: item.id, itemName: item.name, afterText: "2 days" },
+      { id: "limit", kind: "lethal-limit", itemId: item.id, itemName: item.name, afterText: "1 day" }
+    ]
+  };
+
+  const result = await newDay.applyNewDayPlan(actor, plan, ["heal", "limit"], {
+    postChat: false,
+    documentOptions: { render: false }
+  });
+
+  assert.equal(result.failed.length, 0);
+  assert.equal(result.succeeded.length, 2);
+  assert.deepEqual(calls, [{
+    type: "Item",
+    updates: [{ _id: item.id, "system.healingTime": "2 days", "system.limit": "1 day" }],
+    options: { render: false }
+  }]);
+  assert.deepEqual(item.updates, [], "per-Item updates are skipped when the bulk API succeeds");
+});
+
+test("New Day bulk-update failure falls back to the previous per-action semantics", async () => {
+  const item = makeItem("fallback-injury", "Fallback Injury", { healingTime: "3 days", lethal: "yes", limit: "2 days" });
+  const items = new Map([[item.id, item]]);
+  const actor = {
+    id: "fallback-actor",
+    name: "Fallback Tester",
+    items,
+    async updateEmbeddedDocuments() {
+      throw new Error("synthetic bulk failure");
+    }
+  };
+  const plan = {
+    actions: [
+      { id: "heal-fallback", kind: "injury-healing", itemId: item.id, itemName: item.name, afterText: "2 days" },
+      { id: "limit-fallback", kind: "lethal-limit", itemId: item.id, itemName: item.name, afterText: "1 day" }
+    ]
+  };
+
+  const originalError = console.error;
+  console.error = () => {};
+  try {
+    const result = await newDay.applyNewDayPlan(actor, plan, ["heal-fallback", "limit-fallback"], { postChat: false });
+    assert.equal(result.failed.length, 0);
+    assert.equal(result.succeeded.length, 2);
+    assert.deepEqual(item.updates, [
+      { "system.healingTime": "2 days" },
+      { "system.limit": "1 day" }
+    ]);
+  } finally {
+    console.error = originalError;
+  }
+});

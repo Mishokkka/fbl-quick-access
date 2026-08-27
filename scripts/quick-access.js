@@ -4,7 +4,7 @@ import { getItemWeightLabel, isAllowedQuickItem, isQuickAccessItemType } from ".
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { getActorAttributeMaximum } from "./actor-data.js";
-import { firstFiniteNumber, rerenderSheet } from "./utils.js";
+import { firstFiniteNumber } from "./utils.js";
 
 export function getQuickCapacity(actor) {
   const system = actor.system ?? {};
@@ -200,7 +200,6 @@ function makeRemoveButton(app, actor, index) {
       return;
     }
     await removeSlot(actor, index);
-    rerenderSheet(app);
   });
 
   return button;
@@ -243,7 +242,6 @@ async function handleDrop(app, actor, event, targetIndex) {
 
   slots[targetIndex] = item.id;
   await saveSlots(actor, slots);
-  rerenderSheet(app);
 }
 
 async function moveQuickSlot(app, actor, slots, data, targetIndex) {
@@ -266,5 +264,4 @@ async function moveQuickSlot(app, actor, slots, data, targetIndex) {
   }
 
   await saveSlots(actor, slots);
-  rerenderSheet(app);
 }

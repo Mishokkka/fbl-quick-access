@@ -17,20 +17,51 @@ export function pruneGearOrderReferences(order, existingIds) {
 }
 
 export async function pruneActorReferences(actor) {
-  if (!actor?.items || typeof actor.getFlag !== "function" || typeof actor.setFlag !== "function") {
+  if (!actor?.items || typeof actor.getFlag !== "function") {
     return { changed: false, slotsChanged: false, orderChanged: false };
   }
 
-  const existingIds = new Set(Array.from(actor.items, (item) => item.id).filter(Boolean));
+  // Most actors never use either presentation flag. Read the tiny flags first so
+  // world startup does not enumerate every embedded Item for those actors.
   const slots = actor.getFlag(MODULE_ID, FLAG_SLOTS);
   const order = actor.getFlag(MODULE_ID, FLAG_GEAR_ORDER);
+  const hasSlotReferences = Array.isArray(slots) && slots.some((id) => typeof id === "string" && id);
+  const hasOrderReferences = Array.isArray(order) && order.some((id) => typeof id === "string" && id);
+
+  // With no actual Item ids we can still normalize malformed legacy values
+  // without touching actor.items at all. This keeps the old hygiene semantics
+  // while preserving the fast startup path for the common case.
+  if (!hasSlotReferences && !hasOrderReferences) {
+    const nextSlots = pruneQuickAccessReferences(slots, new Set());
+    const nextOrder = pruneGearOrderReferences(order, new Set());
+    return persistPrunedActorReferences(actor, slots, order, nextSlots, nextOrder);
+  }
+
+  const existingIds = new Set(Array.from(actor.items, (item) => item.id).filter(Boolean));
   const nextSlots = pruneQuickAccessReferences(slots, existingIds);
   const nextOrder = pruneGearOrderReferences(order, existingIds);
+  return persistPrunedActorReferences(actor, slots, order, nextSlots, nextOrder);
+}
+
+async function persistPrunedActorReferences(actor, slots, order, nextSlots, nextOrder) {
   const slotsChanged = JSON.stringify(Array.isArray(slots) ? slots : []) !== JSON.stringify(nextSlots);
   const orderChanged = JSON.stringify(Array.isArray(order) ? order : []) !== JSON.stringify(nextOrder);
 
-  if (slotsChanged) await actor.setFlag(MODULE_ID, FLAG_SLOTS, nextSlots);
-  if (orderChanged) await actor.setFlag(MODULE_ID, FLAG_GEAR_ORDER, nextOrder);
+  if (slotsChanged || orderChanged) {
+    if (typeof actor.update === "function") {
+      const updateData = {};
+      if (slotsChanged) updateData[`flags.${MODULE_ID}.${FLAG_SLOTS}`] = nextSlots;
+      if (orderChanged) updateData[`flags.${MODULE_ID}.${FLAG_GEAR_ORDER}`] = nextOrder;
+      // These flags only remove references to Items that are already gone. The
+      // Item deletion itself performs the user-visible render, and ready-time
+      // maintenance has no open UI to refresh.
+      await actor.update(updateData, { render: false });
+    } else if (typeof actor.setFlag === "function") {
+      // Compatibility fallback for lightweight test doubles / unusual Actor wrappers.
+      if (slotsChanged) await actor.setFlag(MODULE_ID, FLAG_SLOTS, nextSlots);
+      if (orderChanged) await actor.setFlag(MODULE_ID, FLAG_GEAR_ORDER, nextOrder);
+    }
+  }
 
   return { changed: slotsChanged || orderChanged, slotsChanged, orderChanged };
 }

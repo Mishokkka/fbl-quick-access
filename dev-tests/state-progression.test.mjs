@@ -35,6 +35,18 @@ test("assigned player actors include only unique characters assigned to non-GM u
   assert.equal(result[0].primaryUser.id, "u1");
 });
 
+test("assigned player actors prefer the canonical world Actor over user.character references", () => {
+  const stale = { id: "a", name: "Stale", type: "character", documentName: "Actor", parent: { documentName: "Actor" } };
+  const canonical = { id: "a", name: "Canonical", type: "character", documentName: "Actor", parent: null };
+  const actors = new Map([["a", canonical]]);
+  const users = [{ id: "u1", isGM: false, active: true, character: stale }];
+
+  const result = mod.getAssignedPlayerActors(users, actors);
+  assert.equal(result.length, 1);
+  assert.equal(result[0].actor, canonical);
+});
+
+
 test("calendar status distinguishes current, one-day and multi-day pending progression", () => {
   const ordinal = (date) => date.year * 360 + (date.month - 1) * 30 + date.day;
   const api = { daysBetween: (start, end) => ordinal(end) - ordinal(start) };
@@ -63,6 +75,12 @@ test("Calendaria integration is hook-driven and contains no polling loop", () =>
   assert.match(source, /calendaria\.calendarSwitched/);
   assert.doesNotMatch(source, /setInterval\s*\(/);
   assert.doesNotMatch(source, /requestAnimationFrame\s*\(/);
+});
+
+test("Calendaria startup calendarSwitched is ignored until calendaria.ready", () => {
+  assert.match(source, /let calendariaReadySeen = false/);
+  assert.match(source, /async function handleCalendariaReady[\s\S]*?calendariaReadySeen = true/);
+  assert.match(source, /async function handleCalendariaCalendarSwitch\(\) \{[\s\S]*?if \(!calendariaReadySeen\) return;/);
 });
 
 test("calendar application suppresses new-day chat output", () => {

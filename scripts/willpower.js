@@ -83,7 +83,6 @@ export function setupStartWillpowerButton(app, actor, root) {
       ui.notifications?.error?.(qaLocalize("Willpower.UpdateFailed", "Не удалось обновить Willpower. Проверь права на лист персонажа."));
     }
 
-    rerenderSheet(app);
   });
 
   label.insertAdjacentElement("afterend", button);

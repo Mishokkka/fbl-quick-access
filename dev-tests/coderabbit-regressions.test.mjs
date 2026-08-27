@@ -268,7 +268,7 @@ test("PR11: BIO mounting is guarded against duplicate hooks in one render pass",
   const source = read("scripts", "main.js");
   assert.match(source, /bioTab\.dataset\.fblqaBiographyMounted === "true"/);
   assert.match(source, /bioTab\.querySelector\?\.\("\.fblqa-bio-shell"\)/);
-  assert.match(source, /if \(!alreadyMounted\) setupBiographyTab\(app, actor, root\)/);
+  assert.match(source, /if \(!alreadyMounted && isBiographyTabActive\(root, bioTab\)\) setupBiographyTab\(app, actor, root\)/);
 });
 
 test("PR11: addiction result formatter has a local state formatter", () => {

@@ -56,6 +56,7 @@ let observedMode = null;
 let revertingMode = false;
 let calendariaUnavailableWarned = false;
 let calendariaReadyApi = null;
+let calendariaReadySeen = false;
 
 const activePlayerPrompts = new Set();
 const gmSummaryWindows = new Map();
@@ -254,6 +255,10 @@ async function confirmProgressionModeChange(previousMode, nextMode) {
 }
 
 async function handleCalendariaReady(data = null) {
+  // Calendaria emits `calendarSwitched` once during CalendarManager.initialize()
+  // before it emits `calendaria.ready`. That startup event only announces the
+  // persisted active calendar and must not be treated as a user-initiated switch.
+  calendariaReadySeen = true;
   calendariaReadyApi = data?.api ?? globalThis.CALENDARIA?.api ?? calendariaReadyApi;
   if (!usesCalendariaStateProgression()) return;
   calendariaUnavailableWarned = false;
@@ -270,6 +275,10 @@ async function handleCalendariaReady(data = null) {
 }
 
 async function handleCalendariaCalendarSwitch() {
+  // Calendaria deliberately fires calendarSwitched during its own world startup,
+  // before calendaria.ready. Ignore that initialization signal. The ready handler
+  // establishes any missing baselines against the final persisted calendar.
+  if (!calendariaReadySeen) return;
   if (!usesCalendariaStateProgression() || !isActiveQuickAccessGM()) return;
   const context = getCalendariaContext();
   if (!context) return;
@@ -460,6 +469,9 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
           failedActions += resetResult.failed.length;
         }
       }
+      // Keep the marker as the final Actor mutation for this shortcut. Core
+      // New Day writes keep their normal Foundry render behavior so any open
+      // embedded Item sheets stay synchronized on every client.
       await setActorCalendarMarker(actor, context);
       remaining = 0;
       cursor = context.date;
@@ -476,7 +488,13 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     // Consume this day even if an individual action failed. Re-running an
     // already partly-applied day can decrement successful timers twice. The GM
     // summary exposes failures for manual correction instead.
-    await setActorCalendarMarker(actor, { ...context, date: nextDate });
+    const finalIteration = remaining <= 1;
+    await setActorCalendarMarker(
+      actor,
+      { ...context, date: nextDate },
+      {},
+      finalIteration ? {} : { render: false }
+    );
     cursor = nextDate;
     remaining -= 1;
   }
@@ -1062,10 +1080,10 @@ export function getActorCalendarMarker(actor) {
   return marker;
 }
 
-export async function setActorCalendarMarker(actor, context, metadata = {}) {
+export async function setActorCalendarMarker(actor, context, metadata = {}, documentOptions = {}) {
   const date = normalizeCalendariaDate(context?.date);
   const calendarId = String(context?.calendarId ?? "").trim();
-  if (!actor?.setFlag || !date || !calendarId) return false;
+  if ((!actor?.setFlag && !actor?.update) || !date || !calendarId) return false;
 
   const marker = { calendarId, date };
   if (metadata?.resolution === "absent") {
@@ -1075,7 +1093,11 @@ export async function setActorCalendarMarker(actor, context, metadata = {}) {
     if (previousDate) marker.previousDate = previousDate;
   }
 
-  await actor.setFlag(MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR, marker);
+  if (Object.keys(documentOptions ?? {}).length && typeof actor.update === "function") {
+    await actor.update({ [`flags.${MODULE_ID}.${FLAG_STATE_PROGRESSION_CALENDAR}`]: marker }, documentOptions);
+  } else {
+    await actor.setFlag(MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR, marker);
+  }
   return true;
 }
 
@@ -1335,9 +1357,16 @@ function assertCalendariaModeAvailable() {
 
 function resolveUserCharacter(user, actors) {
   const value = user?.character;
-  if (value?.documentName === "Actor") return value;
   const id = typeof value === "string" ? value : value?.id ?? user?.characterId ?? null;
-  return id ? actors?.get?.(id) ?? null : null;
+
+  // Prefer the canonical world Actor from game.actors. User.character can be a
+  // Document reference supplied by another part of Foundry; resolving by id
+  // avoids carrying a stale/non-canonical instance into write operations while
+  // preserving the old fallback when no Actor collection is available.
+  const canonical = id ? actors?.get?.(id) ?? null : null;
+  if (canonical?.documentName === "Actor") return canonical;
+  if (value?.documentName === "Actor") return value;
+  return null;
 }
 
 function sameCalendariaDay(a, b) {

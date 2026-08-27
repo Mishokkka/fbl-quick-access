@@ -4,6 +4,7 @@ import { getActiveGM } from "./socket-api.js";
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const providers = new Map();
+const providerListenerCleanups = new WeakMap();
 
 export function registerStatProvider(definition) {
   const provider = normalizeStatProvider(definition);
@@ -58,12 +59,18 @@ export function activateStatProviderListeners(context, activeProviders = getStat
   const tabRoot = toElement(context?.tabRoot ?? context?.root);
   if (!tabRoot) return;
 
+  const owner = context?.app && (typeof context.app === "object" || typeof context.app === "function")
+    ? context.app
+    : null;
+  if (owner) cleanupStatProviderListeners(owner);
+  const cleanups = [];
+
   for (const provider of activeProviders) {
     const root = findProviderRoot(tabRoot, provider.id);
     if (!root) continue;
 
     try {
-      provider.activateListeners(Object.freeze({
+      const cleanup = provider.activateListeners(Object.freeze({
         app: context.app,
         actor: context.actor,
         editable: Boolean(context.editable),
@@ -71,10 +78,30 @@ export function activateStatProviderListeners(context, activeProviders = getStat
         refresh: () => refreshStat(context.app ?? context.actor),
         providerId: provider.id
       }));
+      // Existing providers may return nothing. Providers that attach listeners
+      // outside their supplied root can now return a cleanup function without
+      // changing the API for older integrations.
+      if (typeof cleanup === "function") cleanups.push(cleanup);
     } catch (error) {
       console.error(`${MODULE_ID} | STAT provider listener activation failed`, provider.id, error);
     }
   }
+
+  if (owner && cleanups.length) providerListenerCleanups.set(owner, cleanups);
+}
+
+export function cleanupStatProviderListeners(app) {
+  if (!app || (typeof app !== "object" && typeof app !== "function")) return 0;
+  const cleanups = providerListenerCleanups.get(app) ?? [];
+  providerListenerCleanups.delete(app);
+  for (const cleanup of cleanups) {
+    try {
+      cleanup();
+    } catch (error) {
+      console.error(`${MODULE_ID} | STAT provider listener cleanup failed`, error);
+    }
+  }
+  return cleanups.length;
 }
 
 /** Refresh all currently open sheets for an actor, or a specific sheet app. */

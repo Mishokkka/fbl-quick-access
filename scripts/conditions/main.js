@@ -675,10 +675,40 @@ export async function renderExpandedConditions(app, html) {
     return row;
   }
 
+  function applyPointerDragPosition() {
+    if (!pointerDrag) return;
+    pointerDrag.frame = 0;
+    const clientX = pointerDrag.pendingX;
+    const clientY = pointerDrag.pendingY;
+    pointerDrag.pendingX = null;
+    pointerDrag.pendingY = null;
+    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
+
+    const target = getSortableRowFromPoint(clientX, clientY);
+    if (!target) return;
+
+    const rect = target.getBoundingClientRect();
+    const midY = rect.top + rect.height / 2;
+    const before = pointerDrag.twoColumns
+      ? (clientY < midY || (Math.abs(clientY - midY) < 8 && clientX < rect.left + rect.width / 2))
+      : clientY < midY;
+
+    if (pointerDrag.lastTarget === target && pointerDrag.lastBefore === before) return;
+    pointerDrag.lastTarget = target;
+    pointerDrag.lastBefore = before;
+    if (before) target.before(pointerDrag.row);
+    else target.after(pointerDrag.row);
+  }
+
   async function finishPointerDrag(save = true) {
     if (!pointerDrag) return;
 
     const row = pointerDrag.row;
+    if (pointerDrag.frame) {
+      cancelAnimationFrame(pointerDrag.frame);
+      pointerDrag.frame = 0;
+      applyPointerDragPosition();
+    }
     $(document).off("mousemove.fblecSort mouseup.fblecSort");
     $(row).removeClass("fblec-dragging");
     pointerDrag = null;
@@ -695,7 +725,18 @@ export async function renderExpandedConditions(app, html) {
     ev.preventDefault();
     ev.stopPropagation();
 
-    pointerDrag = { row, startX: ev.clientX, startY: ev.clientY, active: false };
+    pointerDrag = {
+      row,
+      startX: ev.clientX,
+      startY: ev.clientY,
+      active: false,
+      frame: 0,
+      pendingX: null,
+      pendingY: null,
+      lastTarget: null,
+      lastBefore: null,
+      twoColumns: html.find(".conditions-tab").hasClass("fblec-columns-2")
+    };
 
     $(document).off("mousemove.fblecSort mouseup.fblecSort");
     $(document).on("mousemove.fblecSort", (moveEv) => {
@@ -708,17 +749,9 @@ export async function renderExpandedConditions(app, html) {
         $(pointerDrag.row).addClass("fblec-dragging");
       }
 
-      const target = getSortableRowFromPoint(moveEv.clientX, moveEv.clientY);
-      if (!target) return;
-
-      const rect = target.getBoundingClientRect();
-      const twoColumns = html.find(".conditions-tab").hasClass("fblec-columns-2");
-      const before = twoColumns
-        ? (moveEv.clientY < rect.top + rect.height / 2 || (Math.abs(moveEv.clientY - (rect.top + rect.height / 2)) < 8 && moveEv.clientX < rect.left + rect.width / 2))
-        : moveEv.clientY < rect.top + rect.height / 2;
-
-      if (before) target.before(pointerDrag.row);
-      else target.after(pointerDrag.row);
+      pointerDrag.pendingX = moveEv.clientX;
+      pointerDrag.pendingY = moveEv.clientY;
+      if (!pointerDrag.frame) pointerDrag.frame = requestAnimationFrame(applyPointerDragPosition);
     });
 
     $(document).on("mouseup.fblecSort", async () => {

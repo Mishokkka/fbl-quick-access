@@ -9,6 +9,9 @@ let itemTooltipHideTimer = null;
 let itemTooltipAnchor = null;
 let itemTooltipPointer = { x: 0, y: 0 };
 let itemTooltipRequest = 0;
+let itemTooltipPositionFrame = 0;
+let itemTooltipSize = { width: 0, height: 0 };
+let itemTooltipResizeObserver = null;
 
 export function registerTooltipListeners() {
   document.addEventListener("keydown", (event) => {
@@ -17,7 +20,7 @@ export function registerTooltipListeners() {
 
   document.addEventListener("mousemove", (event) => {
     itemTooltipPointer = { x: event.clientX, y: event.clientY };
-    positionItemTooltip();
+    scheduleItemTooltipPosition();
   }, true);
 
   document.addEventListener("scroll", (event) => {
@@ -195,8 +198,9 @@ function scheduleItemTooltip(actor, row, anchor, event) {
     const tooltip = ensureItemTooltipElement();
     tooltip.innerHTML = html;
     tooltip.classList.add("is-visible");
+    measureItemTooltip();
     addTooltipDescription(anchor, tooltip.id);
-    positionItemTooltip();
+    scheduleItemTooltipPosition();
   }, delay);
 }
 
@@ -213,6 +217,10 @@ export function hideItemTooltip() {
   itemTooltipTimer = null;
   removeTooltipDescription(itemTooltipAnchor);
   itemTooltipAnchor = null;
+  if (itemTooltipPositionFrame) {
+    cancelAnimationFrame(itemTooltipPositionFrame);
+    itemTooltipPositionFrame = 0;
+  }
 
   if (itemTooltipElement) {
     itemTooltipElement.classList.remove("is-visible");
@@ -230,6 +238,15 @@ function ensureItemTooltipElement() {
   itemTooltipElement.addEventListener("mouseenter", () => clearTimeout(itemTooltipHideTimer));
   itemTooltipElement.addEventListener("mouseleave", scheduleItemTooltipHide);
   document.body.append(itemTooltipElement);
+
+  if (typeof ResizeObserver === "function") {
+    itemTooltipResizeObserver = new ResizeObserver(() => {
+      measureItemTooltip();
+      scheduleItemTooltipPosition();
+    });
+    itemTooltipResizeObserver.observe(itemTooltipElement);
+  }
+
   return itemTooltipElement;
 }
 
@@ -249,25 +266,35 @@ function removeTooltipDescription(anchor) {
   else anchor.removeAttribute("aria-describedby");
 }
 
+function measureItemTooltip() {
+  if (!itemTooltipElement?.classList.contains("is-visible")) return;
+  const rect = itemTooltipElement.getBoundingClientRect();
+  itemTooltipSize = { width: rect.width, height: rect.height };
+}
+
+function scheduleItemTooltipPosition() {
+  if (!itemTooltipElement?.classList.contains("is-visible") || itemTooltipPositionFrame) return;
+  itemTooltipPositionFrame = requestAnimationFrame(() => {
+    itemTooltipPositionFrame = 0;
+    positionItemTooltip();
+  });
+}
+
 function positionItemTooltip() {
   if (!itemTooltipElement?.classList.contains("is-visible")) return;
 
   const margin = 10;
   const offset = 14;
-
-  itemTooltipElement.style.left = "0px";
-  itemTooltipElement.style.top = "0px";
-
-  const rect = itemTooltipElement.getBoundingClientRect();
+  const { width, height } = itemTooltipSize;
   let left = itemTooltipPointer.x + offset;
   let top = itemTooltipPointer.y + offset;
 
-  if (left + rect.width + margin > window.innerWidth) {
-    left = itemTooltipPointer.x - rect.width - offset;
+  if (left + width + margin > window.innerWidth) {
+    left = itemTooltipPointer.x - width - offset;
   }
 
-  if (top + rect.height + margin > window.innerHeight) {
-    top = window.innerHeight - rect.height - margin;
+  if (top + height + margin > window.innerHeight) {
+    top = window.innerHeight - height - margin;
   }
 
   left = Math.max(margin, left);

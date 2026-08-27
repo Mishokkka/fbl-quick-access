@@ -6,6 +6,7 @@ import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
+const REPUTATION_RESIZE_FRAMES = new WeakMap();
 
 export function normalizeReputationEntries(value) {
   if (!Array.isArray(value)) return [];
@@ -351,19 +352,20 @@ function setupDialogInteractions({ app, actor, root, editable, scheduleSave, sav
     const row = event.target?.closest?.(".fblqa-reputation-row");
     if (!row) return;
     updateRowValidity(row);
-    ensureTrailingBlankRow(rowsRoot, editable);
-    refreshDialogSummary(root);
-    resize?.();
-    if (event.target?.matches?.("input[data-field='selected']")) return;
+    const structureChanged = ensureTrailingBlankRow(rowsRoot, editable);
+    const field = event.target?.dataset?.field ?? "";
+    if (field === "amount" || field === "selected") refreshDialogSummary(root);
+    if (structureChanged) resize?.();
+    if (field === "selected") return;
     scheduleSave(rowsRoot, status);
   });
 
   rowsRoot.addEventListener("change", (event) => {
     const row = event.target?.closest?.(".fblqa-reputation-row");
     if (row) updateRowValidity(row);
-    refreshDialogSummary(root);
-    resize?.();
-    if (event.target?.matches?.("input[data-field='selected']")) return;
+    const field = event.target?.dataset?.field ?? "";
+    if (field === "amount" || field === "selected") refreshDialogSummary(root);
+    if (field === "selected") return;
     scheduleSave(rowsRoot, status);
   });
 
@@ -483,15 +485,23 @@ function updateRowValidity(row) {
 }
 
 function ensureTrailingBlankRow(rowsRoot, editable) {
-  const rows = [...rowsRoot.querySelectorAll(".fblqa-reputation-row")];
-  const trailing = rows.at(-1);
-  if (!trailing || !isRowBlank(trailing)) rowsRoot.append(buildRow(null, editable, false));
-
-  const updated = [...rowsRoot.querySelectorAll(".fblqa-reputation-row")];
-  for (let index = updated.length - 2; index >= 0; index -= 1) {
-    if (!isRowBlank(updated[index])) break;
-    updated[index].remove();
+  let changed = false;
+  let trailing = rowsRoot.lastElementChild;
+  if (!(trailing instanceof HTMLElement) || !trailing.classList.contains("fblqa-reputation-row") || !isRowBlank(trailing)) {
+    rowsRoot.append(buildRow(null, editable, false));
+    trailing = rowsRoot.lastElementChild;
+    changed = true;
   }
+
+  // Keep exactly one blank row at the end without rescanning the whole table.
+  let previous = trailing?.previousElementSibling ?? null;
+  while (previous instanceof HTMLElement && previous.classList.contains("fblqa-reputation-row") && isRowBlank(previous)) {
+    const before = previous.previousElementSibling;
+    previous.remove();
+    previous = before;
+    changed = true;
+  }
+  return changed;
 }
 
 function isRowBlank(row) {
@@ -641,9 +651,12 @@ function updateSheetReputationPresentation(app, actor, entries) {
 }
 
 function scheduleReputationDialogAutoSize(dialog, element) {
+  const appElement = element?.closest?.(".app, .application");
+  if (!appElement?.isConnected) return;
+
   const resize = () => {
-    const appElement = element?.closest?.(".app, .application");
-    if (!appElement?.isConnected) return;
+    REPUTATION_RESIZE_FRAMES.delete(appElement);
+    if (!appElement.isConnected) return;
 
     const content = appElement.querySelector?.(".window-content");
     appElement.style.height = "auto";
@@ -667,7 +680,16 @@ function scheduleReputationDialogAutoSize(dialog, element) {
   };
 
   if (typeof globalThis.requestAnimationFrame === "function") {
-    globalThis.requestAnimationFrame(() => globalThis.requestAnimationFrame(resize));
+    const previous = REPUTATION_RESIZE_FRAMES.get(appElement);
+    if (previous?.outer) globalThis.cancelAnimationFrame?.(previous.outer);
+    if (previous?.inner) globalThis.cancelAnimationFrame?.(previous.inner);
+
+    const state = { outer: 0, inner: 0 };
+    state.outer = globalThis.requestAnimationFrame(() => {
+      state.outer = 0;
+      state.inner = globalThis.requestAnimationFrame(resize);
+    });
+    REPUTATION_RESIZE_FRAMES.set(appElement, state);
   } else {
     globalThis.setTimeout?.(resize, 0);
   }

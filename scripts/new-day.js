@@ -235,6 +235,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
   const results = [];
   const postChat = options.postChat !== false;
   const suppressNotifications = Boolean(options.suppressNotifications);
+  const documentOptions = options.documentOptions ?? {};
 
   if (!actions.length) return { changed: false, selected: 0, succeeded: [], failed: [] };
 
@@ -253,7 +254,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
         if (timer.afterNumber === 0) return [];
         return [{ ...condition, time: timer.afterText }];
       });
-      await actor.setFlag(MODULE_ID, CONDITION_FLAGS.LIST, nextConditions);
+      await setActorFlagWithOptions(actor, CONDITION_FLAGS.LIST, nextConditions, documentOptions);
       for (const action of customActions) results.push(successResult(action));
     } catch (error) {
       console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
@@ -261,8 +262,32 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     }
   }
 
+  let pendingKind = "";
+  let pendingActions = [];
+
+  const flushPending = async () => {
+    if (!pendingActions.length) return;
+    const batch = pendingActions;
+    const kind = pendingKind;
+    pendingActions = [];
+    pendingKind = "";
+
+    if (kind === "update") await applyItemUpdateBatch(actor, batch, results, documentOptions);
+    else if (kind === "delete") await applyItemDeleteBatch(actor, batch, results, documentOptions);
+  };
+
   for (const action of actions) {
     if (!action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire")) continue;
+
+    const simpleKind = getSimpleItemActionKind(action);
+    if (simpleKind) {
+      if (pendingKind && pendingKind !== simpleKind) await flushPending();
+      pendingKind = simpleKind;
+      pendingActions.push(action);
+      continue;
+    }
+
+    await flushPending();
 
     try {
       if (action.providerId) {
@@ -272,7 +297,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       }
 
       if (action.kind === "short-rest-reset") {
-        await actor.unsetFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY);
+        await clearActorFlagWithOptions(actor, FLAG_SHORT_REST_RECOVERY, documentOptions);
         results.push(successResult(action));
         continue;
       }
@@ -280,19 +305,17 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       const item = getActorItem(actor, action.itemId);
       if (!item) throw new Error(`Missing item ${action.itemId}`);
 
-      if (action.kind === "injury-expire") {
-        await item.delete();
-      } else if (action.kind === "injury-healing" || action.kind === "wash-timer") {
-        await item.update({ "system.healingTime": action.afterText });
-      } else if (action.kind === "lethal-limit") {
-        await item.update({ "system.limit": action.afterText });
-      } else if (action.kind === "wash-transition") {
-        const transition = await transitionWashLevel(actor, item.name, { fblqaSuppressNotifications: suppressNotifications });
+      if (action.kind === "wash-transition") {
+        const transition = await transitionWashLevel(actor, item.name, {
+          ...documentOptions,
+          fblqaSuppressNotifications: suppressNotifications
+        });
         if (!transition?.changed) throw new Error(transition?.reason ?? "Wash transition failed");
       } else if (action.kind === "addiction-day") {
         const addictionResult = await processAddictionNewDay(actor, item, {
           postChat,
-          notify: !suppressNotifications
+          notify: !suppressNotifications,
+          documentOptions
         });
         results.push(successResult(action, {
           changed: addictionResult?.changed,
@@ -308,6 +331,8 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     }
   }
 
+  await flushPending();
+
   const succeeded = results.filter((entry) => entry.ok);
   const failed = results.filter((entry) => !entry.ok);
   if (postChat) await postNewDaySummary(actor, succeeded, failed);
@@ -318,6 +343,157 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     succeeded,
     failed
   };
+}
+
+function getSimpleItemActionKind(action) {
+  if (action?.providerId) return "";
+  if (action?.kind === "injury-expire") return "delete";
+  if (action?.kind === "injury-healing" || action?.kind === "wash-timer" || action?.kind === "lethal-limit") return "update";
+  return "";
+}
+
+function getSimpleItemUpdate(action) {
+  if (action.kind === "injury-healing" || action.kind === "wash-timer") {
+    return { "system.healingTime": action.afterText };
+  }
+  if (action.kind === "lethal-limit") return { "system.limit": action.afterText };
+  return null;
+}
+
+async function applyItemUpdateBatch(actor, actions, results, documentOptions) {
+  const valid = [];
+  for (const action of actions) {
+    const item = getActorItem(actor, action.itemId);
+    if (!item) {
+      const error = new Error(`Missing item ${action.itemId}`);
+      console.error(`${MODULE_ID} | new-day action failed`, action, error);
+      results.push(failureResult(action, error));
+      continue;
+    }
+    valid.push({ action, item });
+  }
+  if (!valid.length) return;
+
+  if (typeof actor.updateEmbeddedDocuments === "function") {
+    const updatesById = new Map();
+    for (const { action } of valid) {
+      const update = getSimpleItemUpdate(action);
+      if (!update) continue;
+      const current = updatesById.get(action.itemId) ?? { _id: action.itemId };
+      Object.assign(current, update);
+      updatesById.set(action.itemId, current);
+    }
+
+    try {
+      await actor.updateEmbeddedDocuments("Item", [...updatesById.values()], documentOptions);
+      for (const { action } of valid) results.push(successResult(action));
+      return;
+    } catch (error) {
+      // A bulk write can fail because one embedded Item is stale or rejected by
+      // another module. Fall back to the original per-action path so one bad
+      // update does not change the previous partial-success semantics. The
+      // updates below are absolute values, so retrying an Item that the bulk
+      // request happened to apply before failing is idempotent.
+      console.error(`${MODULE_ID} | new-day item update batch failed; retrying individually`, error);
+    }
+
+    await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
+    return;
+  }
+
+  // Compatibility fallback for test doubles and wrappers without the bulk API.
+  await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
+}
+
+async function applyItemUpdatesIndividually(actor, valid, results, documentOptions) {
+  for (const { action, item: originalItem } of valid) {
+    const item = getActorItem(actor, action.itemId) ?? originalItem;
+    try {
+      await item.update(getSimpleItemUpdate(action), documentOptions);
+      results.push(successResult(action));
+    } catch (error) {
+      console.error(`${MODULE_ID} | new-day action failed`, action, error);
+      results.push(failureResult(action, error));
+    }
+  }
+}
+
+async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
+  const valid = [];
+  for (const action of actions) {
+    const item = getActorItem(actor, action.itemId);
+    if (!item) {
+      const error = new Error(`Missing item ${action.itemId}`);
+      console.error(`${MODULE_ID} | new-day action failed`, action, error);
+      results.push(failureResult(action, error));
+      continue;
+    }
+    valid.push({ action, item });
+  }
+  if (!valid.length) return;
+
+  if (typeof actor.deleteEmbeddedDocuments === "function") {
+    try {
+      await actor.deleteEmbeddedDocuments("Item", valid.map(({ action }) => action.itemId), documentOptions);
+      for (const { action } of valid) results.push(successResult(action));
+      return;
+    } catch (error) {
+      // Preserve the old per-Item failure isolation if a bulk delete is rejected.
+      // Re-check the Actor first because a partially-applied bulk request may
+      // already have removed some of the requested Items.
+      console.error(`${MODULE_ID} | new-day item delete batch failed; retrying individually`, error);
+    }
+
+    await applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess: true });
+    return;
+  }
+
+  await applyItemDeletesIndividually(actor, valid, results, documentOptions);
+}
+
+async function applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess = false } = {}) {
+  for (const { action, item: originalItem } of valid) {
+    const liveItem = getActorItem(actor, action.itemId);
+    if (!liveItem && missingMeansSuccess) {
+      results.push(successResult(action));
+      continue;
+    }
+
+    const item = liveItem ?? originalItem;
+    try {
+      await item.delete(documentOptions);
+      results.push(successResult(action));
+    } catch (error) {
+      console.error(`${MODULE_ID} | new-day action failed`, action, error);
+      results.push(failureResult(action, error));
+    }
+  }
+}
+
+async function setActorFlagWithOptions(actor, key, value, documentOptions) {
+  if (hasDocumentOptions(documentOptions) && typeof actor.update === "function") {
+    return actor.update({ [`flags.${MODULE_ID}.${key}`]: value }, documentOptions);
+  }
+  return actor.setFlag(MODULE_ID, key, value);
+}
+
+async function clearActorFlagWithOptions(actor, key, documentOptions) {
+  // Forbidden Lands v13 can reject a Foundry deletion-path update such as
+  // `flags.<scope>.-=<key>` during Actor._preUpdate. Short Rest only treats an
+  // object value as an active recovery marker, so a null value is semantically
+  // equivalent to an absent flag and avoids that system-level failure.
+  const current = actor?.getFlag?.(MODULE_ID, key) ?? actor?.flags?.[MODULE_ID]?.[key] ?? null;
+  if (current == null) return false;
+
+  const update = { [`flags.${MODULE_ID}.${key}`]: null };
+  if (typeof actor?.update === "function") {
+    return actor.update(update, hasDocumentOptions(documentOptions) ? documentOptions : {});
+  }
+  return actor?.setFlag?.(MODULE_ID, key, null);
+}
+
+function hasDocumentOptions(options) {
+  return Boolean(options && Object.keys(options).length);
 }
 
 export function serializeNewDayResult(result) {
@@ -451,7 +627,14 @@ export async function openNewDayDialog(app, actor, options = {}) {
               }
             }
 
-            if (app) rerenderSheet(app);
+            const selectedCoreAction = selectedIds.some((id) => {
+              const action = plan.actions.find((entry) => entry.id === id);
+              return action && !action.providerId;
+            });
+            // Core Document writes already participate in Foundry's sheet render
+            // pipeline. Preserve the explicit refresh only for no-op/provider-only
+            // manual operations, where no Actor/Item mutation is guaranteed.
+            if (app && !calendarMode && !selectedCoreAction) rerenderSheet(app);
             finish(result);
           }
         },

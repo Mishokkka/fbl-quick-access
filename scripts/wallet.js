@@ -18,6 +18,7 @@ import { localizeOrFallback, rerenderSheet } from "./utils.js";
 import { openMoneyTransferDialog } from "./money-transfer.js";
 
 const OPEN_WALLET_ACTORS = new Set();
+const ACTIVE_WALLET_SUMMARIES = new Set();
 const enqueueWalletOperation = createObjectOperationQueue();
 
 export function registerWalletListeners() {
@@ -32,6 +33,7 @@ export function isWalletExpanded(actor) {
 }
 
 export function buildWalletControl(app, actor) {
+  pruneInactiveWalletSummaries();
   const wallet = document.createElement("div");
   wallet.classList.add("fblqa-wallet");
   wallet.dataset.actorKey = getWalletActorKey(actor);
@@ -140,15 +142,39 @@ function isWalletMarkedOpen(actor) {
   return OPEN_WALLET_ACTORS.has(getWalletActorKey(actor));
 }
 
-function closeOpenWallets() {
-  OPEN_WALLET_ACTORS.clear();
+function pruneInactiveWalletSummaries() {
+  for (const wallet of [...ACTIVE_WALLET_SUMMARIES]) {
+    if (wallet?.isConnected) continue;
+    wallet?._fblqaHideSummaryTooltip?.();
+    ACTIVE_WALLET_SUMMARIES.delete(wallet);
+  }
+}
 
-  document.querySelectorAll(".fblqa-wallet.is-open").forEach((wallet) => {
-    wallet.classList.remove("is-open");
-  });
-  document.querySelectorAll(".fblqa-wallet").forEach((wallet) => {
+export function cleanupWalletSummaries(root) {
+  if (!root?.querySelectorAll) return 0;
+  let cleaned = 0;
+  for (const wallet of root.querySelectorAll(".fblqa-wallet")) {
+    if (!ACTIVE_WALLET_SUMMARIES.has(wallet)) continue;
     wallet._fblqaHideSummaryTooltip?.();
-  });
+    ACTIVE_WALLET_SUMMARIES.delete(wallet);
+    cleaned += 1;
+  }
+  return cleaned;
+}
+
+function closeOpenWallets() {
+  if (!OPEN_WALLET_ACTORS.size && !ACTIVE_WALLET_SUMMARIES.size) return;
+
+  if (OPEN_WALLET_ACTORS.size) {
+    OPEN_WALLET_ACTORS.clear();
+    document.querySelectorAll(".fblqa-wallet.is-open").forEach((wallet) => {
+      wallet.classList.remove("is-open");
+    });
+  }
+
+  for (const wallet of [...ACTIVE_WALLET_SUMMARIES]) {
+    wallet._fblqaHideSummaryTooltip?.();
+  }
 }
 
 function buildCurrencyRow(app, actor, currency, mode = "popover") {
@@ -315,7 +341,6 @@ async function setCurrencyValue(app, actor, key, value) {
   markWalletOpenUnlessExpanded(actor);
   await actor.update({ [getActorCurrencyPath(actor, key)]: number });
   markWalletOpenUnlessExpanded(actor);
-  rerenderSheet(app);
 }
 
 async function applyCurrencyInput(app, actor, key, rawValue, input) {
@@ -498,7 +523,6 @@ async function setCurrencyValues(app, actor, values) {
   markWalletOpenUnlessExpanded(actor);
   await actor.update(updateData);
   markWalletOpenUnlessExpanded(actor);
-  rerenderSheet(app);
 }
 
 function getWalletSummaryText(actor) {
@@ -536,8 +560,12 @@ function installWalletSummaryTooltip(wallet, button, tooltip) {
   const schedule = () => {
     clearTimeout(timer);
     if (wallet.classList.contains("is-open")) return;
+    ACTIVE_WALLET_SUMMARIES.add(wallet);
     timer = window.setTimeout(() => {
-      if (!button.isConnected || wallet.classList.contains("is-open")) return;
+      if (!button.isConnected || wallet.classList.contains("is-open")) {
+        ACTIVE_WALLET_SUMMARIES.delete(wallet);
+        return;
+      }
       tooltip.classList.add("is-visible");
     }, ITEM_TOOLTIP_DELAY_MS);
   };
@@ -546,6 +574,7 @@ function installWalletSummaryTooltip(wallet, button, tooltip) {
     clearTimeout(timer);
     timer = null;
     tooltip.classList.remove("is-visible");
+    ACTIVE_WALLET_SUMMARIES.delete(wallet);
   };
 
   button.addEventListener("mouseenter", schedule);

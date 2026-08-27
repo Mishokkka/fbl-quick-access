@@ -471,13 +471,27 @@ async function applyRest(app, actor, options, context = {}) {
   }
 
   try {
-    if (Object.keys(result.updates).length) await actor.update(result.updates);
     const effectIds = result.effectsToDelete
       .map((effect) => effect?.id ?? effect?._id)
       .filter(Boolean);
+
+    // Actor data and the short-rest flag are one logical mutation. Keep them in
+    // one Actor.update so a rest does not emit multiple updateActor/render cycles.
+    const actorUpdate = { ...result.updates };
+    if (result.flagValue !== undefined) {
+      actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = result.flagValue;
+    }
+    // Clearing wins if a future rule ever requests both in the same rest result.
+    // Use a normal null assignment instead of Foundry's `.-=` deletion path:
+    // Forbidden Lands v13 can reject that deletion shape in Actor._preUpdate.
+    // All Short Rest reads already treat null exactly like an absent marker.
+    if (result.clearShortRestFlag) {
+      actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = null;
+    }
+
+    const hasActorUpdate = Object.keys(actorUpdate).length > 0;
+    if (hasActorUpdate) await actor.update(actorUpdate);
     if (effectIds.length) await actor.deleteEmbeddedDocuments("ActiveEffect", effectIds);
-    if (result.flagValue !== undefined) await actor.setFlag(MODULE_ID, FLAG_SHORT_REST_RECOVERY, result.flagValue);
-    if (result.clearShortRestFlag) await actor.unsetFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY);
 
     if (result.changed) {
       ui.notifications?.info?.(result.notification);
@@ -488,7 +502,9 @@ async function applyRest(app, actor, options, context = {}) {
     if (result.changed || shouldPostNoChangeRestCards()) {
       await postRestChatMessage(actor, result, options);
     }
-    rerenderSheet(app);
+    // A real Document mutation already asks Foundry to refresh dependent sheets.
+    // Preserve the historical explicit refresh only for a no-op rest.
+    if (!hasActorUpdate && !effectIds.length) rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | rest update failed`, error);
     ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));

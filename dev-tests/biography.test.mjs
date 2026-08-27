@@ -392,7 +392,7 @@ test("BIO mounts through its own actor-sheet hook and self-heals on BIO tab acti
   assert.match(main, /Hooks\.on\("renderActorSheet", renderBiographySafely\)/);
   assert.match(main, /Hooks\.on\("renderApplicationV2", renderBiographySafely\)/);
   assert.match(main, /function renderBiographySafely\([\s\S]*?setupBiographyTab\(app, actor, root\)/);
-  assert.match(main, /function setupBiographyActivationGuard\([\s\S]*?data-tab="bio"[\s\S]*?queueMicrotask\([\s\S]*?fblqaBiographyMounted/);
+  assert.match(main, /function setupBiographyActivationGuard\([\s\S]*?data-tab="bio"[\s\S]*?fblqaBiographyMounted[\s\S]*?queueMicrotask\(ensureMounted\)/);
 
   const quickAccessBody = main.match(/function renderQuickAccess\([\s\S]*?\n}\n\nfunction renderBiographySafely/)?.[0] ?? "";
   assert.doesNotMatch(quickAccessBody, /setupBiographyTab\(/);

@@ -3,7 +3,6 @@ import { collectItemRows, resolveItemFromRow } from "./dom-items.js";
 import { qaLocalize } from "./i18n.js";
 import { findPrimaryGearContainer } from "./sheet-adapter/forbidden-lands-v1.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
-import { rerenderSheet } from "./utils.js";
 import { confirmDangerAction } from "./dialogs.js";
 
 const MENU_CLASS = "fblqa-gear-context-menu";
@@ -247,7 +246,6 @@ async function duplicateGearItem(app, actor, item) {
     delete source._id;
     source.name = qaLocalize("GearMenu.DuplicateName", "{name} (копия)", { name: item.name });
     await actor.createEmbeddedDocuments("Item", [source]);
-    rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | could not duplicate item`, error);
     ui.notifications?.error(qaLocalize("GearMenu.DuplicateFailed", "Не удалось дублировать предмет."));
@@ -290,7 +288,6 @@ async function deleteGearItem(app, actor, item, row) {
 
   try {
     await liveItem.delete();
-    rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | could not delete item`, error);
     ui.notifications?.error(qaLocalize("GearMenu.DeleteFailed", "Не удалось удалить предмет."));

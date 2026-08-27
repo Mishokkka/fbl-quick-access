@@ -3,7 +3,7 @@ import { buildActorCurrencyUpdate } from "./actor-data.js";
 import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
-import { escapeHtml, localizeOrFallback, rerenderSheet } from "./utils.js";
+import { escapeHtml, localizeOrFallback } from "./utils.js";
 import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 import {
   clearSocketProof,
@@ -97,7 +97,6 @@ export async function openMoneyTransferDialog(app, sourceActor) {
                 target: result.targetName,
                 amount: formatTransferAmounts(result.amounts)
               }));
-              rerenderSheet(app);
             } else if (result.error === "declined") {
               ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
             } else {

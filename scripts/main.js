@@ -7,7 +7,7 @@ import { applySavedGearOrder, setupGearOrdering } from "./gear-order.js";
 import { registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips } from "./tooltips.js";
 import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
-import { registerWalletListeners } from "./wallet.js";
+import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
 import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
 import { applyDecorativeBorderMode, applyItemSheetNoBorders, compactMainTab, compactSheetHeader, isDecorativeBordersCompact, setupDecorativeBorderToggle } from "./main-tab.js";
 import { getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
@@ -17,13 +17,15 @@ import { removeChargenButton } from "./header-controls.js";
 import { handleExpandedConditionsCreateItem, initExpandedConditions, readyExpandedConditions, renderExpandedConditions } from "./conditions/main.js";
 import { getStoredSlots, saveSlots } from "./quick-access.js";
 import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences } from "./data-hygiene.js";
-import { handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
+import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
 import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
+
+const BIO_ACTIVATION_GUARDS = new WeakMap();
 
 
 Hooks.once("init", () => {
@@ -176,34 +178,75 @@ function renderBiographySafely(app, htmlOrElement) {
     const alreadyMounted = bioTab instanceof HTMLElement
       && bioTab.dataset.fblqaBiographyMounted === "true"
       && bioTab.querySelector?.(".fblqa-bio-shell");
-    if (!alreadyMounted) setupBiographyTab(app, actor, root);
+    // BIO is expensive to build and normally hidden. Preserve the exact visible
+    // behavior while avoiding work for sheets opened on another tab. A click on
+    // BIO mounts it in the same task turn before the browser paints.
+    if (!alreadyMounted && isBiographyTabActive(root, bioTab)) setupBiographyTab(app, actor, root);
     setupBiographyActivationGuard(app, actor, root);
   } catch (error) {
     console.error(`${MODULE_ID} | BIO render failed`, error);
   }
 }
 
+function isBiographyTabActive(root, bioTab) {
+  if (!(bioTab instanceof HTMLElement)) return false;
+  if (bioTab.classList.contains("active")) return true;
+  const navigation = root.querySelector?.('.sheet-tabs.tabs, .sheet-tabs, nav.tabs[data-group="primary"], .tabs[data-group="primary"]');
+  const button = navigation?.querySelector?.('[data-tab="bio"]');
+  return Boolean(button?.classList?.contains("active") || button?.getAttribute?.("aria-selected") === "true");
+}
+
 function setupBiographyActivationGuard(app, actor, root) {
   const navigation = root.querySelector?.('.sheet-tabs.tabs, .sheet-tabs, nav.tabs[data-group="primary"], .tabs[data-group="primary"]');
   const bioButton = navigation?.querySelector?.('[data-tab="bio"]');
-  if (!(bioButton instanceof HTMLElement) || bioButton.dataset.fblqaBiographyGuard === "true") return;
+  const bioTab = findBiographyTab(root);
+  if (!(bioButton instanceof HTMLElement) || !(bioTab instanceof HTMLElement)) return;
 
+  const previous = BIO_ACTIVATION_GUARDS.get(app);
+  if (previous?.root === root && previous?.button === bioButton && previous?.tab === bioTab) return;
+  previous?.cleanup?.();
+
+  let queued = false;
+  const ensureMounted = () => {
+    queued = false;
+    try {
+      const currentRoot = findActorSheetRoot(app?.element) ?? root;
+      const currentBioTab = findBiographyTab(currentRoot);
+      if (!(currentBioTab instanceof HTMLElement) || !isBiographyTabActive(currentRoot, currentBioTab)) return;
+      if (currentBioTab.dataset.fblqaBiographyMounted === "true" || currentBioTab.querySelector?.('.fblqa-bio-shell')) return;
+      setupBiographyTab(app, actor, currentRoot);
+    } catch (error) {
+      console.error(`${MODULE_ID} | BIO remount failed`, error);
+    }
+  };
+  const queueMountCheck = () => {
+    if (queued) return;
+    queued = true;
+    queueMicrotask(ensureMounted);
+  };
+
+  // Click covers normal Foundry tab navigation. Observe only the two tab nodes
+  // as well so programmatic Tabs#activate("bio") keeps the same behavior. The
+  // observer is replaced on every real sheet render and disconnected on close.
   bioButton.dataset.fblqaBiographyGuard = "true";
-  bioButton.addEventListener("click", () => {
-    // Other sheet integrations can replace tab contents after the actor render
-    // hook. Re-check only when BIO is actually opened, with no polling.
-    queueMicrotask(() => {
-      try {
-        const currentRoot = findActorSheetRoot(app?.element) ?? root;
-        const bioTab = findBiographyTab(currentRoot);
-        if (!(bioTab instanceof HTMLElement)) return;
-        if (bioTab.dataset.fblqaBiographyMounted === "true" || bioTab.querySelector?.('.fblqa-bio-shell')) return;
-        setupBiographyTab(app, actor, currentRoot);
-      } catch (error) {
-        console.error(`${MODULE_ID} | BIO remount failed`, error);
-      }
-    });
-  });
+  bioButton.addEventListener("click", queueMountCheck);
+  const observer = typeof MutationObserver === "function" ? new MutationObserver(queueMountCheck) : null;
+  observer?.observe(bioButton, { attributes: true, attributeFilter: ["class", "aria-selected"] });
+  observer?.observe(bioTab, { attributes: true, attributeFilter: ["class", "aria-hidden"] });
+
+  const cleanup = () => {
+    bioButton.removeEventListener("click", queueMountCheck);
+    observer?.disconnect();
+    delete bioButton.dataset.fblqaBiographyGuard;
+  };
+  BIO_ACTIVATION_GUARDS.set(app, { root, button: bioButton, tab: bioTab, cleanup });
+}
+
+function cleanupBiographyActivationGuard(app) {
+  const guard = BIO_ACTIVATION_GUARDS.get(app);
+  if (!guard) return;
+  BIO_ACTIVATION_GUARDS.delete(app);
+  guard.cleanup?.();
 }
 
 function setupGearTab(app, actor, gearTab) {
@@ -291,6 +334,9 @@ function renderItemSheetVisuals(app, htmlOrElement) {
 function closeQuickAccessActorSheet(app, htmlOrElement) {
   const actor = getActorFromApp(app);
   const root = findActorSheetRoot(htmlOrElement ?? app?.element);
+  cleanupBiographyActivationGuard(app);
+  cleanupStatProviderListeners(app);
+  if (root) cleanupWalletSummaries(root);
   if (root) cleanupBiographyTab(root);
   if (actor) closeBiographyDrawer(actor);
 }

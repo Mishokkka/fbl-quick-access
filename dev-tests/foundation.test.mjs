@@ -55,3 +55,31 @@ test("data hygiene removes stale and duplicate item references", () => {
   assert.deepEqual(hygiene.pruneQuickAccessReferences(["a", "missing", null, "b"], existing), ["a", null, null, "b"]);
   assert.deepEqual(hygiene.pruneGearOrderReferences(["a", "missing", "b", "a", null], existing), ["a", "b"]);
 });
+
+test("data hygiene keeps legacy normalization on the no-item-scan fast path", async () => {
+  const updates = [];
+  const actor = {
+    items: {
+      [Symbol.iterator]() {
+        throw new Error("actor.items must not be enumerated when flags contain no Item ids");
+      }
+    },
+    getFlag(_scope, key) {
+      if (key === "slots") return [0, null, ""];
+      if (key === "gearOrder") return [null, 42];
+      return undefined;
+    },
+    async update(data, options) {
+      updates.push({ data, options });
+    }
+  };
+
+  const result = await hygiene.pruneActorReferences(actor);
+  assert.deepEqual(result, { changed: true, slotsChanged: true, orderChanged: true });
+  assert.equal(updates.length, 1);
+  assert.deepEqual(updates[0].options, { render: false });
+  assert.deepEqual(updates[0].data, {
+    "flags.fbl-quick-access.slots": [null, null, null],
+    "flags.fbl-quick-access.gearOrder": []
+  });
+});

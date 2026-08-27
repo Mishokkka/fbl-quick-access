@@ -4,7 +4,7 @@ import { readDropData, getDroppedItemId } from "./drag-data.js";
 import { getItemCarryState } from "./item-utils.js";
 import { findPrimaryGearContainer } from "./sheet-adapter/forbidden-lands-v1.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
-import { normalizeText, rerenderSheet } from "./utils.js";
+import { normalizeText } from "./utils.js";
 
 /**
  * Saves only presentation order. Item data, carry state and encumbrance are left
@@ -15,7 +15,6 @@ export function setupGearOrdering(app, actor, gearTab, panel) {
   const gears = findPrimaryGearContainer(gearTab, panel);
   if (!gears) return;
 
-  applySavedGearOrder(actor, gears);
   markCardViewHeaders(gears, gearTab.classList.contains("fblqa-card-view-active"));
   if (canModifyActor(actor)) attachGearOrderDnD(app, actor, gears);
 }
@@ -23,6 +22,8 @@ export function setupGearOrdering(app, actor, gearTab, panel) {
 export function applySavedGearOrder(actor, gears) {
   const order = getStoredGearOrder(actor);
   if (!order.length) return;
+
+  const rank = new Map(order.map((id, index) => [id, index]));
 
   for (const group of collectGearRowGroups(actor, gears, { includeCards: false })) {
     const indexed = group.rows.map((row, index) => ({
@@ -32,8 +33,8 @@ export function applySavedGearOrder(actor, gears) {
     }));
 
     indexed.sort((a, b) => {
-      const ai = getOrderIndex(order, a.itemId);
-      const bi = getOrderIndex(order, b.itemId);
+      const ai = rank.get(a.itemId) ?? Number.MAX_SAFE_INTEGER;
+      const bi = rank.get(b.itemId) ?? Number.MAX_SAFE_INTEGER;
       if (ai !== bi) return ai - bi;
       return a.index - b.index;
     });
@@ -44,6 +45,40 @@ export function applySavedGearOrder(actor, gears) {
 
 function attachGearOrderDnD(app, actor, gears) {
   const rows = collectOrderingTargets(actor, gears);
+  let dragSession = null;
+  let markerFrame = 0;
+  let pendingMarker = null;
+  let activeMarker = null;
+
+  const clearActiveMarker = () => {
+    activeMarker?.row?.classList.remove("fblqa-drop-before", "fblqa-drop-after");
+    activeMarker = null;
+  };
+
+  const cancelMarkerFrame = () => {
+    if (!markerFrame) return;
+    cancelAnimationFrame(markerFrame);
+    markerFrame = 0;
+    pendingMarker = null;
+  };
+
+  const scheduleMarker = (row, event) => {
+    pendingMarker = { row, clientX: event.clientX, clientY: event.clientY };
+    if (markerFrame) return;
+    markerFrame = requestAnimationFrame(() => {
+      markerFrame = 0;
+      const pending = pendingMarker;
+      pendingMarker = null;
+      if (!pending) return;
+
+      const insertAfter = shouldInsertAfterPoint(pending.row, pending.clientX, pending.clientY);
+      if (activeMarker?.row === pending.row && activeMarker.insertAfter === insertAfter) return;
+
+      clearActiveMarker();
+      pending.row.classList.add(insertAfter ? "fblqa-drop-after" : "fblqa-drop-before");
+      activeMarker = { row: pending.row, insertAfter };
+    });
+  };
 
   for (const row of rows) {
     if (row.dataset.fblqaOrderReady === "true") continue;
@@ -69,42 +104,85 @@ function attachGearOrderDnD(app, actor, gears) {
       }));
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
 
+      dragSession = buildGearDragSession(actor, gears, item.id);
       row.classList.add("fblqa-gear-order-dragging");
     });
 
     row.addEventListener("dragend", () => {
       row.classList.remove("fblqa-gear-order-dragging");
-      clearDropMarkers(gears);
+      dragSession = null;
+      cancelMarkerFrame();
+      clearActiveMarker();
     });
 
     row.addEventListener("dragover", (event) => {
-      const draggedItemId = getDraggedItemId(event);
+      const draggedItemId = dragSession?.draggedItemId || getDraggedItemId(event);
       const targetItemId = getItemIdFromRow(row);
       if (!draggedItemId || !targetItemId || draggedItemId === targetItemId) return;
-      if (!areRowsInSameOrderGroup(actor, gears, draggedItemId, targetItemId)) return;
+      if (!areRowsInSameOrderGroupCached(actor, gears, dragSession, draggedItemId, targetItemId)) return;
 
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
-      markDropPosition(row, event);
+      scheduleMarker(row, event);
     });
 
     row.addEventListener("dragleave", () => {
-      row.classList.remove("fblqa-drop-before", "fblqa-drop-after");
+      if (activeMarker?.row === row) clearActiveMarker();
+      if (pendingMarker?.row === row) pendingMarker = null;
     });
 
     row.addEventListener("drop", async (event) => {
-      const draggedItemId = getDraggedItemId(event);
+      const draggedItemId = dragSession?.draggedItemId || getDraggedItemId(event);
       const targetItemId = getItemIdFromRow(row);
       if (!draggedItemId || !targetItemId || draggedItemId === targetItemId) return;
-      if (!areRowsInSameOrderGroup(actor, gears, draggedItemId, targetItemId)) return;
+      if (!areRowsInSameOrderGroupCached(actor, gears, dragSession, draggedItemId, targetItemId)) return;
 
       event.preventDefault();
       event.stopPropagation();
 
-      const insertAfter = shouldInsertAfter(row, event);
+      const insertAfter = shouldInsertAfterPoint(row, event.clientX, event.clientY);
+      cancelMarkerFrame();
+      clearActiveMarker();
       await saveReorderedGroup(app, actor, gears, draggedItemId, targetItemId, insertAfter);
     });
   }
+}
+
+function buildGearDragSession(actor, gears, draggedItemId) {
+  const groupByItemId = new Map();
+  const visualSectionByItemId = new Map();
+
+  const groups = collectGearRowGroups(actor, gears, { includeCards: true });
+  groups.forEach((group, groupIndex) => {
+    for (const row of group.rows) {
+      const itemId = resolveItemFromRow(actor, row)?.id ?? getItemIdFromRow(row);
+      if (!itemId) continue;
+      groupByItemId.set(itemId, groupIndex);
+      visualSectionByItemId.set(itemId, getVisualSectionKey(row, gears));
+    }
+  });
+
+  return { draggedItemId, groupByItemId, visualSectionByItemId };
+}
+
+function areRowsInSameOrderGroupCached(actor, gears, session, draggedItemId, targetItemId) {
+  if (!session || session.draggedItemId !== draggedItemId) {
+    return areRowsInSameOrderGroup(actor, gears, draggedItemId, targetItemId);
+  }
+
+  const draggedGroup = session.groupByItemId.get(draggedItemId);
+  const targetGroup = session.groupByItemId.get(targetItemId);
+  if (draggedGroup === undefined || targetGroup === undefined || draggedGroup !== targetGroup) return false;
+
+  const draggedItem = actor.items.get(draggedItemId);
+  const targetItem = actor.items.get(targetItemId);
+  if (!isSameCarryState(draggedItem, targetItem)) return false;
+
+  const draggedSection = session.visualSectionByItemId.get(draggedItemId) ?? "";
+  const targetSection = session.visualSectionByItemId.get(targetItemId) ?? "";
+  if (draggedSection && targetSection && draggedSection !== targetSection) return false;
+
+  return true;
 }
 
 function collectOrderingTargets(actor, gears) {
@@ -142,7 +220,6 @@ async function saveReorderedGroup(app, actor, gears, draggedItemId, targetItemId
   ];
 
   await actor.setFlag(MODULE_ID, FLAG_GEAR_ORDER, next);
-  rerenderSheet(app);
 }
 
 function findGroupContainingItem(actor, gears, itemId) {
@@ -275,11 +352,6 @@ function getStoredGearOrder(actor) {
   return Array.isArray(order) ? order.filter((id) => typeof id === "string" && id) : [];
 }
 
-function getOrderIndex(order, itemId) {
-  const index = order.indexOf(itemId);
-  return index === -1 ? Number.MAX_SAFE_INTEGER : index;
-}
-
 function getDraggedItemId(event) {
   const data = readDropData(event, { warn: false });
   if (!data) return "";
@@ -288,23 +360,12 @@ function getDraggedItemId(event) {
   return getDroppedItemId(data);
 }
 
-function markDropPosition(row, event) {
-  clearDropMarkers(row.ownerDocument ?? document);
-  row.classList.add(shouldInsertAfter(row, event) ? "fblqa-drop-after" : "fblqa-drop-before");
-}
-
-function shouldInsertAfter(row, event) {
+function shouldInsertAfterPoint(row, clientX, clientY) {
   const rect = row.getBoundingClientRect();
   if (row.classList.contains("fblqa-gear-card")) {
-    return event.clientX > rect.left + rect.width / 2;
+    return clientX > rect.left + rect.width / 2;
   }
-  return event.clientY > rect.top + rect.height / 2;
-}
-
-function clearDropMarkers(root) {
-  for (const element of root.querySelectorAll?.(".fblqa-drop-before, .fblqa-drop-after") ?? []) {
-    element.classList.remove("fblqa-drop-before", "fblqa-drop-after");
-  }
+  return clientY > rect.top + rect.height / 2;
 }
 
 function markCardViewHeaders(gears, enabled) {

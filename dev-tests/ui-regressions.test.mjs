@@ -341,7 +341,7 @@ test("BIO discrete controls do not bubble into the native sheet form and compact
 
   assert.match(biography, /const discreteControl = control\.matches\("select, input\[type='checkbox'\], input\[type='number'\]"\)/);
   assert.match(biography, /event\.stopPropagation\(\)/);
-  assert.match(biography, /queueProfileSave\(actor, state, saveState, discreteControl \? 0 : 350\)/);
+  assert.match(biography, /queueProfileSave\(actor, state, saveState, discreteControl \? 0 : 350, path\)/);
   assert.match(css, /@container \(max-width: 430px\)[\s\S]*?\.fblqa-pilgrim-details > \.fblqa-pilgrim-hair\s*\{[\s\S]*?grid-column:\s*1 \/ -1/);
 });
 
