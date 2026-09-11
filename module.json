@@ -25,7 +25,8 @@
     ]
   },
   "esmodules": [
-    "scripts/main.js"
+    "scripts/main.js",
+    "scripts/kin-talent-rank.js"
   ],
   "styles": [
     "styles/00-tokens.css",
