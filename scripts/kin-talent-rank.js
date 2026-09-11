@@ -1,9 +1,8 @@
+import { MODULE_ID } from "./constants.js";
+import { findActorSheetRoot } from "./sheet-adapter/forbidden-lands-v1.js";
+
 const TALENT_RANK_INPUT = 'input[name="system.rank"]';
 const TALENT_TYPE_SELECT = 'select[name="system.type"]';
-
-export function isRankedTalentType(type) {
-  return type === "general" || type === "profession" || type === "kin";
-}
 
 /**
  * Forbidden Lands deliberately hides the Rank field for Kin talents because
@@ -54,7 +53,7 @@ export function ensureKinTalentRankField(app, item, root) {
     try {
       await item.update({ "system.rank": control.value });
     } catch (error) {
-      console.error("fbl-quick-access | failed to update Kin talent rank", error);
+      console.error(`${MODULE_ID} | failed to update Kin talent rank`, error);
       control.value = item.system?.rank == null ? "" : String(item.system.rank);
     }
   });
@@ -67,3 +66,22 @@ export function ensureKinTalentRankField(app, item, root) {
   typeSelect.insertAdjacentElement("afterend", label);
   return true;
 }
+
+function renderKinTalentRank(app, htmlOrElement) {
+  try {
+    if (globalThis.game?.system?.id !== "forbidden-lands") return;
+
+    const item = app?.item ?? app?.document ?? app?.object;
+    if (item?.documentName !== "Item" || item.type !== "talent") return;
+
+    const root = findActorSheetRoot(htmlOrElement);
+    if (!root) return;
+
+    ensureKinTalentRankField(app, item, root);
+  } catch (error) {
+    console.error(`${MODULE_ID} | Kin talent rank render failed`, error);
+  }
+}
+
+Hooks.on("renderItemSheet", renderKinTalentRank);
+Hooks.on("renderApplicationV2", renderKinTalentRank);
