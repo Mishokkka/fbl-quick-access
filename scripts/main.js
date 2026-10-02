@@ -48,9 +48,11 @@ Hooks.once("init", () => {
         characterImport: true,
         biographyProfile: true,
         pilgrimCardProfile: true,
-        stateProgression: true
+        stateProgression: true,
+        itemTooltips: true
       }),
       refreshGearPresentation,
+      setupTalentItemTooltips,
       registerStatProvider,
       registerNewDayProvider,
       refreshStat,

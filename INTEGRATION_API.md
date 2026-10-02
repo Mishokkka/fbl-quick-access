@@ -25,7 +25,21 @@ qa.capabilities.activeGmExecution;
 qa.capabilities.characterImport;
 qa.capabilities.biographyProfile;
 qa.capabilities.pilgrimCardProfile;
+qa.capabilities.itemTooltips;
 ```
+
+## Item tooltips
+
+Custom character-sheet modules that replace the native Talent/Spell rows can reattach Quick Access' existing item tooltip behavior to their own actor-owned item rows:
+
+```js
+const qa = game.modules.get("fbl-quick-access")?.api;
+if (qa?.capabilities?.itemTooltips) {
+  qa.setupTalentItemTooltips(actor, customTalentRoot);
+}
+```
+
+The supplied root may be the native Talent tab or any custom container. Rows are resolved through the same stable item-row contract used by Quick Access: preferably `data-item-id` (or equivalent supported item-id attributes), with unique-name fallback only where necessary. The helper adds the normal hover/focus tooltip and double-click-to-open behavior. It does not rewrite the caller's markup.
 
 ## STAT providers
 

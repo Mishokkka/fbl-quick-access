@@ -24,6 +24,16 @@ test("module manifest enables the native socket namespace", () => {
   assert.equal(moduleJson.socket, true);
 });
 
+
+test("public API exposes the reusable Talent tooltip bridge", () => {
+  const main = readFileSync(join(root, "scripts", "main.js"), "utf8");
+  const docs = readFileSync(join(root, "INTEGRATION_API.md"), "utf8");
+
+  assert.match(main, /itemTooltips:\s*true/);
+  assert.match(main, /\bsetupTalentItemTooltips,/);
+  assert.match(docs, /setupTalentItemTooltips\(actor, customTalentRoot\)/);
+});
+
 test("style manifest keeps ordered feature CSS and no legacy final file", () => {
   assert.deepEqual(moduleJson.styles, [
     "styles/00-tokens.css",
