@@ -132,9 +132,10 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.24:
+Available methods in 1.7.25:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
+- `setupTalentItemTooltips(actor, root)`
 - `registerStatProvider(definition)`
 - `registerNewDayProvider(definition)`
 - `refreshStat(appOrActor)`
@@ -290,6 +291,11 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.25
+
+- Exposed the existing Talent/Spell item-tooltip binder through the public API as `setupTalentItemTooltips(actor, root)` with the `itemTooltips` capability flag. This lets custom character-sheet modules replace the native Talent tab and then reattach the same Quick Access tooltips without importing internal files.
+
 
 ### 1.3.0
 
