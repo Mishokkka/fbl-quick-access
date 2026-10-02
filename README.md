@@ -1,4 +1,5 @@
 # Forbidden Lands Quick Access
+Version 1.7.25
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
