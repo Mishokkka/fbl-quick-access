@@ -1393,8 +1393,10 @@ function flushProfileSave(key) {
       if (path === "*") Object.assign(profile, normalizeBiographyProfile(value));
       else setPath(profile, path, value);
     }
-    for (const path of pending.patches.keys()) {
+    for (const path of [...pending.patches.keys()]) {
       await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+      // A later failure must not retry a path that has already committed.
+      pending.patches.delete(path);
     }
     setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
     return true;

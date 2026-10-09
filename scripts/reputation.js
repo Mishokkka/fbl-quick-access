@@ -9,13 +9,16 @@ const OPEN_DIALOGS = new Map();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
 export const MAX_REPUTATION_POINTS = 1000;
 
+/** Normalize display data while preserving finite over-limit legacy amounts.
+ * Save and roll entry points enforce the pool cap before writing/allocating.
+ */
 export function normalizeReputationEntries(value) {
   if (!Array.isArray(value)) return [];
 
   return value
     .map((entry) => {
       const rawAmount = Number(entry?.amount ?? entry?.value ?? entry?.quantity ?? 0);
-      const amount = Number.isFinite(rawAmount) && Number.isSafeInteger(Math.floor(rawAmount)) && rawAmount <= MAX_REPUTATION_POINTS
+      const amount = Number.isFinite(rawAmount)
         ? Math.max(0, Math.floor(rawAmount)) : 0;
       if (amount < 1) return null;
 
@@ -212,7 +215,9 @@ export function openReputationDialog(app, actor) {
       })
       .catch((error) => {
         console.error(`${MODULE_ID} | reputation save failed`, error);
-        setStatus(status, qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
+        setStatus(status, error instanceof RangeError
+          ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
+          : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
         return false;
       });
 
@@ -309,6 +314,10 @@ function buildDialogContent(actor, editable) {
           <i class="fas fa-star" aria-hidden="true"></i>
           <span data-role="total">${total}</span>
         </div>
+      </div>
+
+      <div class="fblqa-reputation-save-status is-error" data-role="limit-warning" role="alert" ${total > MAX_REPUTATION_POINTS ? "" : "hidden"}>
+        ${escapeHtml(qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS }))}
       </div>
 
       <div class="fblqa-reputation-table-head" aria-hidden="true">
@@ -554,13 +563,16 @@ function refreshDialogSummary(root) {
   if (totalElement) totalElement.textContent = String(total);
   if (selectedElement) selectedElement.textContent = String(selected);
   if (summary) summary.textContent = qaLocalize("Reputation.SelectedOf", "из {total} единиц выбрано для проверки", { total });
+  const overLimit = total > MAX_REPUTATION_POINTS;
+  const limitWarning = root.querySelector("[data-role='limit-warning']");
+  if (limitWarning) limitWarning.hidden = !overLimit;
 
   const rollButton = root.querySelector("[data-action='roll-selected']");
   const halfButton = root.querySelector("[data-action='roll-half']");
   const thirdButton = root.querySelector("[data-action='roll-third']");
-  if (rollButton) rollButton.disabled = selected < 1;
-  if (halfButton) halfButton.disabled = Math.floor(total / 2) < 1;
-  if (thirdButton) thirdButton.disabled = Math.floor(total / 3) < 1;
+  if (rollButton) rollButton.disabled = overLimit || selected < 1;
+  if (halfButton) halfButton.disabled = overLimit || Math.floor(total / 2) < 1;
+  if (thirdButton) thirdButton.disabled = overLimit || Math.floor(total / 3) < 1;
 }
 
 async function rollRandomReputation(actor, entries, divisor) {

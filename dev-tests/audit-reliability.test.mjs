@@ -7,7 +7,7 @@ import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiogra
 import { updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
-import { normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
+import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
 import { initializeWalletOperations } from "../scripts/wallet.js";
 import { executeAsActiveGM } from "../scripts/integration/socket-api.js";
 import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scripts/integration/new-day-providers.js";
@@ -319,4 +319,52 @@ test("A02: a new special kind or lethal flag invalidates a previously ordinary i
     change(wound); const result = await applyNewDayPlan(a, plan, plan.actions.map(entry => entry.id), { postChat: false });
     assert.equal(a.items.includes(wound), true); assert.ok(result.failed.length > 0);
   }
+});
+test("CodeRabbit: partial BIO retry preserves a newer edit to the committed field", async () => {
+  reset(); const a = actor(); const state = getBiographyProfile(a);
+  state.physical.height = "180"; state.physical.eyes = "green"; state.physical.hair = "red";
+  const originalUpdate = a.update; let rejectEyes = true;
+  a.update = async patch => {
+    if (rejectEyes && Object.hasOwn(patch, `flags.${scope}.biographyProfile.physical.eyes`)) {
+      throw new Error("Second path unavailable");
+    }
+    return originalUpdate(patch);
+  };
+  for (const path of ["physical.height", "physical.eyes", "physical.hair"]) queueProfileSave(a, state, null, 10_000, path);
+  await flushBiographySaves(a);
+  assert.equal(getBiographyProfile(a).physical.height, "180");
+  assert.equal(getBiographyProfile(a).physical.eyes, "");
+  assert.equal(getBiographyProfile(a).physical.hair, "");
+  await originalUpdate({ [`flags.${scope}.biographyProfile.physical.height`]: "190" });
+  const retryStart = a.updates.length; rejectEyes = false; await flushBiographySaves(a);
+  const saved = getBiographyProfile(a); assert.equal(saved.physical.height, "190");
+  assert.equal(saved.physical.eyes, "green"); assert.equal(saved.physical.hair, "red");
+  assert.equal(a.updates.slice(retryStart).some(patch => Object.hasOwn(patch, `flags.${scope}.biographyProfile.physical.height`)), false);
+});
+test("CodeRabbit: over-limit reputation stays visible and unchanged until explicitly corrected", async () => {
+  for (const amount of [1500, Number.MAX_SAFE_INTEGER + 1]) {
+    reset(); const a = actor(); const original = [{ id: "old", amount, description: "Legacy achievement", location: "Town" }];
+    await a.setFlag(scope, "reputationEntries", structuredClone(original));
+    const visible = getReputationEntries(a); assert.deepEqual(visible, original);
+    const edited = visible.map(entry => ({ ...entry, description: "Edited description" }));
+    await assert.rejects(saveReputationEntries(a, edited), RangeError);
+    assert.throws(() => selectRandomReputation(visible, 2), RangeError);
+    assert.equal(a.updates.length, 0); assert.deepEqual(a.getFlag(scope, "reputationEntries"), original);
+    await saveReputationEntries(a, edited.map(entry => ({ ...entry, amount: 900 })));
+    assert.equal(a.getFlag(scope, "reputationEntries")[0].amount, 900);
+    assert.equal(a.getFlag(scope, "reputationEntries")[0].location, "Town");
+  }
+});
+test("CodeRabbit: reputation dialog warns and disables rolls until the displayed pool is corrected", async () => {
+  reset(); const rep = await expose("scripts/reputation.js", ["refreshDialogSummary", "buildDialogContent"]);
+  const a = actor(); await a.setFlag(scope, "reputationEntries", [{ id: "old", amount: 1500, description: "Legacy" }]);
+  const content = rep.buildDialogContent(a, true);
+  assert.match(content, /data-role="limit-warning" role="alert" >[\s\S]*Existing values are preserved/);
+  let amount = "1500"; const warning = { hidden: true }; const controls = Object.fromEntries(["roll-selected", "roll-half", "roll-third"].map(key => [key, { disabled: false }]));
+  const row = { dataset: { entryId: "old" }, querySelector: selector => selector.includes("amount") ? { value: amount } : selector.includes("selected") ? { checked: true } : { value: "Legacy" } };
+  const rowsRoot = { querySelectorAll: () => [row] };
+  const root = { querySelector: selector => selector === ".fblqa-reputation-rows" ? rowsRoot : selector.includes("limit-warning") ? warning
+    : controls[selector.match(/data-action='([^']+)'/)?.[1]] ?? null };
+  rep.refreshDialogSummary(root); assert.equal(warning.hidden, false); assert.ok(Object.values(controls).every(control => control.disabled));
+  amount = "900"; rep.refreshDialogSummary(root); assert.equal(warning.hidden, true); assert.ok(Object.values(controls).every(control => !control.disabled));
 });

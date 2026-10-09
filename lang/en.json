@@ -663,5 +663,6 @@
       "TreatmentUnresolvedTime": "Resolve the healing duration into a number of days before applying treatment."
     }
   },
-  "FBLQA.Reputation.PoolTooLarge": "Reputation is limited to {max} points."
+  "FBLQA.Reputation.PoolTooLarge": "Reputation is limited to {max} points.",
+  "FBLQA.Reputation.OverLimitPreserved": "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling."
 }

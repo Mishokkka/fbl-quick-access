@@ -51,7 +51,7 @@ So: direct edits and ordinary +/- changes preserve the visible denomination. Spe
 
 With an active GM, wallet changes and transfers share a single authority queue. Owner-only play without a GM remains available, with per-client serialization. Direct writes by other modules are outside this queue.
 
-Reputation pools are limited to 1,000 points as a technical safeguard. Invalid values are rejected on save; existing malformed flags are not rewritten during rendering.
+Reputation pools are limited to 1,000 points as a technical safeguard. Finite legacy/imported amounts above the limit remain visible at their original values. A warning blocks rolls and saves until the amounts are explicitly corrected; unrelated edits cannot silently remove those rows. Invalid values are rejected on save; existing malformed flags are not rewritten during rendering.
 
 ## Stored data
 
@@ -299,6 +299,8 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 ## Changelog
 
 ### 1.7.26
+
+- BIO retries only unsaved fields after a partial flush; preserve finite over-limit legacy reputation rows and warn before saving or rolling.
 
 - Recheck live calendar markers and New Day preconditions before applying queued changes. Keep provider build failures pending and retain failed-action metadata.
 - Keep a new Short Rest recovery lock when reset and recovery are selected together. Report chat failures separately from committed gameplay changes.
