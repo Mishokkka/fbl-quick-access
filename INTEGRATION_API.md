@@ -27,6 +27,7 @@ qa.capabilities.biographyProfile;
 qa.capabilities.pilgrimCardProfile;
 qa.capabilities.itemTooltips;
 qa.capabilities.equipment;
+qa.capabilities.equipmentControls; // additive controls contract since 1.7.29
 ```
 
 ## Equipment and action-widget integration
@@ -60,6 +61,7 @@ Actor and OWNER or OBSERVER permission. It returns detached serializable data:
   a two-handed grip. Missing/deleted held items resolve to null without a write.
 - `heldItems: { left, right }`: item descriptions or null, including items removed
   from slots while still held.
+- `inventory[]`: eligible inventory item descriptions for slot assignment (1.7.29+).
 - Every item description includes `id`, `uuid`, `name`, `img`, `type`, `weight`
   and the existing normalized `carryState`. It exposes no rich text/private flags.
 
@@ -74,10 +76,13 @@ refresh the snapshot and let the user retry explicitly.
 
 | Command | Fields | Meaning |
 | --- | --- | --- |
-| `hold` | `itemId`, `hand: "left" / "right" / "both"` | Mark an existing eligible item from an available slot as held. Replace the selected grip. |
+| `hold` | `itemId`, `hand: "left" / "right" / "both"` | Mark an eligible item from an available slot or an already held item; replace the selected grip. |
 | `stow` | `hand: "left" / "right" / "both"` | Clear the selected grip; either side of a two-handed grip releases both. |
 | `swapHands` | — | Exchange left and right. |
 | `clearSlot` | `index` | Clear one slot, including an overflow slot. Keep the inventory item and its held status. |
+| `assignSlot` | `index`, `itemId` | Assign eligible inventory to an available slot; move existing bindings of that item instead of duplicating them. |
+| `swapSlots` | `from`, `to` | Exchange bindings; destination must be available. Overflow bindings are preserved and can be recovered. |
+| `undo` | `receiptId` | Restore only the fields touched by a recorded operation, if their postimages still match and restored Items exist. |
 
 Holding with one hand moves the same item out of its other hand. Replacing one
 side of a two-handed grip releases the entire old grip. These are manual marks:
@@ -90,7 +95,30 @@ Commands on one client are serialized per Actor and recheck permissions and
 live state when executed. `expectedRevision` detects a changed local snapshot;
 it is not a server-side compare-and-swap or a lock between clients. Simultaneous
 edits from different clients still follow Foundry's normal document update rules.
-Future UI should refresh after rejection and pass the displayed snapshot's token.
+Consumers should refresh after rejection and pass the displayed snapshot's token.
+
+Since **1.7.29**, `previewEquipmentAction(actor, command)` runs the writer's
+validation without mutation and returns `{ hands, slots, changed, displaced }`.
+`performEquipmentAction` accepts optional `operationId` (1–64 ASCII letters,
+digits, underscores or hyphens). A changed write stores a receipt atomically
+with its equipment fields and returns `{ changed, state, receipt }`. Repeating
+that id with the same command returns the saved receipt with `replayed: true`
+before checking the stale revision, without another write; reusing the id for a
+different command rejects. A no-op creates neither a write nor a receipt.
+`getEquipmentReceipt(actor, id)` returns a detached receipt or null. The newest
+32 receipts are retained. Replaying a receipt acknowledges the earlier write;
+it does not prove that its postimage remains current. A cost/recovery consumer
+must check that postimage before charging. Undo receipts cannot themselves be
+undone; the consumer should reuse its undo id when recovering a partial undo.
+
+The YZE 1.3.0 widget serializes its commands and manual status clicks on the
+active GM through the existing authenticated integration socket. Its own durable
+journal and tagged native action effects coordinate partial payment/undo.
+External sheet edits, macros and manual GM round changes are outside that queue;
+the widget rechecks snapshots, ownership, receipts and combat round and surfaces
+conflicts. Foundry provides no cross-document transaction or distributed lock.
+Equipment updates suppress full sheet rendering and refresh open Quick Access
+bars directly. No startup migration or automatic hand inference is performed.
 
 ```js
 Hooks.on("fblQuickAccess.equipmentChanged", actor => {
@@ -113,7 +141,13 @@ if (state?.editable) {
 The bridge requires an active compatible Quick Access module and resolves the
 widget's current Actor on each call, including synthetic token Actors. Old or
 absent Quick Access versions leave the combat widget and reference operational.
-The actual equipment buttons/list are reserved for a future release.
+YZE 1.3.0 supplies the compact equipment controls, price selection and recovery
+UI. The legacy `quickAccess.performAction` bridge continues to issue equipment
+marks only; it does not charge actions. Use the widget's UI for paid operations.
+
+`setupEquipmentItemTooltips(actor, container)` attaches the existing rich tooltip
+to item buttons marked with `data-equipment-item` and `data-item-id`. It preserves
+native button focus rather than introducing nested keyboard targets.
 
 ## Item tooltips
 

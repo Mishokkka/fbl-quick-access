@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.28
+Version 1.7.29
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -8,7 +8,7 @@ Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Forbidden Lands system target: v13.0.5.
 - Optional integration: `fl-firearms`, through its public API only.
 - Optional integration: `item-piles`, through `game.itempiles.API.giveItem(item)` when available.
-- Optional integration: `yze-combat-permission-fix` 1.2.0 through the equipment API. Neither module requires the other.
+- Optional integration: `yze-combat-permission-fix` 1.3.0 for compact equipment controls and explicit action costs. The legacy 1.2.x bridge remains compatible. Neither module requires the other.
 - The former `forbidden-lands-expanded-conditions` module should be disabled after installing this integrated version.
 
 ## Features
@@ -16,6 +16,7 @@ Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Compact top row on the character Gear tab.
 - Quick Access slots based on `Agility max + Sleight of Hand`, capped at 10.
 - Quick Access accepts only actor-owned `weapon`, `armor`, `gear`, and `rawMaterial` items with weight Normal or lighter.
+- Left/right/two-handed grip badges synchronized with the optional YZE widget. Preview, assignment/reordering, bounded durable receipts and safe undo through equipment API v1.
 - Compact encumbrance counter with overload highlight.
 - Wallet popover and optional expanded currency line for Gold / Silver / Copper, with direct player-to-player denomination transfer.
 - Wallet arithmetic supports direct values, expressions such as `10-2`, and relative operations such as `+5` or `-13`.
@@ -139,7 +140,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.28:
+Available methods in 1.7.29:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -300,6 +301,13 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.29
+
+- Complete the equipment contract for YZE widget 1.3.0: previews, eligible inventory, assign/swap slots, grip changes for items removed from slots, atomic operation receipts and guarded undo.
+- Add rich item tooltips for widget buttons and visible L/R/two-handed marks on the character's Quick Access bar. Refresh that bar after render-suppressed equipment writes without rebuilding the whole sheet or disturbing wallet controls.
+- Preserve API major version 1 and legacy callers. Document the agreed design, recovery limits and separate future attack/consumable features.
+- Add nine equipment regressions; the full suite passes 237 tests. The companion widget browser test uses these real equipment modules.
 
 ### 1.7.28
 

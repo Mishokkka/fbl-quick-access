@@ -49,7 +49,15 @@
       "Title": "Quick Access: {capacity}/{maxSlots} slots",
       "TypeReject": "Quick Access accepts only Weapon, Armor, Gear, and Raw Material items",
       "WeightReject": "Quick Access accepts only items of Normal weight or lighter",
-      "OpenItem": "Open item: {name}"
+      "OpenItem": "Open item: {name}",
+      "Grip": {
+        "Both": "Both hands",
+        "BothShort": "2H",
+        "Left": "Left hand",
+        "LeftShort": "L",
+        "Right": "Right hand",
+        "RightShort": "R"
+      }
     },
     "Tooltip": {
       "Ammo": "Ammo",
