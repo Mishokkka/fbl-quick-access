@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.26
+Version 1.7.28
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -8,6 +8,7 @@ Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Forbidden Lands system target: v13.0.5.
 - Optional integration: `fl-firearms`, through its public API only.
 - Optional integration: `item-piles`, through `game.itempiles.API.giveItem(item)` when available.
+- Optional integration: `yze-combat-permission-fix` 1.2.0 through the equipment API. Neither module requires the other.
 - The former `forbidden-lands-expanded-conditions` module should be disabled after installing this integrated version.
 
 ## Features
@@ -138,7 +139,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.26:
+Available methods in 1.7.28:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -150,6 +151,8 @@ Available methods in 1.7.26:
 - `registerSocketHandler(operation, handler)`
 - `getQuickAccessSlots(actor)`
 - `setQuickAccessSlots(actor, slots)`
+- `getEquipmentState(actor)`
+- `performEquipmentAction(actor, command, options?)`
 - `openRestDialog(app, actor, root?)`
 - `openNewDayDialog(app, actor)`
 - `buildNewDayPlan(actor)`
@@ -297,6 +300,19 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.28
+
+- Reject equipment commands when Foundry cancels Actor persistence instead of reporting a saved change. Preserve no-op results and allow the per-Actor queue to continue after cancellation.
+- Guard optional widget state and editable permissions in integration examples; choose an eligible Quick Access slot instead of assuming the first slot is occupied.
+- Add six regressions covering cancellation of all four commands, queue recovery and execution of the documented examples. API versions, slot storage and combat behavior remain unchanged.
+
+### 1.7.27
+
+- Add a versioned equipment snapshot/command API for the YZE action widget's future equipment controls. Keep the existing slots API and storage unchanged.
+- Represent left/right/two-handed grips in an optional Actor flag. Validate ownership, current slots and item eligibility before writing; serialize commands per Actor and accept snapshot revision guards.
+- Notify integrations after Actor/Item changes, including updates made with sheet rendering suppressed. No equipment UI, combat action spending, or native Item carry-state changes are introduced in this release.
+- Add 12 equipment contract regression tests. See `INTEGRATION_API.md` for commands, events and concurrency limits.
 
 ### 1.7.26
 

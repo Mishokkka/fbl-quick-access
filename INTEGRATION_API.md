@@ -26,7 +26,94 @@ qa.capabilities.characterImport;
 qa.capabilities.biographyProfile;
 qa.capabilities.pilgrimCardProfile;
 qa.capabilities.itemTooltips;
+qa.capabilities.equipment;
 ```
+
+## Equipment and action-widget integration
+
+Introduced in Quick Access **1.7.27**, with `equipmentApiVersion === 1`.
+The existing `apiVersion === 1`, `getQuickAccessSlots(actor)` and
+`setQuickAccessSlots(actor, slots)` keep their signatures and storage format.
+Both modules remain optional for each other. No startup migration is required.
+
+```js
+const qa = game.modules.get("fbl-quick-access")?.api;
+if (qa?.capabilities?.equipment && qa.equipmentApiVersion === 1) {
+  const state = qa.getEquipmentState(actor);
+  const slot = state.slots.find(slot => slot.available && slot.canHold && slot.itemId);
+  if (state.editable && slot) {
+    await qa.performEquipmentAction(actor,
+      { type: "hold", itemId: slot.itemId, hand: "right" },
+      { expectedRevision: state.revision });
+  }
+}
+```
+
+`getEquipmentState(actor)` is synchronous and read-only. It requires a character
+Actor and OWNER or OBSERVER permission. It returns detached serializable data:
+
+- `version`, `actorUuid`, `editable`, `capacity`, `revision`.
+- `slots[]`: `index`, `available`, `itemId`, `item`, `missing`, `canHold`.
+  Overflow slots are included with `available: false`; legacy/deleted references
+  are reported without changing storage. Empty slots contain `itemId/item: null`.
+- `hands: { left, right }`: Item ids or null. The same id in both hands represents
+  a two-handed grip. Missing/deleted held items resolve to null without a write.
+- `heldItems: { left, right }`: item descriptions or null, including items removed
+  from slots while still held.
+- Every item description includes `id`, `uuid`, `name`, `img`, `type`, `weight`
+  and the existing normalized `carryState`. It exposes no rich text/private flags.
+
+`performEquipmentAction(actor, command, options?)` returns a Promise of
+`{ changed, state }`. It rejects invalid commands, insufficient permissions,
+failed or cancelled persistence and mismatched `options.expectedRevision`.
+Since **1.7.28**, an update cancelled by Foundry (resolving without an updated
+Document) rejects instead of reporting `changed: true`. A no-op still resolves
+with `changed: false` without calling `Actor.update`. Consumers must await a
+successful changed result before charging a related combat action; on rejection,
+refresh the snapshot and let the user retry explicitly.
+
+| Command | Fields | Meaning |
+| --- | --- | --- |
+| `hold` | `itemId`, `hand: "left" / "right" / "both"` | Mark an existing eligible item from an available slot as held. Replace the selected grip. |
+| `stow` | `hand: "left" / "right" / "both"` | Clear the selected grip; either side of a two-handed grip releases both. |
+| `swapHands` | — | Exchange left and right. |
+| `clearSlot` | `index` | Clear one slot, including an overflow slot. Keep the inventory item and its held status. |
+
+Holding with one hand moves the same item out of its other hand. Replacing one
+side of a two-handed grip releases the entire old grip. These are manual marks:
+the API does not infer weapon grip requirements, spend fast/slow actions, delete
+Items, or change native equipped/backpack/dropped state. The optional flag
+`flags.fbl-quick-access.equipmentHands` is written only on a changed hand command.
+Consumers should use this public API rather than accessing that flag.
+
+Commands on one client are serialized per Actor and recheck permissions and
+live state when executed. `expectedRevision` detects a changed local snapshot;
+it is not a server-side compare-and-swap or a lock between clients. Simultaneous
+edits from different clients still follow Foundry's normal document update rules.
+Future UI should refresh after rejection and pass the displayed snapshot's token.
+
+```js
+Hooks.on("fblQuickAccess.equipmentChanged", actor => {
+  // Re-read state for this Actor only. Emitted after Actor/embedded Item changes,
+  // even when the writer used { render: false }. May fire for unrelated changes.
+});
+```
+
+In `yze-combat-permission-fix` 1.2.0 the reciprocal public bridge is:
+
+```js
+const widget = game.modules.get("yze-combat-permission-fix")?.api;
+const state = widget?.quickAccess?.getState(); // current combatant; null if unavailable
+if (state?.editable) {
+  await widget.quickAccess.performAction(
+    { type: "swapHands" }, { expectedRevision: state.revision });
+}
+```
+
+The bridge requires an active compatible Quick Access module and resolves the
+widget's current Actor on each call, including synthetic token Actors. Old or
+absent Quick Access versions leave the combat widget and reference operational.
+The actual equipment buttons/list are reserved for a future release.
 
 ## Item tooltips
 

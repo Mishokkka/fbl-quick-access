@@ -25,6 +25,7 @@ import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiog
 import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
+import { EQUIPMENT_API_VERSION, getEquipmentState, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
 
 const BIO_ACTIVATION_GUARDS = new WeakMap();
 
@@ -36,6 +37,7 @@ Hooks.once("init", () => {
   initExpandedConditions();
   initializeNewDayProviderBridge();
   initializeStateProgression();
+  registerEquipmentHooks();
 
   const module = game.modules.get(MODULE_ID);
   if (module) {
@@ -50,7 +52,8 @@ Hooks.once("init", () => {
         biographyProfile: true,
         pilgrimCardProfile: true,
         stateProgression: true,
-        itemTooltips: true
+        itemTooltips: true,
+        equipment: true
       }),
       refreshGearPresentation,
       setupTalentItemTooltips,
@@ -62,6 +65,9 @@ Hooks.once("init", () => {
       registerSocketHandler,
       getQuickAccessSlots: getStoredSlots,
       setQuickAccessSlots: saveSlots,
+      equipmentApiVersion: EQUIPMENT_API_VERSION,
+      getEquipmentState,
+      performEquipmentAction,
       openRestDialog,
       openNewDayDialog,
       buildNewDayPlan,
