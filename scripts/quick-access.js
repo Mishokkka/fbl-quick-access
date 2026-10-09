@@ -180,11 +180,16 @@ function buildSlot(app, actor, index, itemId, item) {
 
   openButton.append(img, name);
   const grip = getEquipmentGrip(actor, item.id);
-  if (grip) {
+  const gripInfo = {
+    "2Р": { key: "Both", short: "2Р", title: "Обе руки" },
+    "Л": { key: "Left", short: "Л", title: "Левая рука" },
+    "П": { key: "Right", short: "П", title: "Правая рука" }
+  }[grip];
+  if (gripInfo) {
     const held = document.createElement("span");
     held.className = "fblqa-grip-label";
-    held.textContent = grip;
-    held.title = grip === "2Р" ? "Обе руки" : grip === "Л" ? "Левая рука" : "Правая рука";
+    held.textContent = qaLocalize(`QuickAccess.Grip.${gripInfo.key}Short`, gripInfo.short);
+    held.title = qaLocalize(`QuickAccess.Grip.${gripInfo.key}`, gripInfo.title);
     openButton.append(held);
   }
   const removeButton = makeRemoveButton(app, actor, index);

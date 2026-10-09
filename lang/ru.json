@@ -49,7 +49,15 @@
       "Title": "Быстрый доступ: {capacity}/{maxSlots} слотов",
       "TypeReject": "в быстрый доступ можно класть только Weapon, Armor, Gear и Raw Material",
       "WeightReject": "в быстрый доступ можно класть только предметы весом Normal или меньше",
-      "OpenItem": "Открыть предмет: {name}"
+      "OpenItem": "Открыть предмет: {name}",
+      "Grip": {
+        "Both": "Обе руки",
+        "BothShort": "2Р",
+        "Left": "Левая рука",
+        "LeftShort": "Л",
+        "Right": "Правая рука",
+        "RightShort": "П"
+      }
     },
     "Tooltip": {
       "Ammo": "Боеприпас",
