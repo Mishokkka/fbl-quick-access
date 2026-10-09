@@ -136,6 +136,15 @@
   text-overflow: ellipsis;
 }
 
+.fblqa-grip-label {
+  flex: 0 0 auto;
+  padding: 2px 3px;
+  border-radius: 3px;
+  background: rgba(149, 111, 39, 0.18);
+  font-size: 0.65rem;
+  font-weight: 800;
+}
+
 .fblqa-empty,
 .fblqa-missing-label {
   display: block;

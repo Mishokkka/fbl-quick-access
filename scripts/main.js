@@ -4,7 +4,7 @@ import { buildPanel, compactOriginalGearSpacing, hideOriginalGearTopControls } f
 import { setupGearCardView, setupGearViewConsumableToggle } from "./gear-cards.js";
 import { setupGearContextMenu } from "./gear-context-menu.js";
 import { applySavedGearOrder, setupGearOrdering } from "./gear-order.js";
-import { registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips } from "./tooltips.js";
+import { registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips, setupEquipmentItemTooltips } from "./tooltips.js";
 import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
 import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
@@ -16,6 +16,7 @@ import { buildNewDayPlan, buildNewDayPlanWithProviders, openNewDayDialog } from 
 import { removeChargenButton } from "./header-controls.js";
 import { handleExpandedConditionsCreateItem, initExpandedConditions, invalidateExpandedConditionsRender, readyExpandedConditions, renderExpandedConditions } from "./conditions/main.js";
 import { getStoredSlots, saveSlots } from "./quick-access.js";
+import { refreshEquipmentSheets } from "./equipment-sheet.js";
 import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences } from "./data-hygiene.js";
 import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
@@ -25,7 +26,7 @@ import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiog
 import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
-import { EQUIPMENT_API_VERSION, getEquipmentState, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
+import { EQUIPMENT_API_VERSION, getEquipmentState, getEquipmentReceipt, previewEquipmentAction, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
 
 const BIO_ACTIVATION_GUARDS = new WeakMap();
 
@@ -53,10 +54,12 @@ Hooks.once("init", () => {
         pilgrimCardProfile: true,
         stateProgression: true,
         itemTooltips: true,
-        equipment: true
+        equipment: true,
+        equipmentControls: true
       }),
       refreshGearPresentation,
       setupTalentItemTooltips,
+      setupEquipmentItemTooltips,
       registerStatProvider,
       registerNewDayProvider,
       refreshStat,
@@ -67,6 +70,8 @@ Hooks.once("init", () => {
       setQuickAccessSlots: saveSlots,
       equipmentApiVersion: EQUIPMENT_API_VERSION,
       getEquipmentState,
+      getEquipmentReceipt,
+      previewEquipmentAction,
       performEquipmentAction,
       openRestDialog,
       openNewDayDialog,
@@ -107,7 +112,12 @@ Hooks.on("renderSettingsConfig", (_app, htmlOrElement) => {
 Hooks.on("createItem", handleExpandedConditionsCreateItem);
 Hooks.on("deleteItem", handleDeletedActorItem);
 Hooks.on("deleteActor", handleDeletedActor);
-Hooks.on("updateActor", (actor, _changes, options, userId) => scheduleStatSync(actor, options, userId));
+Hooks.on("updateActor", (actor, _changes, options, userId) => {
+  if (!options?.fblqaEquipmentOnly) scheduleStatSync(actor, options, userId);
+});
+// Equipment writes suppress the expensive whole-sheet render. Replace only the
+// small quick-access panel; unrelated journal/status writes never touch it.
+Hooks.on("updateActor", refreshEquipmentSheets);
 Hooks.on("updateItem", (item, _changes, options, userId) => scheduleStatSync(item.parent, options, userId));
 Hooks.on("deleteItem", (item, options, userId) => scheduleStatSync(item.parent, options, userId));
 Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInjected);

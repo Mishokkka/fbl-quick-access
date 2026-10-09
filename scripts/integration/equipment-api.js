@@ -3,9 +3,11 @@ import { getQuickCapacity, getStoredSlots, normalizeSlots } from "../quick-acces
 import { getItemCarryState, getItemWeightValue, isAllowedQuickItem } from "../item-utils.js";
 import { canModifyActor } from "../permissions.js";
 import { createObjectOperationQueue } from "../operation-queue.js";
+import { readEquipmentHands } from "../equipment-hands.js";
 
 export const EQUIPMENT_API_VERSION = 1;
 const HANDS_FLAG = "equipmentHands";
+const RECEIPTS_FLAG = "equipmentReceipts";
 const enqueue = createObjectOperationQueue();
 
 function assertActor(actor) {
@@ -29,9 +31,7 @@ function describeItem(item) {
 }
 
 function readHands(actor) {
-  const stored = actor.getFlag(MODULE_ID, HANDS_FLAG);
-  const resolve = (id) => typeof id === "string" && actor.items.get(id) ? id : null;
-  return { left: resolve(stored?.left), right: resolve(stored?.right) };
+  return readEquipmentHands(actor);
 }
 
 /** Return detached, serializable equipment data without changing legacy flags. */
@@ -52,6 +52,7 @@ export function getEquipmentState(actor) {
   return {
     version: EQUIPMENT_API_VERSION, actorUuid: actor.uuid ?? null,
     editable: canModifyActor(actor), capacity, slots, hands,
+    inventory: Array.from(actor.items.values()).filter(isAllowedQuickItem).map(describeItem),
     heldItems: {
       left: describeItem(actor.items.get(hands.left)),
       right: describeItem(actor.items.get(hands.right))
@@ -72,69 +73,142 @@ function stowItem(hands, itemId) {
   for (const hand of ["left", "right"]) if (hands[hand] === itemId) hands[hand] = null;
 }
 
-/** Execute a narrow equipment command against live state and normal Actor permissions. */
-export async function performEquipmentAction(actor, action, { expectedRevision } = {}) {
-  assertActor(actor);
+function captureCommand(action) {
   if (!action || typeof action !== "object") throw new TypeError("Equipment action is required.");
-  // Capture the request before waiting in the queue; callers cannot mutate it later.
-  const command = { type: action.type, hand: action.hand, itemId: action.itemId, index: action.index };
+  return Object.fromEntries(["type", "hand", "itemId", "index", "from", "to", "receiptId"]
+    .filter(key => action[key] !== undefined).map(key => [key, action[key]]));
+}
+
+function receipts(actor) {
+  const stored = actor.getFlag(MODULE_ID, RECEIPTS_FLAG);
+  return Array.isArray(stored) ? stored : [];
+}
+
+/** Read a bounded operation receipt; it is committed in the same write as the grips. */
+export function getEquipmentReceipt(actor, id) {
+  assertActor(actor);
+  const receipt = receipts(actor).find(entry => entry?.id === id);
+  return receipt ? structuredClone(receipt) : null;
+}
+
+function planCommand(actor, state, command) {
+  const hands = { ...state.hands };
+  const slots = getStoredSlots(actor);
+  const update = {};
+  const validIndex = index => Number.isInteger(index) && index >= 0 && index < state.slots.length;
+  switch (command.type) {
+    case "hold": {
+      assertHand(command.hand);
+      const item = actor.items.get(command.itemId);
+      const held = Object.values(state.hands).includes(command.itemId);
+      if (typeof command.itemId !== "string" || !item || !isAllowedQuickItem(item) ||
+          (!held && !state.slots.some(s => s.itemId === command.itemId && s.canHold))) {
+        throw new Error("Only an existing eligible item in an available Quick Access slot or already held can be held.");
+      }
+      const targets = command.hand === "both" ? ["left", "right"] : [command.hand];
+      stowItem(hands, command.itemId);
+      for (const hand of targets) stowItem(hands, hands[hand]);
+      for (const hand of targets) hands[hand] = command.itemId;
+      break;
+    }
+    case "stow":
+      assertHand(command.hand);
+      if (command.hand === "both") hands.left = hands.right = null;
+      else stowItem(hands, hands[command.hand]);
+      break;
+    case "swapHands":
+      [hands.left, hands.right] = [hands.right, hands.left];
+      break;
+    case "clearSlot":
+      if (!validIndex(command.index)) throw new RangeError("Invalid Quick Access slot index.");
+      if (slots[command.index] != null) slots[command.index] = null;
+      break;
+    case "assignSlot": {
+      if (!validIndex(command.index) || command.index >= state.capacity) throw new RangeError("Invalid available slot index.");
+      const item = actor.items.get(command.itemId);
+      if (!item || !isAllowedQuickItem(item)) throw new Error("Only an eligible inventory item can be assigned.");
+      while (slots.length <= command.index) slots.push(null);
+      // Move a binding instead of duplicating the same inventory item.
+      for (let index = 0; index < slots.length; index++) if (slots[index] === item.id) slots[index] = null;
+      slots[command.index] = item.id;
+      break;
+    }
+    case "swapSlots":
+      if (!validIndex(command.from) || !validIndex(command.to) || command.to >= state.capacity) throw new RangeError("Invalid slot indices.");
+      while (slots.length <= Math.max(command.from, command.to)) slots.push(null);
+      [slots[command.from], slots[command.to]] = [slots[command.to], slots[command.from]];
+      break;
+    case "undo": {
+      const receipt = getEquipmentReceipt(actor, command.receiptId);
+      if (!receipt?.changed || receipt.command?.type === "undo") throw new Error("No equipment operation to undo.");
+      for (const key of ["hands", "slots"]) {
+        if (!(key in receipt.after)) continue;
+        const current = key === "hands" ? state.hands : getStoredSlots(actor);
+        if (JSON.stringify(current) !== JSON.stringify(receipt.after[key])) throw new Error("Equipment changed since the operation; undo is unsafe.");
+        const ids = key === "hands" ? Object.values(receipt.before[key]) : receipt.before[key];
+        if (ids.some(id => typeof id === "string" && !actor.items.get(id))) throw new Error("An item was removed; undo is unsafe.");
+        if (key === "hands") Object.assign(hands, receipt.before.hands);
+        else slots.splice(0, slots.length, ...receipt.before.slots);
+      }
+      break;
+    }
+    default: throw new TypeError("Unknown equipment action.");
+  }
+  if (JSON.stringify(hands) !== JSON.stringify(state.hands)) update[`flags.${MODULE_ID}.${HANDS_FLAG}`] = hands;
+  if (JSON.stringify(slots) !== JSON.stringify(getStoredSlots(actor))) update[`flags.${MODULE_ID}.${FLAG_SLOTS}`] = slots;
+  return { hands, slots, update, changed: Boolean(Object.keys(update).length) };
+}
+
+/** Validate and preview exactly the same transition that the writer will execute. */
+export function previewEquipmentAction(actor, action) {
+  assertActor(actor);
+  const state = getEquipmentState(actor);
+  const { hands, slots, changed } = planCommand(actor, state, captureCommand(action));
+  return { hands, slots, changed, displaced: [...new Set(Object.values(state.hands))]
+    .filter(id => id && !Object.values(hands).includes(id)).map(id => describeItem(actor.items.get(id))) };
+}
+
+/** Execute narrow commands, optionally with a durable idempotency receipt. */
+export async function performEquipmentAction(actor, action, { expectedRevision, operationId } = {}) {
+  assertActor(actor);
+  const command = captureCommand(action);
+  if (operationId !== undefined && (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(operationId))) throw new TypeError("Invalid equipment operation id.");
   return enqueue(actor, async () => {
     assertActor(actor);
     if (!canModifyActor(actor)) throw new Error("No permission to modify this character.");
+    const previous = operationId ? getEquipmentReceipt(actor, operationId) : null;
+    if (previous) {
+      if (JSON.stringify(previous.command) !== JSON.stringify(command)) throw new Error("Operation id was already used for another command.");
+      return { changed: previous.changed, state: getEquipmentState(actor), receipt: previous, replayed: true };
+    }
     const state = getEquipmentState(actor);
     if (expectedRevision !== undefined && expectedRevision !== state.revision) {
       throw new Error("Equipment changed. Refresh the snapshot before trying again.");
     }
-    const hands = { ...state.hands };
-    const update = {};
-    switch (command.type) {
-      case "hold": {
-        assertHand(command.hand);
-        if (typeof command.itemId !== "string" || !state.slots.some(s => s.itemId === command.itemId && s.canHold)) {
-          throw new Error("Only an existing eligible item in an available Quick Access slot can be held.");
-        }
-        // Replacing one half of a two-handed grip releases the entire old grip.
-        const targets = command.hand === "both" ? ["left", "right"] : [command.hand];
-        stowItem(hands, command.itemId);
-        for (const hand of targets) stowItem(hands, hands[hand]);
-        for (const hand of targets) hands[hand] = command.itemId;
-        break;
-      }
-      case "stow": {
-        assertHand(command.hand);
-        if (command.hand === "both") hands.left = hands.right = null;
-        else stowItem(hands, hands[command.hand]);
-        break;
-      }
-      case "swapHands": {
-        [hands.left, hands.right] = [hands.right, hands.left];
-        break;
-      }
-      case "clearSlot": {
-        if (!Number.isInteger(command.index) || command.index < 0 || command.index >= state.slots.length) {
-          throw new RangeError("Invalid Quick Access slot index.");
-        }
-        const slots = getStoredSlots(actor);
-        if (slots[command.index] != null) {
-          slots[command.index] = null;
-          update[`flags.${MODULE_ID}.${FLAG_SLOTS}`] = slots;
-        }
-        break;
-      }
-      default: throw new TypeError("Unknown equipment action.");
+    const { hands, slots, update, changed } = planCommand(actor, state, command);
+    let receipt = null;
+    if (operationId && changed) {
+      const before = {}, after = {};
+      if (`flags.${MODULE_ID}.${HANDS_FLAG}` in update) { before.hands = state.hands; after.hands = hands; }
+      if (`flags.${MODULE_ID}.${FLAG_SLOTS}` in update) { before.slots = getStoredSlots(actor); after.slots = slots; }
+      receipt = { id: operationId, command, changed, before, after };
+      update[`flags.${MODULE_ID}.${RECEIPTS_FLAG}`] = [...receipts(actor).slice(-31), receipt];
     }
-    if (JSON.stringify(hands) !== JSON.stringify(state.hands)) {
-      update[`flags.${MODULE_ID}.${HANDS_FLAG}`] = hands;
-    }
-    const changed = Boolean(Object.keys(update).length);
     if (changed) {
       // Foundry can cancel an update without rejecting its Promise.
-      const updatedActor = await actor.update(update);
+      const updatedActor = await actor.update(update, { render: false, fblqaEquipmentOnly: true });
       if (!updatedActor) {
         throw new Error("Equipment update was cancelled. Refresh the snapshot before trying again.");
       }
+      const saved = getEquipmentState(actor);
+      const savedReceipt = operationId ? getEquipmentReceipt(actor, operationId) : null;
+      if ((`flags.${MODULE_ID}.${HANDS_FLAG}` in update && JSON.stringify(saved.hands) !== JSON.stringify(hands)) ||
+          (`flags.${MODULE_ID}.${FLAG_SLOTS}` in update && JSON.stringify(getStoredSlots(actor)) !== JSON.stringify(slots)) ||
+          (receipt && JSON.stringify(savedReceipt) !== JSON.stringify(receipt))) {
+        throw new Error("Equipment changed during the update. Refresh the snapshot before trying again.");
+      }
     }
-    return { changed, state: getEquipmentState(actor) };
+    return { changed, state: getEquipmentState(actor), ...(receipt ? { receipt } : {}) };
   });
 }
 

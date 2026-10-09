@@ -5,6 +5,7 @@ import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { getActorAttributeMaximum } from "./actor-data.js";
 import { firstFiniteNumber } from "./utils.js";
+import { getEquipmentGrip } from "./equipment-hands.js";
 
 export function getQuickCapacity(actor) {
   const system = actor.system ?? {};
@@ -178,6 +179,14 @@ function buildSlot(app, actor, index, itemId, item) {
   name.textContent = item.name;
 
   openButton.append(img, name);
+  const grip = getEquipmentGrip(actor, item.id);
+  if (grip) {
+    const held = document.createElement("span");
+    held.className = "fblqa-grip-label";
+    held.textContent = grip;
+    held.title = grip === "2Р" ? "Обе руки" : grip === "Л" ? "Левая рука" : "Правая рука";
+    openButton.append(held);
+  }
   const removeButton = makeRemoveButton(app, actor, index);
   slot.append(openButton, removeButton);
   return slot;

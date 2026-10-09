@@ -61,6 +61,15 @@ export function setupTalentItemTooltips(actor, talentTab) {
   setupItemTooltipsInContainer(actor, talentTab);
 }
 
+/** Attach the existing rich tooltip to public widget item buttons. */
+export function setupEquipmentItemTooltips(actor, container) {
+  if (!container?.querySelectorAll) return;
+  if (itemTooltipAnchor && !itemTooltipAnchor.isConnected) hideItemTooltip();
+  for (const row of container.querySelectorAll("[data-equipment-item][data-item-id]")) {
+    if (findItemForTooltip(actor, row)) attachTooltipToRow(actor, row);
+  }
+}
+
 function setupItemTooltipsInContainer(actor, container, { ignoredRoot = null } = {}) {
   const rows = collectItemRows(container, { ignoredRoot })
     .filter((row) => findItemForTooltip(actor, row));
@@ -110,6 +119,7 @@ function attachTooltipToRow(actor, row) {
 }
 
 function findTooltipAnchors(row) {
+  if (row.matches?.("button")) return [row];
   const selectors = [
     "img",
     ".fblqa-gear-card",

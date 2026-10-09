@@ -5,7 +5,7 @@ import { readFileSync } from "node:fs";
 globalThis.CONFIG = { fbl: {} };
 globalThis.game = { user: { id: "player" } };
 globalThis.CONST = { DOCUMENT_OWNERSHIP_LEVELS: { OBSERVER: 2 } };
-const { getEquipmentState, performEquipmentAction, registerEquipmentHooks } = await import("../scripts/integration/equipment-api.js");
+const { getEquipmentState, performEquipmentAction, registerEquipmentHooks, previewEquipmentAction, getEquipmentReceipt } = await import("../scripts/integration/equipment-api.js");
 
 function actorFixture({ owner = true, observer = true, slots = ["sword", "shield"], hands } = {}) {
   const flags = { slots: structuredClone(slots), equipmentHands: structuredClone(hands) };
@@ -228,4 +228,91 @@ test("equipment change hook follows Actor/Item updates even without sheet render
   handlers.get("deleteItem")({ parent: actor });
   handlers.get("createItem")({ parent: { documentName: "Item" } });
   assert.deepEqual(events, [["fblQuickAccess.equipmentChanged", actor], ["fblQuickAccess.equipmentChanged", actor]]);
+});
+
+test("preview shows displaced items and never writes; inventory contains only eligible items", () => {
+  const actor=actorFixture({hands:{left:'shield',right:'sword'}});
+  const plan=previewEquipmentAction(actor,{type:'hold',itemId:'sword',hand:'both'});
+  assert.deepEqual(plan.hands,{left:'sword',right:'sword'});
+  assert.deepEqual(plan.displaced.map(i=>i.id),['shield']);
+  assert.deepEqual(getEquipmentState(actor).inventory.map(i=>i.id),['sword','shield']);
+  assert.equal(actor.writes.length,0);
+});
+
+test("atomic receipts replay before stale-revision checks and reject id reuse", async () => {
+  const actor=actorFixture(), command={type:'hold',itemId:'sword',hand:'both'};
+  const options={operationId:'one',expectedRevision:getEquipmentState(actor).revision};
+  await performEquipmentAction(actor,command,options);
+  const replay=await performEquipmentAction(actor,command,options);
+  assert.equal(replay.replayed,true); assert.equal(actor.writes.length,1);
+  assert.ok(Object.hasOwn(actor.writes[0],'flags.fbl-quick-access.equipmentReceipts'));
+  const detached=getEquipmentReceipt(actor,'one'); detached.after.hands.left='wrong';
+  assert.equal(getEquipmentReceipt(actor,'one').after.hands.left,'sword');
+  await assert.rejects(performEquipmentAction(actor,{type:'stow',hand:'both'},{operationId:'one'}),/another command/);
+});
+
+test("assignment moves existing bindings, preserves overflow and rejects ineligible inventory", async () => {
+  const actor=actorFixture({slots:['sword',null,'shield','sword']});
+  await performEquipmentAction(actor,{type:'assignSlot',index:1,itemId:'sword'});
+  assert.deepEqual(actor.flags.slots,[null,'sword','shield',null]);
+  await assert.rejects(performEquipmentAction(actor,{type:'assignSlot',index:2,itemId:'shield'}),/available slot/);
+  await assert.rejects(performEquipmentAction(actor,{type:'assignSlot',index:0,itemId:'heavy'}),/eligible inventory/);
+});
+
+test("slot swap can recover overflow and clearSlot does not release a grip", async () => {
+  const actor=actorFixture({slots:['sword',null,'shield'],hands:{left:'shield',right:null}});
+  await performEquipmentAction(actor,{type:'swapSlots',from:2,to:1},{operationId:'move'});
+  assert.deepEqual(actor.flags.slots,['sword','shield',null]);
+  await performEquipmentAction(actor,{type:'clearSlot',index:1});
+  assert.deepEqual(getEquipmentState(actor).hands,{left:'shield',right:null});
+  await performEquipmentAction(actor,{type:'hold',itemId:'shield',hand:'both'});
+  assert.deepEqual(getEquipmentState(actor).hands,{left:'shield',right:'shield'});
+});
+
+test("undo restores only the touched fields and is itself safely replayable", async () => {
+  const actor=actorFixture();
+  await performEquipmentAction(actor,{type:'swapSlots',from:0,to:1},{operationId:'move'});
+  await performEquipmentAction(actor,{type:'hold',itemId:'sword',hand:'both'});
+  await performEquipmentAction(actor,{type:'undo',receiptId:'move'},{operationId:'move_undo'});
+  await performEquipmentAction(actor,{type:'undo',receiptId:'move'},{operationId:'move_undo'});
+  assert.deepEqual(actor.flags.slots,['sword','shield']);
+  assert.deepEqual(getEquipmentState(actor).hands,{left:'sword',right:'sword'});
+  assert.equal(actor.writes.length,3);
+});
+
+test("undo refuses modified postimages and deleted restored items", async () => {
+  const actor=actorFixture({hands:{left:'shield',right:null}});
+  await performEquipmentAction(actor,{type:'hold',itemId:'sword',hand:'both'},{operationId:'hold'});
+  actor.items.delete('shield');
+  assert.throws(()=>previewEquipmentAction(actor,{type:'undo',receiptId:'hold'}),/removed/);
+  actor.flags.equipmentHands={left:null,right:'sword'};
+  await assert.rejects(performEquipmentAction(actor,{type:'undo',receiptId:'hold'}),/changed since/);
+  assert.equal(actor.writes.length,1);
+});
+
+test("cancelled or rejected writes cannot leave a receipt, and retry uses the same id", async () => {
+  const actor=actorFixture(), command={type:'hold',itemId:'sword',hand:'left'};
+  actor.cancelNext=true;
+  await assert.rejects(performEquipmentAction(actor,command,{operationId:'retry'}),/cancelled/);
+  assert.equal(getEquipmentReceipt(actor,'retry'),null);
+  await performEquipmentAction(actor,command,{operationId:'retry'});
+  assert.equal(actor.writes.length,1);
+});
+
+test("receipts remain bounded and no-op operations do not write a receipt", async () => {
+  const actor=actorFixture();
+  await performEquipmentAction(actor,{type:'stow',hand:'both'},{operationId:'noop'});
+  assert.equal(getEquipmentReceipt(actor,'noop'),null);
+  for(let n=0;n<34;n++) await performEquipmentAction(actor,{type:'hold',itemId:'sword',hand:n%2?'right':'left'},{operationId:'op'+n});
+  assert.equal(actor.flags.equipmentReceipts.length,32);
+  assert.equal(getEquipmentReceipt(actor,'op0'),null);
+  assert.equal(getEquipmentReceipt(actor,'op33').id,'op33');
+});
+
+test("a hook-altered update cannot report success without its durable receipt", async () => {
+  const actor=actorFixture();
+  const original=actor.update;
+  actor.update=async function(data){const filtered={...data};delete filtered['flags.fbl-quick-access.equipmentReceipts'];return original.call(this,filtered);};
+  await assert.rejects(performEquipmentAction(actor,{type:'hold',hand:'left',itemId:'sword'},{operationId:'altered'}),/changed during the update/);
+  assert.equal(getEquipmentReceipt(actor,'altered'),null);
 });
