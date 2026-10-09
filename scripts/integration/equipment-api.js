@@ -126,8 +126,15 @@ export async function performEquipmentAction(actor, action, { expectedRevision }
     if (JSON.stringify(hands) !== JSON.stringify(state.hands)) {
       update[`flags.${MODULE_ID}.${HANDS_FLAG}`] = hands;
     }
-    if (Object.keys(update).length) await actor.update(update);
-    return { changed: Boolean(Object.keys(update).length), state: getEquipmentState(actor) };
+    const changed = Boolean(Object.keys(update).length);
+    if (changed) {
+      // Foundry can cancel an update without rejecting its Promise.
+      const updatedActor = await actor.update(update);
+      if (!updatedActor) {
+        throw new Error("Equipment update was cancelled. Refresh the snapshot before trying again.");
+      }
+    }
+    return { changed, state: getEquipmentState(actor) };
   });
 }
 

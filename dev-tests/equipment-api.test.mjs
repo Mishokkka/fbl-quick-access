@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 
 globalThis.CONFIG = { fbl: {} };
 globalThis.game = { user: { id: "player" } };
@@ -16,14 +17,16 @@ function actorFixture({ owner = true, observer = true, slots = ["sword", "shield
       ["shield", { id: "shield", name: "Shield", type: "armor", system: { weight: "normal" } }],
       ["heavy", { id: "heavy", name: "Heavy", type: "gear", system: { weight: "heavy" } }]
     ]),
-    flags, writes: [], failNext: false,
+    flags, writes: [], failNext: false, cancelNext: false,
     testUserPermission: () => observer,
     getFlag: (_module, key) => flags[key],
     async update(data) {
       await new Promise(resolve => setTimeout(resolve, 2));
       if (this.failNext) { this.failNext = false; throw new Error("storage failed"); }
+      if (this.cancelNext) { this.cancelNext = false; return undefined; }
       this.writes.push(structuredClone(data));
       for (const [path, value] of Object.entries(data)) flags[path.split(".").at(-1)] = structuredClone(value);
+      return this;
     }
   };
 }
@@ -137,12 +140,82 @@ test("queued revision and ownership checks run at execution time", async () => {
 
 test("repeated no-op commands do not write, and deleted held items disappear from snapshots", async () => {
   const actor = actorFixture({ hands: { left: "sword", right: null } });
-  await performEquipmentAction(actor, { type: "hold", hand: "left", itemId: "sword" });
+  actor.cancelNext = true;
+  const result = await performEquipmentAction(actor, { type: "hold", hand: "left", itemId: "sword" });
+  assert.equal(result.changed, false);
+  assert.equal(actor.cancelNext, true);
   assert.equal(actor.writes.length, 0);
   actor.items.delete("sword");
   const state = getEquipmentState(actor);
   assert.equal(state.hands.left, null);
   assert.equal(state.heldItems.left, null);
+});
+
+for (const command of [
+  { type: "hold", hand: "both", itemId: "sword" },
+  { type: "stow", hand: "left" },
+  { type: "swapHands" },
+  { type: "clearSlot", index: 0 }
+]) {
+  test(`cancelled ${command.type} rejects without changing hands, slots or inventory`, async () => {
+    const actor = actorFixture({ hands: { left: "shield", right: "sword" } });
+    const before = getEquipmentState(actor);
+    actor.cancelNext = true;
+    await assert.rejects(performEquipmentAction(actor, command, { expectedRevision: before.revision }), /update was cancelled/i);
+    assert.deepEqual(getEquipmentState(actor), before);
+    assert.equal(actor.writes.length, 0);
+    assert.equal(actor.items.size, 3);
+  });
+}
+
+test("queued commands recover after cancellation and keep the unchanged revision usable", async () => {
+  const actor = actorFixture();
+  const expectedRevision = getEquipmentState(actor).revision;
+  actor.cancelNext = true;
+  const cancelled = performEquipmentAction(actor, { type: "hold", hand: "left", itemId: "sword" }, { expectedRevision });
+  const next = performEquipmentAction(actor, { type: "hold", hand: "right", itemId: "shield" }, { expectedRevision });
+  await assert.rejects(cancelled, /update was cancelled/i);
+  const result = await next;
+  assert.equal(result.changed, true);
+  assert.deepEqual(result.state.hands, { left: null, right: "shield" });
+  assert.equal(actor.writes.length, 1);
+});
+
+test("documented equipment examples handle absent integrations and select an eligible owned slot", async () => {
+  const markdown = readFileSync(new URL("../INTEGRATION_API.md", import.meta.url), "utf8").replace(/\r\n/g, "\n");
+  const section = markdown.split("## Equipment and action-widget integration")[1].split("## Item tooltips")[0];
+  const snippets = [...section.matchAll(/```js\n([\s\S]*?)```/g)].map(match => match[1]);
+  const directExample = snippets.find(code => code.includes("qa.performEquipmentAction"));
+  const widgetExample = snippets.find(code => code.includes("widget.quickAccess.performAction"));
+  assert.ok(directExample && widgetExample);
+  const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
+  const run = async (code, modules, actor) => new AsyncFunction("game", "actor", code)({ modules }, actor);
+  await run(directExample, new Map(), actorFixture());
+  await run(widgetExample, new Map());
+  await run(widgetExample, new Map([["yze-combat-permission-fix", { api: {} }]]));
+  let writes = 0;
+  const quickAccess = { getState: () => null, performAction: async () => { writes++; } };
+  const modules = new Map([["yze-combat-permission-fix", { api: { quickAccess } }]]);
+  await run(widgetExample, modules);
+  assert.equal(writes, 0);
+  quickAccess.getState = () => ({ editable: false, revision: "readonly" });
+  await run(widgetExample, modules);
+  assert.equal(writes, 0);
+  quickAccess.getState = () => ({ editable: true, revision: "snapshot" });
+  quickAccess.performAction = async (command, options) => {
+    assert.deepEqual(command, { type: "swapHands" });
+    assert.deepEqual(options, { expectedRevision: "snapshot" });
+    writes++;
+  };
+  await run(widgetExample, modules);
+  assert.equal(writes, 1);
+  const actor = actorFixture({ slots: [null, "sword"] });
+  const qa = { capabilities: { equipment: true }, equipmentApiVersion: 1, getEquipmentState, performEquipmentAction };
+  await run(directExample, new Map([["fbl-quick-access", { api: qa }]]), actor);
+  assert.deepEqual(getEquipmentState(actor).hands, { left: null, right: "sword" });
+  const emptyActor = actorFixture({ slots: [] });
+  await run(directExample, new Map([["fbl-quick-access", { api: qa }]]), emptyActor);
+  assert.equal(emptyActor.writes.length, 0);
 });
 
 test("equipment change hook follows Actor/Item updates even without sheet renders", () => {

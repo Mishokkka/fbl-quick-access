@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.27
+Version 1.7.28
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -139,7 +139,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.27:
+Available methods in 1.7.28:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -300,6 +300,12 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.28
+
+- Reject equipment commands when Foundry cancels Actor persistence instead of reporting a saved change. Preserve no-op results and allow the per-Actor queue to continue after cancellation.
+- Guard optional widget state and editable permissions in integration examples; choose an eligible Quick Access slot instead of assuming the first slot is occupied.
+- Add six regressions covering cancellation of all four commands, queue recovery and execution of the documented examples. API versions, slot storage and combat behavior remain unchanged.
 
 ### 1.7.27
 

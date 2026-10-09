@@ -40,9 +40,12 @@ Both modules remain optional for each other. No startup migration is required.
 const qa = game.modules.get("fbl-quick-access")?.api;
 if (qa?.capabilities?.equipment && qa.equipmentApiVersion === 1) {
   const state = qa.getEquipmentState(actor);
-  await qa.performEquipmentAction(actor,
-    { type: "hold", itemId: state.slots[0].itemId, hand: "right" },
-    { expectedRevision: state.revision });
+  const slot = state.slots.find(slot => slot.available && slot.canHold && slot.itemId);
+  if (state.editable && slot) {
+    await qa.performEquipmentAction(actor,
+      { type: "hold", itemId: slot.itemId, hand: "right" },
+      { expectedRevision: state.revision });
+  }
 }
 ```
 
@@ -62,7 +65,12 @@ Actor and OWNER or OBSERVER permission. It returns detached serializable data:
 
 `performEquipmentAction(actor, command, options?)` returns a Promise of
 `{ changed, state }`. It rejects invalid commands, insufficient permissions,
-failed persistence and mismatched `options.expectedRevision`.
+failed or cancelled persistence and mismatched `options.expectedRevision`.
+Since **1.7.28**, an update cancelled by Foundry (resolving without an updated
+Document) rejects instead of reporting `changed: true`. A no-op still resolves
+with `changed: false` without calling `Actor.update`. Consumers must await a
+successful changed result before charging a related combat action; on rejection,
+refresh the snapshot and let the user retry explicitly.
 
 | Command | Fields | Meaning |
 | --- | --- | --- |
@@ -95,9 +103,11 @@ In `yze-combat-permission-fix` 1.2.0 the reciprocal public bridge is:
 
 ```js
 const widget = game.modules.get("yze-combat-permission-fix")?.api;
-const state = widget?.quickAccess.getState(); // current combatant; null if unavailable
-await widget.quickAccess.performAction(
-  { type: "swapHands" }, { expectedRevision: state.revision });
+const state = widget?.quickAccess?.getState(); // current combatant; null if unavailable
+if (state?.editable) {
+  await widget.quickAccess.performAction(
+    { type: "swapHands" }, { expectedRevision: state.revision });
+}
 ```
 
 The bridge requires an active compatible Quick Access module and resolves the
