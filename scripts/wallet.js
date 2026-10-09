@@ -11,8 +11,9 @@ import {
   parseCurrencyExpression
 } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
-import { buildActorCurrencyUpdate, getActorCurrencyPath } from "./actor-data.js";
-import { createObjectOperationQueue } from "./operation-queue.js";
+import { buildActorCurrencyUpdate } from "./actor-data.js";
+import { createObjectOperationQueue, enqueueCurrencyOperation } from "./operation-queue.js";
+import { executeAsActiveGM, getActiveGM, hasSocketHandler, registerSocketHandler } from "./integration/socket-api.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { localizeOrFallback, rerenderSheet } from "./utils.js";
 import { openMoneyTransferDialog } from "./money-transfer.js";
@@ -20,8 +21,58 @@ import { openMoneyTransferDialog } from "./money-transfer.js";
 const OPEN_WALLET_ACTORS = new Set();
 const ACTIVE_WALLET_SUMMARIES = new Set();
 const enqueueWalletOperation = createObjectOperationQueue();
+const WALLET_OPERATION = "wallet.apply-change";
+
+export function initializeWalletOperations() {
+  if (hasSocketHandler(WALLET_OPERATION)) return;
+  registerSocketHandler(WALLET_OPERATION, async (payload, context) => {
+    return enqueueCurrencyOperation(async () => {
+      const actor = payload?.actorUuid ? await fromUuid(payload.actorUuid) : game.actors?.get?.(payload?.actorId);
+      if (!actor || actor.documentName !== "Actor" || actor.type !== "character"
+        || context.requestUser?.active === false
+        || (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER"))) {
+        throw new Error("Wallet change requires ownership of a character");
+      }
+      if (!CURRENCY_BY_KEY[payload.key]) throw new TypeError("Unknown currency");
+      if (payload.mode !== "input" && payload.mode !== "delta") throw new TypeError("Invalid wallet operation");
+      if (payload.mode === "delta" && !Number.isSafeInteger(payload.value)) throw new TypeError("Invalid wallet delta");
+      if (payload.mode === "input" && (typeof payload.value !== "string" || payload.value.length > 200)) throw new TypeError("Invalid wallet expression");
+      const parsed = payload.mode === "input" ? parseCurrencyExpression(String(payload.value)) : null;
+      if (parsed && !parsed.ok) throw new TypeError("Invalid wallet expression");
+      const delta = payload.mode === "delta" ? payload.value : parsed.relative ? parsed.value : parsed.value - getCurrencyValue(actor, payload.key);
+      const total = CURRENCIES.reduce((sum, currency) => {
+        const value = getCurrencyValue(actor, currency.key);
+        if (!Number.isSafeInteger(value) || value < 0) throw new RangeError("Invalid stored wallet value");
+        return sum + BigInt(value) * BigInt(currency.unit);
+      }, 0n);
+      if (!Number.isSafeInteger(delta) || total + BigInt(delta) * BigInt(CURRENCY_BY_KEY[payload.key].unit) > BigInt(Number.MAX_SAFE_INTEGER)) {
+        throw new RangeError("Wallet total exceeds the safe integer limit");
+      }
+      if (delta < 0 && getWalletCopperTotal(actor) + delta * CURRENCY_BY_KEY[payload.key].unit < 0) {
+        throw Object.assign(new Error("Insufficient funds"), { code: "insufficient-funds" });
+      }
+      if (payload.mode === "delta" && Number.isSafeInteger(payload.value)) await changeCurrencyUnlocked(null, actor, payload.key, payload.value);
+      else if (payload.mode === "input" && typeof payload.value === "string" && payload.value.length <= 200) await applyCurrencyInputUnlocked(null, actor, payload.key, payload.value, null);
+      else throw new TypeError("Invalid wallet operation");
+      return { values: getWalletValues(actor) };
+    });
+  });
+}
+
+async function dispatchWalletChange(actor, payload, localOperation) {
+  markWalletOpenUnlessExpanded(actor);
+  const gm = getActiveGM();
+  if (gm) {
+    initializeWalletOperations();
+    return executeAsActiveGM(WALLET_OPERATION, { actorUuid: actor.uuid, actorId: actor.id, ...payload });
+  }
+  // Preserve owner-only play without a GM; cross-client coordination requires
+  // an active authority. Transfers already require an active GM.
+  return enqueueCurrencyOperation(localOperation);
+}
 
 export function registerWalletListeners() {
+  initializeWalletOperations();
   document.addEventListener("click", closeOpenWallets);
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") closeOpenWallets();
@@ -318,6 +369,10 @@ function buildRoundCheckbox({ checked, ariaLabel, onChange }) {
 }
 
 async function changeCurrency(app, actor, key, delta, sourceElement = null) {
+  return dispatchWalletChange(actor, { mode: "delta", key, value: delta }, () => changeCurrencyUnlocked(app, actor, key, delta, sourceElement));
+}
+
+async function changeCurrencyUnlocked(app, actor, key, delta, sourceElement = null) {
   const currency = CURRENCY_BY_KEY[key];
   if (!currency) return;
 
@@ -337,13 +392,19 @@ async function setCurrencyValue(app, actor, key, value) {
     return;
   }
 
-  const number = Math.max(0, Math.floor(Number(value) || 0));
+  const update = buildActorCurrencyUpdate(actor, { [key]: value });
   markWalletOpenUnlessExpanded(actor);
-  await actor.update({ [getActorCurrencyPath(actor, key)]: number });
+  await actor.update(update);
   markWalletOpenUnlessExpanded(actor);
 }
 
 async function applyCurrencyInput(app, actor, key, rawValue, input) {
+  const parsed = parseCurrencyExpression(String(rawValue ?? "").trim());
+  if (!parsed.ok) { showWalletMessage(input, qaLocalize("Wallet.InvalidInput", "Можно использовать только числа, + и -.")); resetCurrencyInput(actor, key, input); return; }
+  return dispatchWalletChange(actor, { mode: "input", key, value: String(rawValue) }, () => applyCurrencyInputUnlocked(app, actor, key, rawValue, input));
+}
+
+async function applyCurrencyInputUnlocked(app, actor, key, rawValue, input) {
   if (!canModifyActor(actor)) {
     warnCannotModifyActor(qaLocalize("Permissions.NoCurrencyModify", "Нет прав на изменение валюты этого персонажа."));
     resetCurrencyInput(actor, key, input);
@@ -459,18 +520,12 @@ function spendCopperFromWalletValues(values, amountCopper, preferredKey) {
     .sort((a, b) => a.unit - b.unit);
 
   for (const currency of larger) {
-    while (remaining > 0 && values[currency.key] > 0) {
-      values[currency.key] -= 1;
-
-      if (currency.unit >= remaining) {
-        const changeCopper = currency.unit - remaining;
-        remaining = 0;
-        addChange(values, changeCopper, currency.unit);
-        return true;
-      }
-
-      remaining -= currency.unit;
-    }
+    const count = Math.min(values[currency.key], Math.ceil(remaining / currency.unit));
+    if (!count) continue;
+    values[currency.key] -= count;
+    const paid = count * currency.unit;
+    if (paid >= remaining) { addChange(values, paid - remaining, currency.unit); return true; }
+    remaining -= paid;
   }
 
   // Last resort: if a higher selected denomination was being spent and smaller coins cover it,
@@ -597,7 +652,9 @@ async function runWalletOperation(actor, sourceElement, operation) {
     return await enqueueWalletOperation(actor, operation);
   } catch (error) {
     console.error("fbl-quick-access | wallet operation failed", error);
-    ui.notifications?.error?.(qaLocalize("Wallet.UpdateFailed", "Could not update the wallet."));
+    if (error?.code === "insufficient-funds") showInsufficientFunds(sourceElement);
+    else ui.notifications?.error?.(qaLocalize("Wallet.UpdateFailed", "Could not update the wallet."));
+    if (row?.dataset?.currency) resetCurrencyInput(actor, row.dataset.currency, sourceElement);
     return undefined;
   } finally {
     setWalletRowBusy(row, false);

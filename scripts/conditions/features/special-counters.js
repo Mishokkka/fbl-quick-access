@@ -1,7 +1,13 @@
 import { FLAGS, MODULE_ID, SETTINGS, DEFAULT_ADDICTION_STATE, flagUpdatePath } from "../constants.js";
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
+import { getConditionKind } from "../condition-kind.js";
+import { createObjectOperationQueue } from "../../operation-queue.js";
+import { makeSocketRequestId } from "../../socket-utils.js";
+
 import { isFeatureEnabled } from "../settings.js";
 import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger } from "../utils.js";
+
+const enqueueHeatChange = createObjectOperationQueue();
 
 export function getHeatDefinition() {
   const definition = CONDITION_DEFINITIONS.heat || { names: ["жара", "heat"], max: 4, levels: {} };
@@ -20,16 +26,15 @@ export function getHeatDefinition() {
 }
 
 export function isHeatCondition(item) {
-  return isFeatureEnabled(SETTINGS.FEATURE_HEAT) && isNamedSpecialCondition(item, getHeatDefinition());
+  return isFeatureEnabled(SETTINGS.FEATURE_HEAT) && getConditionKind(item) === "heat";
 }
 
 export function isMorCondition(item) {
-  return isFeatureEnabled(SETTINGS.FEATURE_MOR) && ["мор", "mor"].includes(normalizeConditionName(item?.name));
+  return isFeatureEnabled(SETTINGS.FEATURE_MOR) && getConditionKind(item) === "mor";
 }
 
 export function isAddictionCondition(item) {
-  const name = normalizeConditionName(item?.name);
-  return isFeatureEnabled(SETTINGS.FEATURE_ADDICTION) && (name.includes("зависимость") || name.includes("addiction"));
+  return isFeatureEnabled(SETTINGS.FEATURE_ADDICTION) && getConditionKind(item) === "addiction";
 }
 
 export function parseHeatValue(item) {
@@ -173,9 +178,7 @@ export function normalizeAddictionSeverityChange(state, nextSeverity) {
   return state;
 }
 
-export async function updateAddictionModifiers(item, state, documentOptions = {}) {
-  if (!item) return;
-
+export function buildAddictionModifierUpdate(item, state) {
   const nextModifiers = buildAddictionModifiers(state);
   const nextKeys = Object.keys(nextModifiers);
   const desiredKeys = new Set(nextKeys);
@@ -206,7 +209,17 @@ export async function updateAddictionModifiers(item, state, documentOptions = {}
     updateData[`system.rollModifiers.${key}`] = modifier;
   }
 
-  await item.update(updateData, documentOptions);
+  return updateData;
+}
+
+export async function updateAddictionModifiers(item, state, documentOptions = {}) {
+  if (item) await item.update(buildAddictionModifierUpdate(item, state), documentOptions);
+}
+
+export async function saveAddictionState(item, state, documentOptions = {}) {
+  if (!item) return;
+  await item.update({ ...buildAddictionModifierUpdate(item, state),
+    [flagUpdatePath(FLAGS.ADDICTION_STATE)]: state }, documentOptions);
 }
 
 function getHeatThresholdDamage(previousValue, value, overcap = false) {
@@ -229,6 +242,10 @@ function getHeatThresholdDamage(previousValue, value, overcap = false) {
 
 export async function updateHeatItem(actor, item, newValue, reason = "manual", documentOptions = {}) {
   if (!item) return null;
+  return enqueueHeatChange(item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
+}
+
+async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 
   const heat = getHeatDefinition();
   const previousValue = parseHeatValue(item);
@@ -236,12 +253,31 @@ export async function updateHeatItem(actor, item, newValue, reason = "manual", d
   const value = clampNumber(newValue, 0, heat.max);
   const damage = (value > previousValue || overcap) ? getHeatThresholdDamage(previousValue, value, overcap) : {};
 
+  const pendingKey = "conditions.heatPendingChange";
+  let pending = item.getFlag?.(MODULE_ID, pendingKey);
+  if (pending && pending.value !== value) {
+    throw new Error(localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again."));
+  }
+  if (!pending && Object.keys(damage).length) {
+    pending = { id: makeSocketRequestId(), previousValue, value, damage, overcap };
+    // Keep the visible counter unchanged until the damage is committed.
+    await item.update({ [flagUpdatePath(pendingKey)]: pending }, documentOptions);
+  }
+  let appliedDamage = [];
+  if (pending) {
+    const receiptKey = `conditions.heatReceipts.${item.id}`;
+    const receipt = actor.getFlag?.(MODULE_ID, receiptKey);
+    if (receipt?.id === pending.id) appliedDamage = receipt.appliedDamage ?? [];
+    else appliedDamage = await applyActorAttributeDamage(actor, pending.damage, documentOptions, applied => ({
+      [`flags.${MODULE_ID}.${receiptKey}`]: { id: pending.id, appliedDamage: applied }
+    }));
+  }
   await item.update({
     [flagUpdatePath(FLAGS.HEAT_VALUE)]: value,
+    [flagUpdatePath(pendingKey)]: null,
     "system.healingTime": ""
   }, documentOptions);
 
-  const appliedDamage = Object.keys(damage).length ? await applyActorAttributeDamage(actor, damage, documentOptions) : [];
 
   return {
     previousValue,

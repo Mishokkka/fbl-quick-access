@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { existsSync, readFileSync, readdirSync } from "node:fs";
-import { dirname, join, normalize } from "node:path";
+import { basename, dirname, join, normalize } from "node:path";
 import { fileURLToPath } from "node:url";
 import { findCssRules, hasExactDeclaration } from "./helpers/css-rules.mjs";
 
@@ -148,7 +148,7 @@ test("Expanded Conditions controllers do not reintroduce raw Cyrillic UI strings
     "stat-tab-renderer.js"
   ]);
   for (const file of collectScriptFiles(join(root, "scripts/conditions"))) {
-    if (allowMechanicalAliases.has(file.split(/[\/]/).at(-1))) continue;
+    if (allowMechanicalAliases.has(basename(file))) continue;
     assert.doesNotMatch(readFileSync(file, "utf8"), /[А-Яа-яЁё]/, `${file} should use localization keys`);
   }
 });

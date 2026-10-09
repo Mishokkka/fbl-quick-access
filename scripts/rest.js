@@ -481,11 +481,11 @@ async function applyRest(app, actor, options, context = {}) {
     if (result.flagValue !== undefined) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = result.flagValue;
     }
-    // Clearing wins if a future rule ever requests both in the same rest result.
+    // Reset clears the previous use; a successful recovery records the new use.
     // Use a normal null assignment instead of Foundry's `.-=` deletion path:
     // Forbidden Lands v13 can reject that deletion shape in Actor._preUpdate.
     // All Short Rest reads already treat null exactly like an absent marker.
-    if (result.clearShortRestFlag) {
+    if (result.clearShortRestFlag && result.flagValue === undefined) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = null;
     }
 
@@ -500,7 +500,13 @@ async function applyRest(app, actor, options, context = {}) {
     }
 
     if (result.changed || shouldPostNoChangeRestCards()) {
-      await postRestChatMessage(actor, result, options);
+      try {
+        await postRestChatMessage(actor, result, options);
+      } catch (error) {
+        result.notificationError = String(error?.message ?? error);
+        console.error(`${MODULE_ID} | rest applied but chat failed`, error);
+        ui.notifications?.warn?.(qaLocalize("Rest.ChatFailed", "Отдых применен, но сообщение в чат не отправлено."));
+      }
     }
     // A real Document mutation already asks Foundry to refresh dependent sheets.
     // Preserve the historical explicit refresh only for a no-op rest.

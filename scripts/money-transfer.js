@@ -13,6 +13,7 @@ import {
   verifySocketProofWithRetry
 } from "./socket-auth.js";
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
+import { enqueueCurrencyOperation } from "./operation-queue.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
@@ -27,7 +28,6 @@ const PROOF_GRACE_MS = 60_000;
 const SEEN_PACKET_LIMIT = 200;
 
 let socketRegistered = false;
-let transferQueue = Promise.resolve();
 const pendingRequests = new Map();
 const gmOffers = new Map();
 const earlyDecisions = new Map();
@@ -388,8 +388,18 @@ async function processTransferDecision(offer, message) {
     return;
   }
 
-  const sourceActor = game.actors?.get?.(offer.sourceActorId);
-  const result = await enqueueTransfer(() => executeMoneyTransfer(sourceActor, targetActor, offer.amounts));
+  const result = await enqueueTransfer(() => {
+    const sourceActor = game.actors?.get?.(offer.sourceActorId);
+    const currentTargetActor = game.actors?.get?.(offer.targetActorId);
+    const requester = findGameUser(offer.requesterId);
+    const currentRecipient = findGameUser(offer.recipientUserId);
+    const activeGM = getPrimaryActiveGm();
+    if (!requester?.active || !userOwnsActor(requester, sourceActor)) return { ok: false, error: "invalid-request" };
+    if (!currentRecipient?.active || !userOwnsActor(currentRecipient, currentTargetActor)) return { ok: false, error: "invalid-recipient" };
+    if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id) return { ok: false, error: "invalid-request" };
+    if (Date.now() - offer.createdAt > REQUEST_TIMEOUT_MS) return { ok: false, error: "recipient-timeout" };
+    return executeMoneyTransfer(sourceActor, currentTargetActor, offer.amounts);
+  });
   await finalizeTransferOffer(offer, result);
 }
 
@@ -668,9 +678,7 @@ async function postTransferWhisper(offer, result) {
 }
 
 function enqueueTransfer(operation) {
-  const next = transferQueue.catch(() => {}).then(operation);
-  transferQueue = next.catch(() => {});
-  return next;
+  return enqueueCurrencyOperation(operation);
 }
 
 function buildMoneyTransferDialogContent(sourceActor, targets) {

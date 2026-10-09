@@ -70,6 +70,7 @@ export async function applyNewDayProviderAction(actor, action, options = {}) {
     actorUuid: actor?.uuid ?? "",
     actorId: actor?.id ?? "",
     action: action.providerAction ?? stripQuickAccessActionFields(action),
+    actionId: action.providerActionId,
     suppressChat: Boolean(options.suppressChat)
   });
 }
@@ -196,14 +197,23 @@ async function handleApplyProviderAction(payload, context) {
 
   // Private provider summaries are GM-visible audit output. A remote player
   // must not be able to suppress them merely by forging a socket payload.
-  const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM);
-  const result = await provider.applyAction(actor, payload?.action ?? {}, Object.freeze({
+  const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM) && !context.isRemote;
+  const providerContext = Object.freeze({
     requesterId: context.requesterId,
     requestUser: context.requestUser,
     activeGM: context.activeGM,
     isRemote: context.isRemote,
     suppressChat
-  })) ?? {};
+  });
+  const { suppressChat: _suppressChat, ...buildContext } = providerContext;
+  const freshActions = await provider.buildActions(actor, Object.freeze(buildContext)) ?? [];
+  if (!Array.isArray(freshActions)) throw new TypeError("Provider actions must be an array");
+  const actionId = String(payload?.actionId ?? payload?.action?.id ?? 0);
+  const action = freshActions.find((candidate, index) => String(candidate.id ?? index).trim() === actionId);
+  if (!action || canonicalAction(action) !== canonicalAction(payload.action)) {
+    throw Object.assign(new Error("Provider action changed. Refresh the preview."), { code: "stale-provider-action" });
+  }
+  const result = await provider.applyAction(actor, action, providerContext) ?? {};
 
   const normalized = {
     changed: Boolean(result.changed),
@@ -212,10 +222,16 @@ async function handleApplyProviderAction(payload, context) {
 
   if (result.privateSummary) {
     if (!suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
-    if (context.requestUser?.isGM) normalized.privateSummary = String(result.privateSummary);
+    if (context.requestUser?.isGM && !context.isRemote) normalized.privateSummary = String(result.privateSummary);
   }
 
   return normalized;
+}
+
+function canonicalAction(value) {
+  const normalize = entry => Array.isArray(entry) ? entry.map(normalize)
+    : entry && typeof entry === "object" ? Object.fromEntries(Object.keys(entry).sort().map(key => [key, normalize(entry[key])])) : entry;
+  return JSON.stringify(normalize(value));
 }
 
 function requireProvider(id) {

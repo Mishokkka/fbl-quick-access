@@ -14,14 +14,15 @@ import { getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } 
 import { openRestDialog, setupRestButton } from "./rest.js";
 import { buildNewDayPlan, buildNewDayPlanWithProviders, openNewDayDialog } from "./new-day.js";
 import { removeChargenButton } from "./header-controls.js";
-import { handleExpandedConditionsCreateItem, initExpandedConditions, readyExpandedConditions, renderExpandedConditions } from "./conditions/main.js";
+import { handleExpandedConditionsCreateItem, initExpandedConditions, invalidateExpandedConditionsRender, readyExpandedConditions, renderExpandedConditions } from "./conditions/main.js";
 import { getStoredSlots, saveSlots } from "./quick-access.js";
 import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences } from "./data-hygiene.js";
 import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
-import { cleanupBiographyTab, closeBiographyDrawer, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
+import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
+import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
 
@@ -100,6 +101,9 @@ Hooks.on("renderSettingsConfig", (_app, htmlOrElement) => {
 Hooks.on("createItem", handleExpandedConditionsCreateItem);
 Hooks.on("deleteItem", handleDeletedActorItem);
 Hooks.on("deleteActor", handleDeletedActor);
+Hooks.on("updateActor", (actor, _changes, options, userId) => scheduleStatSync(actor, options, userId));
+Hooks.on("updateItem", (item, _changes, options, userId) => scheduleStatSync(item.parent, options, userId));
+Hooks.on("deleteItem", (item, options, userId) => scheduleStatSync(item.parent, options, userId));
 Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInjected);
 
 // Forbidden Lands v13.0.5 still uses ApplicationV1 actor sheets. The concrete
@@ -334,12 +338,15 @@ function renderItemSheetVisuals(app, htmlOrElement) {
 }
 
 function closeQuickAccessActorSheet(app, htmlOrElement) {
+  invalidateExpandedConditionsRender(app);
+  cleanupStatSync(app);
   const actor = getActorFromApp(app);
   const root = findActorSheetRoot(htmlOrElement ?? app?.element);
   cleanupBiographyActivationGuard(app);
   cleanupStatProviderListeners(app);
   if (root) cleanupWalletSummaries(root);
   if (root) cleanupBiographyTab(root);
+  if (actor) void flushBiographySaves(actor);
   if (actor) closeBiographyDrawer(actor);
 }
 

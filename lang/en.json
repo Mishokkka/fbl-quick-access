@@ -240,7 +240,8 @@
       "ResetNotAllowed": "Only the GM can reset the Short Rest limit.",
       "StartsNewDay": "This rest starts a new day",
       "StartsNewDayHint": "After Long Rest, open a separate window for daily injury, wash-state, condition, and addiction progression.",
-      "StateProgressionCalendaria": "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."
+      "StateProgressionCalendaria": "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode.",
+      "ChatFailed": "Rest was applied, but its chat message could not be posted."
     },
     "Dialog": {
       "ConfirmTitle": "Confirm",
@@ -322,7 +323,8 @@
       "AddictionRollResult": "Craving roll: {total}; {outcome}. {from} → {to}",
       "UnknownError": "Unknown error",
       "DelegatedStale": "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.",
-      "DelegatedFailed": "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window."
+      "DelegatedFailed": "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.",
+      "StalePlan": "Data changed. Refresh the preview before applying."
     },
     "Reputation": {
       "OpenTitle": "Open reputation ledger",
@@ -652,5 +654,14 @@
   "FBLEC.Chat.Addiction.ControlledCured": "The craving is controlled. The addiction cycle advances automatically and the condition is cured.",
   "FBLEC.Notifications.WashTransitionFailed": "Could not change wash state to “{name}”. The previous state was kept.",
   "FBLEC.Notifications.WashCleanupFailed": "The new wash state was created, but an older wash state could not be removed.",
-  "FBLEC.Notifications.MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load."
+  "FBLEC.Notifications.MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load.",
+  "FBLEC": {
+    "Heat": {
+      "PendingChange": "Finish the pending Heat change before changing its level again."
+    },
+    "Notifications": {
+      "TreatmentUnresolvedTime": "Resolve the healing duration into a number of days before applying treatment."
+    }
+  },
+  "FBLQA.Reputation.PoolTooLarge": "Reputation is limited to {max} points."
 }

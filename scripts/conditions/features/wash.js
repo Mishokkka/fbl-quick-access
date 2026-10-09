@@ -1,5 +1,6 @@
 import { MODULE_ID, SETTINGS } from "../constants.js";
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
+import { getConditionKind, getWashStage } from "../condition-kind.js";
 import { isFeatureEnabled } from "../settings.js";
 import { escapeHTML, localize, namesIncludeCondition, normalizeConditionName } from "../utils.js";
 
@@ -23,6 +24,7 @@ export function getWashStateNames() {
 
 export function isWashCondition(itemOrName) {
   if (!isFeatureEnabled(SETTINGS.FEATURE_WASH)) return false;
+  if (typeof itemOrName === "object") return getConditionKind(itemOrName) === "wash";
   const name = typeof itemOrName === "string" ? itemOrName : itemOrName?.name;
   return namesIncludeCondition(getWashStateNames(), name);
 }
@@ -33,6 +35,7 @@ export function getWashDisplayName(name) {
 }
 
 export function getNextWashName(currentName) {
+  if (typeof currentName === "object") currentName = getWashStage(currentName);
   const progression = getWashDefinition().progression || {};
   const normalized = normalizeConditionName(currentName);
   for (const [from, to] of Object.entries(progression)) {
@@ -85,29 +88,36 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
   const nextName = getNextWashName(currentName);
   if (!nextName) return { changed: false, reason: "no-next-state" };
 
-  const newItemSource = await findWashConditionSource(nextName);
-  if (!newItemSource) {
-    if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: escapeHTML(nextName) }));
-    return { changed: false, reason: "source-missing", previousName: getWashDisplayName(currentName), nextName };
-  }
+  const existing = actor.items.find(item => item.type === "criticalInjury" && getConditionKind(item) === "wash" && getWashStage(item) === nextName);
+  let createdItems = existing ? [existing] : null;
+  // A retry only needs to finish cleanup if the replacement already exists.
+  if (!existing) {
+    const newItemSource = await findWashConditionSource(nextName);
+    if (!newItemSource) {
+      if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: escapeHTML(nextName) }));
+      return { changed: false, reason: "source-missing", previousName: getWashDisplayName(currentName), nextName };
+    }
 
-  const itemData = newItemSource.toObject();
-  delete itemData._id;
+    const itemData = newItemSource.toObject();
+    delete itemData._id;
+    itemData.flags ??= {};
+    itemData.flags[MODULE_ID] ??= {};
+    itemData.flags[MODULE_ID].conditions = { ...(itemData.flags[MODULE_ID].conditions ?? {}), kind: "wash", washStage: nextName };
 
-  let createdItems;
-  try {
-    createdItems = await actor.createEmbeddedDocuments("Item", [itemData], {
-      ...safeDocumentOptions,
-      // The createItem hook normally enforces wash exclusivity. During an
-      // explicit transition this function owns the whole create -> cleanup
-      // sequence, so suppress the hook to avoid two concurrent deletions of the
-      // same embedded Item collection.
-      fblqaWashTransition: true
-    });
-  } catch (error) {
-    console.error(`${MODULE_ID} | could not create replacement wash state`, error);
-    if (!suppressNotifications) ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
-    return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
+    try {
+      createdItems = await actor.createEmbeddedDocuments("Item", [itemData], {
+        ...safeDocumentOptions,
+        // The createItem hook normally enforces wash exclusivity. During an
+        // explicit transition this function owns the whole create -> cleanup
+        // sequence, so suppress the hook to avoid two concurrent deletions of the
+        // same embedded Item collection.
+        fblqaWashTransition: true
+      });
+    } catch (error) {
+      console.error(`${MODULE_ID} | could not create replacement wash state`, error);
+      if (!suppressNotifications) ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
+      return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
+    }
   }
 
   const createdIds = new Set((createdItems ?? []).map((item) => item.id));

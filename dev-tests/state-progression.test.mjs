@@ -225,7 +225,7 @@ test("PR11: Calendaria public current date is not double-converted", () => {
 });
 
 test("PR11 follow-up: automatic progression reports logical marker advancement and never marks limited work done", () => {
-  assert.match(source, /const markerAdvance = Number\(api\?\.daysBetween\?\.\(normalizeCalendariaDate\(startDate\), cursor\)\)/);
+  assert.match(source, /const markerAdvance = Number\(api\?\.daysBetween\?\.\(initialDate, cursor\)\)/);
   assert.match(source, /processedDays = Math\.max\(0, Math\.min\(requested, Math\.floor\(markerAdvance\)\)\)/);
   assert.match(source, /limitedDays:\s*Math\.max\(0, requested - processedDays\)/);
   assert.match(source, /result\.limitedDays > 0[\s\S]*?state:\s*"blocked"[\s\S]*?days:\s*result\.limitedDays/);

@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.25
+Version 1.7.26
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -49,9 +49,13 @@ Examples:
 
 So: direct edits and ordinary +/- changes preserve the visible denomination. Spending makes change only when it has to.
 
+With an active GM, wallet changes and transfers share a single authority queue. Owner-only play without a GM remains available, with per-client serialization. Direct writes by other modules are outside this queue.
+
+Reputation pools are limited to 1,000 points as a technical safeguard. Invalid values are rejected on save; existing malformed flags are not rewritten during rendering.
+
 ## Stored data
 
-The module does not edit Forbidden Lands system files. It patches rendered sheets and stores only module-specific UI data.
+The module does not edit Forbidden Lands system files. It patches rendered sheets, stores module flags, and updates Actor/Item gameplay data when an authorized operation is applied.
 
 Actor flags:
 
@@ -62,6 +66,7 @@ Actor flags:
 - `flags.fbl-quick-access.shortRestRecovery`
 - `flags.fbl-quick-access.biographyProfile`
 - `flags.fbl-quick-access.pilgrimCardProfile`
+- `flags.fbl-quick-access.stateProgressionFailures` (up to 100 failed daily-action records; identifiers and dates only)
 - `flags.fbl-quick-access.stateProgressionCalendaria` (per-player-character Calendaria baseline/last processed date)
 - `flags.fbl-quick-access.conditions.*` for the integrated STAT tab and Expanded Conditions data
 
@@ -133,7 +138,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.25:
+Available methods in 1.7.26:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -292,6 +297,17 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.26
+
+- Recheck live calendar markers and New Day preconditions before applying queued changes. Keep provider build failures pending and retain failed-action metadata.
+- Keep a new Short Rest recovery lock when reset and recovery are selected together. Report chat failures separately from committed gameplay changes.
+- Merge BIO autosave field patches with the live profile, explicitly flush pending edits on close, respect native BIO fields and filter/enrich rich text for the viewer.
+- Make Addiction state/modifier updates a single write; retain Heat damage receipts for safe retry; reuse an existing Wash replacement after failed cleanup.
+- Route wallet edits and denomination transfers through one active-GM queue; recheck transfer permissions at execution. Bound numeric operations and reputation pools.
+- Persist special Item kinds, preserve renamed conditions, avoid treating disabled special conditions as ordinary injuries, and parse only resolved day durations.
+- Refresh other open STAT views after suppressed renders and discard outdated asynchronous render results.
+- Add behavioral reliability regressions, portable test paths, provider cleanup/privacy contracts, and the updated independent audit.
 
 ### 1.7.25
 
