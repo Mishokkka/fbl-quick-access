@@ -1,5 +1,6 @@
 import { FLAG_SHORT_REST_RECOVERY, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
+import { getConditionKind, getWashStage } from "./conditions/condition-kind.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
@@ -8,9 +9,7 @@ import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
 import {
   getAddictionState,
-  isAddictionCondition,
-  isHeatCondition,
-  isMorCondition
+  isAddictionCondition
 } from "./conditions/features/special-counters.js";
 import { processAddictionNewDay } from "./conditions/services/addiction-service.js";
 import {
@@ -32,13 +31,14 @@ const CORE_CATEGORIES = Object.freeze([
 
 export function decrementFirstInteger(value, amount = 1) {
   const text = String(value ?? "");
-  if (/\b\d*d\d+\b|\bd\d+\b/i.test(text)) return null;
-  const match = text.match(/\d+/);
+  // A free-text description is not a duration. Preserve unknown units/formulas
+  // for manual resolution instead of interpreting their first digit as days.
+  const match = text.match(/^\s*(\d+)(?:\s*(?:days?|день|дня|дней|сутки|суток))?\s*$/iu);
   if (!match) return null;
-  const current = Number.parseInt(match[0], 10);
-  if (!Number.isFinite(current)) return null;
+  const current = Number(match[1]);
+  if (!Number.isSafeInteger(current)) return null;
   const next = Math.max(0, current - Math.max(0, Number(amount) || 0));
-  const replaced = text.replace(match[0], String(next));
+  const replaced = text.replace(match[1], String(next));
   return {
     beforeNumber: current,
     afterNumber: next,
@@ -54,7 +54,7 @@ function normalizeDayUnit(text, value) {
     normalized = normalized.replace(/\bdays?\b/i, Number(value) === 1 ? "day" : "days");
   }
 
-  if (/\b(?:день|дня|дней)\b/i.test(normalized)) {
+  if (/(?:^|\s)(?:день|дня|дней)(?=\s|$)/iu.test(normalized)) {
     const absolute = Math.abs(Number(value) || 0);
     const mod100 = absolute % 100;
     const mod10 = absolute % 10;
@@ -65,7 +65,7 @@ function normalizeDayUnit(text, value) {
         : mod10 >= 2 && mod10 <= 4
           ? "дня"
           : "дней";
-    normalized = normalized.replace(/\b(?:день|дня|дней)\b/i, unit);
+    normalized = normalized.replace(/(?:день|дня|дней)(?=\s|$)/iu, unit);
   }
 
   return normalized;
@@ -86,6 +86,7 @@ export function buildNewDayPlan(actor) {
   for (const item of items) {
     if (item?.type !== "criticalInjury") continue;
     const itemName = String(item.name ?? qaLocalize("NewDay.UnnamedEntry", "Без названия"));
+    const conditionKind = getConditionKind(item);
 
     if (isAddictionCondition(item)) {
       actions.push({
@@ -100,7 +101,7 @@ export function buildNewDayPlan(actor) {
       continue;
     }
 
-    if (isHeatCondition(item) || isMorCondition(item) || isArcName(itemName)) continue;
+    if (["heat", "mor", "arc", "addiction"].includes(conditionKind) || (conditionKind === "wash" && !isWashCondition(item))) continue;
 
     const healingTime = item.system?.healingTime;
     const healing = decrementFirstInteger(healingTime, 1);
@@ -108,7 +109,7 @@ export function buildNewDayPlan(actor) {
 
     if (isWashCondition(item)) {
       if (healing && !healingIsPermanent) {
-        const nextWashName = getNextWashName(itemName);
+        const nextWashName = getNextWashName(item);
         if (healing.afterNumber === 0 && nextWashName) {
           actions.push({
             id: `wash:${item.id}:transition`,
@@ -212,7 +213,33 @@ export function buildNewDayPlan(actor) {
   const categories = buildPlanCategories();
   sortNewDayActions(actions, categories);
 
-  return { actorId: actor?.id ?? "", actorName: actor?.name ?? "", actions, categories, providerErrors: [] };
+  return {
+    actorId: actor?.id ?? "", actorName: actor?.name ?? "", actions, categories, providerErrors: [],
+    preconditions: Object.fromEntries(actions.map(action => [action.id, actionPrecondition(actor, action)]))
+  };
+}
+
+function actionPrecondition(actor, action) {
+  if (action.providerId) return null;
+  if (action.kind === "short-rest-reset") return JSON.stringify(actor.getFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY) ?? null);
+  if (action.conditionId) {
+    const condition = getCustomConditions(actor).find(entry => entry.id === action.conditionId);
+    return JSON.stringify(condition ? [condition.time, condition.name] : null);
+  }
+  const item = getActorItem(actor, action.itemId);
+  if (!item) return "missing";
+  if (action.kind === "addiction-day") return JSON.stringify([getConditionKind(item), isAddictionCondition(item), getAddictionState(item)]);
+  const value = action.kind === "lethal-limit" ? item.system?.limit : item.system?.healingTime;
+  return JSON.stringify([item.type, item.name, value, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
+}
+
+function assertActionCurrent(actor, plan, action) {
+  const expected = plan?.preconditions?.[action.id];
+  if (expected !== undefined && expected !== actionPrecondition(actor, action)) {
+    const error = new Error(qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
+    error.code = "stale-plan";
+    throw error;
+  }
 }
 
 /**
@@ -231,13 +258,17 @@ export async function buildNewDayPlanWithProviders(actor) {
 
 export async function applyNewDayPlan(actor, plan, selectedActionIds, options = {}) {
   const selected = new Set(selectedActionIds ?? []);
-  const actions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
+  const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
+  const actions = selectedActions.filter(action => {
+    try { assertActionCurrent(actor, plan, action); return true; }
+    catch (error) { results.push(failureResult(action, error)); return false; }
+  });
   const postChat = options.postChat !== false;
   const suppressNotifications = Boolean(options.suppressNotifications);
   const documentOptions = options.documentOptions ?? {};
 
-  if (!actions.length) return { changed: false, selected: 0, succeeded: [], failed: [] };
+  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results };
 
   const customActions = actions.filter((action) =>
     !action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire")
@@ -272,8 +303,12 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     pendingActions = [];
     pendingKind = "";
 
-    if (kind === "update") await applyItemUpdateBatch(actor, batch, results, documentOptions);
-    else if (kind === "delete") await applyItemDeleteBatch(actor, batch, results, documentOptions);
+    const current = batch.filter(action => {
+      try { assertActionCurrent(actor, plan, action); return true; }
+      catch (error) { results.push(failureResult(action, error)); return false; }
+    });
+    if (kind === "update") await applyItemUpdateBatch(actor, current, results, documentOptions);
+    else if (kind === "delete") await applyItemDeleteBatch(actor, current, results, documentOptions);
   };
 
   for (const action of actions) {
@@ -290,6 +325,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     await flushPending();
 
     try {
+      assertActionCurrent(actor, plan, action);
       if (action.providerId) {
         const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
         results.push(successResult(action, providerResult));
@@ -306,7 +342,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       if (!item) throw new Error(`Missing item ${action.itemId}`);
 
       if (action.kind === "wash-transition") {
-        const transition = await transitionWashLevel(actor, item.name, {
+        const transition = await transitionWashLevel(actor, getWashStage(item) ?? item.name, {
           ...documentOptions,
           fblqaSuppressNotifications: suppressNotifications
         });
@@ -335,13 +371,18 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
 
   const succeeded = results.filter((entry) => entry.ok);
   const failed = results.filter((entry) => !entry.ok);
-  if (postChat) await postNewDaySummary(actor, succeeded, failed);
+  let notificationError = null;
+  if (postChat) {
+    try { await postNewDaySummary(actor, succeeded, failed); }
+    catch (error) { notificationError = String(error?.message ?? error); console.error(`${MODULE_ID} | new-day summary failed`, error); }
+  }
 
   return {
     changed: succeeded.some((entry) => entry.changed !== false),
-    selected: actions.length,
+    selected: selectedActions.length,
     succeeded,
-    failed
+    failed,
+    notificationError
   };
 }
 

@@ -257,10 +257,10 @@ test("PR11: failed wash cleanup cannot fall through to the success path", () => 
   assert.match(cleanupCatch, /return \{[\s\S]*changed:\s*false,[\s\S]*reason:\s*"cleanup-failed"/);
 });
 
-test("PR11: only a GM requester may suppress provider private summaries", () => {
+test("PR11: only the local GM may suppress provider private summaries", () => {
   const source = read("scripts", "integration", "new-day-providers.js");
-  assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && Boolean\(context\.requestUser\?\.isGM\)/);
-  assert.match(source, /suppressChat\s*\n\s*\}\)\) \?\? \{\}/);
+  assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && Boolean\(context\.requestUser\?\.isGM\) && !context\.isRemote/);
+  assert.match(source, /provider\.applyAction\(actor, action, providerContext\)/);
   assert.match(source, /if \(!suppressChat\) await postPrivateSummary/);
 });
 

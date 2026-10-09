@@ -10,6 +10,7 @@ import {
 } from "./constants.js";
 import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
+import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
 import {
   buildSpecialCounterMigrationUpdate,
   getAddictionState,
@@ -148,7 +149,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 
     for (let index = 0; index < injuries.length; index += 1) {
       const item = injuries[index];
-      if (isArcEntry(item.name) !== arcGroup) continue;
+      if ((getConditionKind(item) === "arc") !== arcGroup) continue;
       const explicit = item.getFlag?.(MODULE_ID, FLAGS.ORDER);
       const fallback = Number(item.sort ?? 10000 + index * 10);
       entries.push({
@@ -249,6 +250,8 @@ export async function runWorldMigration() {
 
   for (const actor of game.actors) {
     try {
+      const kindUpdates = Array.from(actor.items ?? []).map(conditionKindUpdate).filter(Boolean);
+      if (kindUpdates.length) await actor.updateEmbeddedDocuments("Item", kindUpdates, { render: false });
       if (await migrateActorData(actor)) changedActors += 1;
     } catch (error) {
       failures += 1;

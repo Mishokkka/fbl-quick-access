@@ -7,13 +7,19 @@ import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
+export const MAX_REPUTATION_POINTS = 1000;
 
+/** Normalize display data while preserving finite over-limit legacy amounts.
+ * Save and roll entry points enforce the pool cap before writing/allocating.
+ */
 export function normalizeReputationEntries(value) {
   if (!Array.isArray(value)) return [];
 
   return value
     .map((entry) => {
-      const amount = Math.max(0, Math.floor(Number(entry?.amount ?? entry?.value ?? entry?.quantity) || 0));
+      const rawAmount = Number(entry?.amount ?? entry?.value ?? entry?.quantity ?? 0);
+      const amount = Number.isFinite(rawAmount)
+        ? Math.max(0, Math.floor(rawAmount)) : 0;
       if (amount < 1) return null;
 
       return {
@@ -54,6 +60,7 @@ export function getReputationEntries(actor) {
 export function selectRandomReputation(entries, divisor, random = Math.random) {
   const normalized = normalizeReputationEntries(entries);
   const total = getReputationTotal(normalized);
+  if (total > MAX_REPUTATION_POINTS) throw new RangeError(`Reputation pool exceeds ${MAX_REPUTATION_POINTS} points`);
   const safeDivisor = Math.max(1, Math.floor(Number(divisor) || 1));
   const target = total > 0 ? Math.floor(total / safeDivisor) : 0;
 
@@ -87,6 +94,10 @@ export async function saveReputationEntries(actor, entries, { render = false } =
 
   const normalized = normalizeReputationEntries(entries);
   const total = getReputationTotal(normalized);
+  if (total > MAX_REPUTATION_POINTS || (entries ?? []).some(entry => {
+    const amount = Number(entry?.amount ?? entry?.value ?? entry?.quantity ?? 0);
+    return !Number.isFinite(amount) || !Number.isSafeInteger(Math.floor(amount)) || amount > MAX_REPUTATION_POINTS;
+  })) throw new RangeError(`Reputation must contain finite amounts totaling at most ${MAX_REPUTATION_POINTS} points`);
   await actor.update({
     [`flags.${MODULE_ID}.${FLAG_REPUTATION_ENTRIES}`]: normalized,
     [REPUTATION_PATH]: total
@@ -204,7 +215,9 @@ export function openReputationDialog(app, actor) {
       })
       .catch((error) => {
         console.error(`${MODULE_ID} | reputation save failed`, error);
-        setStatus(status, qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
+        setStatus(status, error instanceof RangeError
+          ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
+          : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
         return false;
       });
 
@@ -303,6 +316,10 @@ function buildDialogContent(actor, editable) {
         </div>
       </div>
 
+      <div class="fblqa-reputation-save-status is-error" data-role="limit-warning" role="alert" ${total > MAX_REPUTATION_POINTS ? "" : "hidden"}>
+        ${escapeHtml(qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS }))}
+      </div>
+
       <div class="fblqa-reputation-table-head" aria-hidden="true">
         <span>${escapeHtml(qaLocalize("Reputation.Use", "Бросать"))}</span>
         <span>${escapeHtml(qaLocalize("Reputation.Amount", "Количество"))}</span>
@@ -393,13 +410,13 @@ function setupDialogInteractions({ app, actor, root, editable, scheduleSave, sav
   root.querySelector("[data-action='roll-half']")?.addEventListener("click", async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
     await saveNow(rowsRoot, status);
-    await rollReputation(actor, entries, selectRandomReputation(entries, 2));
+    await rollRandomReputation(actor, entries, 2);
   });
 
   root.querySelector("[data-action='roll-third']")?.addEventListener("click", async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
     await saveNow(rowsRoot, status);
-    await rollReputation(actor, entries, selectRandomReputation(entries, 3));
+    await rollRandomReputation(actor, entries, 3);
   });
 
   if (!editable) {
@@ -546,13 +563,25 @@ function refreshDialogSummary(root) {
   if (totalElement) totalElement.textContent = String(total);
   if (selectedElement) selectedElement.textContent = String(selected);
   if (summary) summary.textContent = qaLocalize("Reputation.SelectedOf", "из {total} единиц выбрано для проверки", { total });
+  const overLimit = total > MAX_REPUTATION_POINTS;
+  const limitWarning = root.querySelector("[data-role='limit-warning']");
+  if (limitWarning) limitWarning.hidden = !overLimit;
 
   const rollButton = root.querySelector("[data-action='roll-selected']");
   const halfButton = root.querySelector("[data-action='roll-half']");
   const thirdButton = root.querySelector("[data-action='roll-third']");
-  if (rollButton) rollButton.disabled = selected < 1;
-  if (halfButton) halfButton.disabled = Math.floor(total / 2) < 1;
-  if (thirdButton) thirdButton.disabled = Math.floor(total / 3) < 1;
+  if (rollButton) rollButton.disabled = overLimit || selected < 1;
+  if (halfButton) halfButton.disabled = overLimit || Math.floor(total / 2) < 1;
+  if (thirdButton) thirdButton.disabled = overLimit || Math.floor(total / 3) < 1;
+}
+
+async function rollRandomReputation(actor, entries, divisor) {
+  try { return await rollReputation(actor, entries, selectRandomReputation(entries, divisor)); }
+  catch (error) {
+    console.error(`${MODULE_ID} | reputation selection failed`, error);
+    ui.notifications?.warn?.(qaLocalize("Reputation.PoolTooLarge", "Reputation is limited to {max} points.", { max: MAX_REPUTATION_POINTS }));
+    return null;
+  }
 }
 
 async function rollReputation(actor, allEntries, selections) {
@@ -567,6 +596,10 @@ async function rollReputation(actor, allEntries, selections) {
     .filter(Boolean);
 
   const diceCount = normalizedSelections.reduce((sum, selection) => sum + selection.amount, 0);
+  if (diceCount > MAX_REPUTATION_POINTS || getReputationTotal(normalizedAll) > MAX_REPUTATION_POINTS) {
+    ui.notifications?.warn?.(qaLocalize("Reputation.PoolTooLarge", "Reputation is limited to {max} points.", { max: MAX_REPUTATION_POINTS }));
+    return null;
+  }
   if (diceCount < 1) {
     ui.notifications?.warn(qaLocalize("Reputation.NothingSelected", "Не выбрано ни одной единицы репутации."));
     return null;

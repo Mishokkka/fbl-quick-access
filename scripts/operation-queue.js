@@ -19,3 +19,13 @@ export function createObjectOperationQueue() {
     return next;
   };
 }
+
+// Wallet edits and accepted transfers share the same authority-side queue.
+// A global queue is sufficient for infrequent monetary writes and avoids a
+// two-Actor lock ordering deadlock during opposite-direction transfers.
+let currencyQueue = Promise.resolve();
+export function enqueueCurrencyOperation(operation) {
+  const next = currencyQueue.catch(() => undefined).then(operation);
+  currencyQueue = next.catch(() => undefined);
+  return next;
+}

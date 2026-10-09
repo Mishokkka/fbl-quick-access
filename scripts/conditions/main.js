@@ -22,7 +22,7 @@ import {
   getMorState,
   normalizeAddictionSeverityChange,
   parseHeatValue,
-  updateAddictionModifiers,
+  saveAddictionState,
   updateHeatItem,
   updateMorItem
 } from "./features/special-counters.js";
@@ -44,8 +44,15 @@ import {
 } from "./services/chat-service.js";
 import { advanceAddictionCycle, performAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
+import { conditionKindUpdate, getWashStage } from "./condition-kind.js";
+import { decrementFirstInteger } from "../new-day.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
+const STAT_RENDER_GENERATIONS = new WeakMap();
+
+export function invalidateExpandedConditionsRender(app) {
+  if (app && typeof app === "object") STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
+}
 
 export function initExpandedConditions() {
   registerSettings();
@@ -61,6 +68,8 @@ export async function readyExpandedConditions() {
 export async function handleExpandedConditionsCreateItem(item, options, userId) {
   if (game.user.id !== userId) return;
   if (item.type !== "criticalInjury") return;
+  const kindUpdate = conditionKindUpdate(item);
+  if (kindUpdate) { const { _id, ...update } = kindUpdate; await item.update(update, { render: false }); }
   if (!isWashCondition(item)) return;
   if (options?.fblqaWashTransition) return;
 
@@ -79,6 +88,9 @@ export async function persistNormalizedCustomConditions(actor, customConditions,
 
 export async function renderExpandedConditions(app, html) {
   if (app.actor?.type !== "character") return;
+  const generation = (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1;
+  STAT_RENDER_GENERATIONS.set(app, generation);
+  const isCurrent = () => STAT_RENDER_GENERATIONS.get(app) === generation;
 
   const root = findActorSheetRoot(html);
   if (root) root.classList.add("fblqa-sheet-root", "fblqa-actor-sheet-root", "fblec-sheet-root");
@@ -119,7 +131,7 @@ export async function renderExpandedConditions(app, html) {
   }
 
   async function refreshRows() {
-    return refreshConditionsRows({ html, buildRows, captureScroll, restoreScroll });
+    return refreshConditionsRows({ html, buildRows, captureScroll, restoreScroll, isCurrent });
   }
 
   const rowsHtml = await buildRows();
@@ -135,6 +147,7 @@ export async function renderExpandedConditions(app, html) {
     editable,
     layoutColumns
   });
+  if (!isCurrent()) return;
   const existingTab = html.find(`.conditions-tab[data-tab="${CONDITIONS_TAB_ID}"]`);
   if (!existingTab.length) html.find(".sheet-body").append(tabHtml);
   else existingTab.replaceWith(tabHtml);
@@ -237,6 +250,7 @@ export async function renderExpandedConditions(app, html) {
     const description = current.children(".injury-desc, .condition-desc");
     const wasExpanded = description.length > 0 && description.css("display") !== "none";
     const rowHtml = await renderConditionItemRow(item, editable);
+    if (!isCurrent()) return null;
     const replacement = $(rowHtml);
     current.replaceWith(replacement);
     if (wasExpanded) replacement.children(".injury-desc, .condition-desc").show();
@@ -332,7 +346,7 @@ export async function renderExpandedConditions(app, html) {
     else currentVal = Math.max(0, currentVal - 1);
 
     if (currentVal === 0 && isWashCondition(item) && btn.hasClass("heal-minus")) {
-      await transitionWashLevel(app.actor, item.name, { render: false });
+      await transitionWashLevel(app.actor, getWashStage(item) ?? item.name, { render: false });
       await refreshRows();
     } else {
       const newStr = timeStr.replace(/(\d+)/, currentVal);
@@ -380,7 +394,12 @@ export async function renderExpandedConditions(app, html) {
     const action = btn.data("action");
     const treatmentData = item.getFlag(MODULE_ID, FLAGS.TREATMENT_DATA) || {};
     const originalTimeStr = String(treatmentData.originalHealingTime ?? item.system.healingTime ?? "0");
-    const match = originalTimeStr.match(/(\d+)/);
+    const duration = decrementFirstInteger(originalTimeStr, 0);
+    if (!duration && /\d/.test(originalTimeStr)) {
+      ui.notifications.warn(localize("Notifications.TreatmentUnresolvedTime", "Resolve the healing duration into a number of days before applying treatment."));
+      return;
+    }
+    const match = duration ? originalTimeStr.match(/(\d+)/) : null;
 
     if (match) {
       const originalVal = parseInt(match[0], 10);
@@ -443,8 +462,7 @@ export async function renderExpandedConditions(app, html) {
       parseInt(ev.currentTarget.value, 10)
     );
     const row = $(ev.currentTarget).closest(".special-addiction-row");
-    await item.update({ [flagUpdatePath(FLAGS.ADDICTION_STATE)]: state }, { render: false });
-    await updateAddictionModifiers(item, state, { render: false });
+    await saveAddictionState(item, state, { render: false });
     await refreshItemRow(item, row);
   });
 
@@ -481,8 +499,7 @@ export async function renderExpandedConditions(app, html) {
     const content = buildAddictionRelapseMessage(app.actor.name, item.name);
     await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
 
-    await item.update({ [flagUpdatePath(FLAGS.ADDICTION_STATE)]: state }, { render: false });
-    await updateAddictionModifiers(item, state, { render: false });
+    await saveAddictionState(item, state, { render: false });
     await refreshItemRow(item, $(ev.currentTarget).closest(".special-addiction-row"));
   });
 

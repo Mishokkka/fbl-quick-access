@@ -231,8 +231,8 @@ test("Reputation replaces the native header roll with a ledger dialog", () => {
   assert.match(main, /setupReputationManager\(app, actor, root\)/);
   assert.match(reputation, /const REPUTATION_PATH = "system\.bio\.reputation\.value"/);
   assert.match(reputation, /\.roll-reputation/);
-  assert.match(reputation, /selectRandomReputation\(entries, 2\)/);
-  assert.match(reputation, /selectRandomReputation\(entries, 3\)/);
+  assert.match(reputation, /rollRandomReputation\(actor, entries, 2\)/);
+  assert.match(reputation, /rollRandomReputation\(actor, entries, 3\)/);
   assert.match(reputation, /new Roll\(`\$\{diceCount\}d6cs=6`\)/);
   assert.match(reputation, /buttons:\s*\{\}/);
   assert.match(reputation, /buttonless:\s*true/);

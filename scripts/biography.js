@@ -25,6 +25,7 @@ const DRAWERS = new Map();
 const SAVE_TIMERS = new Map();
 const SAVE_CHAINS = new Map();
 const SAVE_DIRTY_PATHS = new Map();
+const SAVE_PENDING = new Map();
 const COLLAPSED_SECTIONS = new Map();
 const FLOATING_ACTIONS = new WeakMap();
 const ACTIVE_RICH_EDITORS = new WeakMap();
@@ -35,6 +36,8 @@ const LANGUAGE_LAYOUT_FRAMES = new WeakMap();
 const LANGUAGE_LAYOUT_OBSERVERS = new WeakMap();
 const PILGRIM_SAVE_TIMERS = new Map();
 const PILGRIM_SAVE_CHAINS = new Map();
+const PILGRIM_PENDING = new Map();
+const DELETED_ACTORS = new WeakSet();
 
 export function normalizeBiographyProfile(value = {}) {
   const source = value && typeof value === "object" ? value : {};
@@ -145,6 +148,14 @@ export function getBiographyProfile(actor) {
   profile.darkSecret ||= actorBioHtml(actor, "darkSecret");
   profile.publicNote ||= actorBioHtml(actor, "note");
 
+  // Shared native fields remain canonical, including deliberate empty values.
+  for (const [field, path] of [["kin", "identity.kin"], ["profession", "identity.profession"],
+    ["pride", "pride"], ["darkSecret", "darkSecret"], ["note", "publicNote"]]) {
+    if (!Object.hasOwn(actor?.system?.bio?.[field] ?? {}, "value")) continue;
+    setPath(profile, path, field === "kin" || field === "profession"
+      ? plainActorBio(actor, field) : actorBioHtml(actor, field));
+  }
+
   // Keep the original BIO fields available even after the Quick Access profile
   // has already been saved once.
   profile.legacy.face ||= actorBioHtml(actor, "face");
@@ -189,6 +200,7 @@ export function setupBiographyTab(app, actor, root) {
     bioTab.dataset.fblqaBiographyMounted = "true";
     mountNativePrideRoll(bioTab, nativePrideRoll);
     bindBiographyInteractions({ app, actor, root, bioTab, state, editable, render });
+    void enrichBiographyPreviews(actor, bioTab);
     restoreBiographyViewport(bioTab, actor, viewport);
   };
   render();
@@ -205,7 +217,11 @@ export function cleanupBiographyTab(root) {
 
 export function releaseBiographyState(actorOrId) {
   const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
-  closeBiographyDrawer(key);
+  const actor = typeof actorOrId === "string" ? SAVE_PENDING.get(key)?.actor ?? PILGRIM_PENDING.get(key)?.actor : actorOrId;
+  if (actor && typeof actor === "object") DELETED_ACTORS.add(actor);
+  closeBiographyDrawer(key, { discardPending: true });
+  SAVE_PENDING.delete(key);
+  PILGRIM_PENDING.delete(key);
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
@@ -220,8 +236,9 @@ export function releaseBiographyState(actorOrId) {
   BIO_SCROLL_POSITIONS.delete(key);
 }
 
-export function closeBiographyDrawer(actorOrId) {
+export function closeBiographyDrawer(actorOrId, { discardPending = false } = {}) {
   const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  if (!discardPending) flushPilgrimSave(key);
   const record = DRAWERS.get(key);
   if (!record) return;
   const drawer = record.element ?? record;
@@ -390,7 +407,7 @@ function biographyHtml(actor, profile, editable, headingSpec) {
         </section>
       </div>
 
-      ${legacyVisible ? legacySection(profile.legacy, headingSpec) : ""}
+      ${legacyVisible ? legacySection(profile.legacy, headingSpec, actor) : ""}
     </div>`;
 }
 
@@ -417,7 +434,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
     button.addEventListener("click", async () => {
       const key = button.dataset.legacyKey;
       if (!key || !Object.hasOwn(state.legacy, key)) return;
-      const copied = await copyRichText(state.legacy[key]);
+      const copied = await copyRichText(biographyDisplayHtml(state.legacy[key], actor));
       if (copied) {
         button.classList.add("is-copied");
         const oldTitle = button.title;
@@ -755,7 +772,7 @@ function rumorRow(entry, index, editable) {
   </div>`;
 }
 
-function legacySection(legacy, headingSpec) {
+function legacySection(legacy, headingSpec, actor) {
   const entries = [
     ["face", t("Bio.Archive.Face", "Лицо"), legacy.face],
     ["body", t("Bio.Archive.Body", "Телосложение"), legacy.body],
@@ -765,7 +782,7 @@ function legacySection(legacy, headingSpec) {
     ${headingHtml(t("Bio.Archive.Title", "Архив старой вкладки BIO"), headingSpec, "", { collapsible: false })}
     <div class="fblqa-legacy-grid">${entries.map(([key, label, value]) => `<article>
       <header><strong>${escapeHtml(label)}</strong><button type="button" data-bio-action="copy-legacy" data-legacy-key="${escapeHtml(key)}" title="${escapeHtml(t("Bio.Archive.Copy", "Копировать"))}" aria-label="${escapeHtml(t("Bio.Archive.CopyField", "Копировать: {field}", { field: label }))}"><i class="fa-regular fa-copy"></i></button></header>
-      <div class="fblqa-legacy-content" tabindex="0" data-bio-selectable>${sanitizeRichHtml(normalizeRichText(value))}</div>
+      <div class="fblqa-legacy-content" tabindex="0" data-bio-selectable>${biographyDisplayHtml(value, actor)}</div>
     </article>`).join("")}</div>
   </section>`;
 }
@@ -780,7 +797,7 @@ function fieldEditor(actor, path, label, value, disabled, {
   collapsible = true,
   actionBeforeTitle = false
 } = {}) {
-  const html = sanitizeRichHtml(normalizeRichText(value));
+  const html = biographyDisplayHtml(value, actor);
   const displayHtml = richTextHasContent(html) ? html : "<p><br></p>";
   const name = `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}.${path}`;
   const collapsed = collapsible && isSectionCollapsed(actor, sectionKey);
@@ -937,6 +954,7 @@ function bindSimpleControls(scope, actor, state, editable, saveState, twinScope 
 function bindRichEditors(scope, actor, state, editable, saveState, twinScope = null) {
   for (const control of scope.querySelectorAll("[data-bio-rich-control]")) {
     const open = (event) => {
+      if (event.target?.closest?.("a.content-link, a.inline-roll, a[href]")) return;
       if (!editable) return warnCannotModifyActor();
       if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
       event.preventDefault();
@@ -1335,39 +1353,73 @@ function syncTwinControl(scope, path, value, source) {
   } else twin.value = value;
 }
 
-function queueProfileSave(actor, state, status, delay = 350, path = null) {
+export function queueProfileSave(actor, state, status, delay = 350, path = null) {
+  if (DELETED_ACTORS.has(actor)) return;
   const key = drawerKey(actor);
   const dirty = SAVE_DIRTY_PATHS.get(key) ?? new Set();
-  dirty.add(normalizeBiographySavePath(path));
+  const persistedPath = normalizeBiographySavePath(path);
+  dirty.add(persistedPath);
   SAVE_DIRTY_PATHS.set(key, dirty);
+  const pending = SAVE_PENDING.get(key) ?? { actor, patches: new Map(), status };
+  pending.status = status;
+  pending.patches.set(persistedPath, cloneProfileValue(persistedPath === "*" ? state : getPathValue(state, persistedPath)));
+  SAVE_PENDING.set(key, pending);
 
   const existing = SAVE_TIMERS.get(key);
   if (existing) window.clearTimeout(existing);
   setSaveStatus(status, t("Bio.Save.Saving", "Сохранение…"), "is-saving");
-  const timeout = window.setTimeout(() => {
-    SAVE_TIMERS.delete(key);
-    const dirtyPaths = SAVE_DIRTY_PATHS.get(key) ?? new Set(["*"]);
-    SAVE_DIRTY_PATHS.delete(key);
-    const savePath = dirtyPaths.size === 1 && !dirtyPaths.has("*") ? [...dirtyPaths][0] : null;
-
-    const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve())
-      .catch(() => false)
-      .then(() => saveBiographyProfilePath(actor, state, savePath, { render: false }))
-      .then((saved) => {
-        if (saved) setSaveStatus(status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
-        return saved;
-      })
-      .catch((error) => {
-        console.error(`${MODULE_ID} | biography save failed`, error);
-        setSaveStatus(status, t("Bio.Save.Error", "Ошибка сохранения"), "is-error");
-        return false;
-      });
-    SAVE_CHAINS.set(key, chain);
-    chain.finally(() => {
-      if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key);
-    });
-  }, delay);
+  const timeout = window.setTimeout(() => flushProfileSave(key), delay);
   SAVE_TIMERS.set(key, timeout);
+}
+
+function cloneProfileValue(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+function flushProfileSave(key) {
+  const timer = SAVE_TIMERS.get(key);
+  if (timer) globalThis.clearTimeout?.(timer);
+  SAVE_TIMERS.delete(key);
+  SAVE_DIRTY_PATHS.delete(key);
+  const pending = SAVE_PENDING.get(key);
+  if (!pending) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
+  SAVE_PENDING.delete(key);
+  const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false).then(async () => {
+    if (DELETED_ACTORS.has(pending.actor)) return false;
+    // Merge only independently captured edits with the live profile. A second
+    // sheet's snapshot must never overwrite fields edited by the first sheet.
+    const profile = getBiographyProfile(pending.actor);
+    for (const [path, value] of pending.patches) {
+      if (path === "*") Object.assign(profile, normalizeBiographyProfile(value));
+      else setPath(profile, path, value);
+    }
+    for (const path of [...pending.patches.keys()]) {
+      await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+      // A later failure must not retry a path that has already committed.
+      pending.patches.delete(path);
+    }
+    setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
+    return true;
+  }).catch(error => {
+    // Retain the draft; explicit flush or later editing can retry it after close.
+    if (DELETED_ACTORS.has(pending.actor)) return false;
+    const newer = SAVE_PENDING.get(key);
+    if (newer) for (const [path, value] of pending.patches) {
+      if (!newer.patches.has(path)) newer.patches.set(path, value);
+    }
+    else SAVE_PENDING.set(key, pending);
+    console.error(`${MODULE_ID} | biography save failed`, error);
+    setSaveStatus(pending.status, t("Bio.Save.Error", "Ошибка сохранения"), "is-error");
+    return false;
+  });
+  SAVE_CHAINS.set(key, chain);
+  chain.finally(() => { if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key); });
+  return chain;
+}
+
+export function flushBiographySaves(actorOrId) {
+  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  return Promise.all([flushProfileSave(key), flushPilgrimSave(key)]);
 }
 
 function normalizeBiographySavePath(path) {
@@ -1386,7 +1438,9 @@ async function saveBiographyProfilePath(actor, state, path, { render = false } =
   // entire dossier.
   const stored = actor.getFlag?.(MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
   if (!path || !(stored && typeof stored === "object")) {
-    return saveBiographyProfile(actor, state, { render });
+    const current = getBiographyProfile(actor);
+    if (path) setPath(current, path, getPathValue(state, path));
+    return saveBiographyProfile(actor, path ? current : state, { render });
   }
 
   let persistedPath = String(path);
@@ -1440,24 +1494,60 @@ function getPathValue(target, path) {
 }
 
 function queuePilgrimSave(actor, state, delay = 350) {
+  if (DELETED_ACTORS.has(actor)) return;
   const key = drawerKey(actor);
   const existing = PILGRIM_SAVE_TIMERS.get(key);
   if (existing) window.clearTimeout(existing);
-  const timeout = window.setTimeout(() => {
-    PILGRIM_SAVE_TIMERS.delete(key);
-    const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve())
-      .catch(() => false)
-      .then(() => savePilgrimCardProfile(actor, state, { render: false }))
-      .catch((error) => {
-        console.error(`${MODULE_ID} | pilgrim card save failed`, error);
-        return false;
-      });
-    PILGRIM_SAVE_CHAINS.set(key, chain);
-    chain.finally(() => {
-      if (PILGRIM_SAVE_CHAINS.get(key) === chain) PILGRIM_SAVE_CHAINS.delete(key);
-    });
-  }, delay);
+  PILGRIM_PENDING.set(key, { actor, state: cloneProfileValue(state) });
+  const timeout = window.setTimeout(() => flushPilgrimSave(key), delay);
   PILGRIM_SAVE_TIMERS.set(key, timeout);
+}
+
+function flushPilgrimSave(key) {
+  const timer = PILGRIM_SAVE_TIMERS.get(key);
+  if (timer) globalThis.clearTimeout?.(timer);
+  PILGRIM_SAVE_TIMERS.delete(key);
+  const pending = PILGRIM_PENDING.get(key);
+  if (!pending) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
+  PILGRIM_PENDING.delete(key);
+  const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false)
+    .then(() => DELETED_ACTORS.has(pending.actor) ? false : savePilgrimCardProfile(pending.actor, pending.state, { render: false }))
+    .catch(error => {
+      if (DELETED_ACTORS.has(pending.actor)) return false;
+      if (!PILGRIM_PENDING.has(key)) PILGRIM_PENDING.set(key, pending);
+      console.error(`${MODULE_ID} | pilgrim card save failed`, error);
+      return false;
+    });
+  PILGRIM_SAVE_CHAINS.set(key, chain);
+  chain.finally(() => { if (PILGRIM_SAVE_CHAINS.get(key) === chain) PILGRIM_SAVE_CHAINS.delete(key); });
+  return chain;
+}
+
+export function biographyDisplayHtml(value, actor) {
+  const html = sanitizeRichHtml(normalizeRichText(value));
+  if (actor?.isOwner) return html;
+  if (typeof document === "undefined") {
+    // Fail closed without a DOM: a server/test preview must not leak a secret.
+    return /class\s*=\s*["'][^"']*\bsecret\b/iu.test(html) ? "" : html;
+  }
+  const template = document.createElement("template");
+  template.innerHTML = html;
+  for (const secret of template.content.querySelectorAll(".secret:not(.revealed)")) secret.remove();
+  return template.innerHTML;
+}
+
+async function enrichBiographyPreviews(actor, root) {
+  const editor = globalThis.foundry?.applications?.ux?.TextEditor ?? globalThis.TextEditor;
+  if (typeof editor?.enrichHTML !== "function") return;
+  for (const preview of root.querySelectorAll(".fblqa-rich-preview, .fblqa-legacy-content")) {
+    const source = preview.closest("[data-bio-rich-control]")?.dataset.bioValue ?? preview.innerHTML;
+    try {
+      const html = await editor.enrichHTML(source, { secrets: Boolean(actor.isOwner), relativeTo: actor, rollData: actor.getRollData?.() ?? {} });
+      const control = preview.closest("[data-bio-rich-control]");
+      if (!preview.isConnected || control?.querySelector("prose-mirror") || (control && control.dataset.bioValue !== source)) continue;
+      preview.innerHTML = biographyDisplayHtml(html, actor);
+    } catch (error) { console.warn(`${MODULE_ID} | biography enrichment failed`, error); }
+  }
 }
 
 function setSaveStatus(element, text, className) {

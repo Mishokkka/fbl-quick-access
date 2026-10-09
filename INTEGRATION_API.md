@@ -71,6 +71,7 @@ Contract:
 - `order`: numeric provider order. Default is `500`.
 - `render(context)`: required, returns an HTML string.
 - `activateListeners(context)`: optional. `root` is the provider-owned wrapper only.
+- `activateListeners` may return a cleanup function. Quick Access invokes it before replacing the provider wrapper and when the sheet closes. Remove external listeners, timers and observers there.
 - `onActorDeleted(actor)`: optional GM-side cleanup.
 - Quick Access does not parse or rewrite provider markup.
 - Provider sections span both columns when STAT uses its two-column mode.
@@ -128,7 +129,7 @@ Contract:
 - `applyAction` receives the original action object returned by `buildActions`.
 - `applyAction` context includes `suppressChat`. It is `true` for Calendaria-driven progression, so providers should avoid creating chat messages or other duplicate presentation and return structured `summary` data instead.
 - `summary` is included in the public New Day chat card.
-- `privateSummary` is normally whispered to GMs by the active GM. When `context.suppressChat` is true the whisper is suppressed and the summary remains available to the active GM for the calendar result/summary pipeline. It is not exposed as a private summary to a non-GM requester.
+- `privateSummary` is normally whispered to GMs by the active GM. Only a local call on that active GM may suppress the whisper and receive the private summary directly. Remote callers, including a second GM, receive public-safe results; their private summary uses the GM whisper. It never enters the broadcast response or its User proof.
 - Provider failures are isolated. One failed provider or action does not stop native or other provider actions.
 - The registration call returns an unregister function.
 
@@ -336,3 +337,15 @@ const card = qa.getPilgrimCardProfile(actor);
 `qa.capabilities.pilgrimCardProfile` is `true` when these helpers are available.
 Only the fields currently displayed by the card are normalized and stored. The
 card has no portrait field and does not render a portrait.
+
+## Reliability contracts in 1.7.26
+
+New Day providers must return JSON-compatible deterministic action data. Explicit stable IDs are recommended; the existing index fallback remains supported when action ordering is stable. Before applying an action, the active GM calls `buildActions` again and verifies that the submitted action still matches. Build functions should inspect current state without writing documents, rolling dice, or generating fresh random IDs. Stale actions require a refreshed preview. Remote requests cannot suppress GM-only summaries or receive their contents through the socket response.
+
+Native Actor name and `system.bio.{kin,profession,pride,darkSecret,note}.value` are authoritative when reading the biography, including empty values. `saveBiographyProfile` remains an intentional full-profile replacement for importers. BIO UI autosave writes only edited fields; language/rumor arrays and Pilgrim Card profiles remain whole collections/profiles, so concurrent edits to the same collection still require coordination.
+
+Condition Items use `flags.fbl-quick-access.conditions.kind` (`heat`, `mor`, `addiction`, `wash`, `arc`); Wash also stores `conditions.washStage`. Legacy names are migration fallbacks. Migration version 7 assigns these fields without renaming Items. Heat uses `conditions.heatPendingChange` on the Item and `conditions.heatReceipts.<itemId>` on the Actor to resume an interrupted damage transition without applying the same damage twice on that client. These flags are recovery metadata and should not be edited manually.
+
+Calendar provider build failures leave the day pending. Partial apply failures retain the existing consumed-day policy to avoid rerunning successful actions; `stateProgressionFailures` retains at most 100 date/calendar/action-ID records for manual diagnosis. It does not contain private provider text and is not an automatic retry queue. A page reload during an uncommitted cross-document operation is still outside a database transaction.
+
+BIO retry removes committed paths from the pending map immediately; failed and unsent paths alone remain retryable. Finite reputation amounts above the 1,000-point cap are preserved when read for display, including oversized legacy/imported values. Validation still rejects them on save and before random/dice allocation. Reading a profile never clamps existing reputation to the cap.

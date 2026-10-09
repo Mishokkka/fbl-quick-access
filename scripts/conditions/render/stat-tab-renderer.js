@@ -1,6 +1,7 @@
 import { CONDITIONS_TAB_ID, FLAGS, MODULE_ID, TEMPLATE_PATHS } from "../constants.js";
 import { escapeHTML, isPermanentTime, localize, normalizeConditionName } from "../utils.js";
 import { getWashDisplayName, isWashCondition } from "../features/wash.js";
+import { getConditionKind } from "../condition-kind.js";
 import {
   buildHeatDots,
   getAddictionState,
@@ -20,7 +21,7 @@ function toUpperTitle(name) {
 
 function isArcName(name) {
   const value = String(name || "").toUpperCase();
-  return value.includes("[АРКА]") || value.includes("[ARC]");
+  return value.includes("[\u0410\u0420\u041a\u0410]") || value.includes("[ARC]");
 }
 
 function buildLethalHtml(item, editable) {
@@ -163,7 +164,7 @@ async function renderInjury(item, editable, orderOverride = null) {
     editable
   };
 
-  const isArc = isArcName(name);
+  const isArc = getConditionKind(item) === "arc";
   if (isArc) {
     return renderTemplate(TEMPLATE_PATHS.injuryArc, {
       ...common,
@@ -211,12 +212,12 @@ async function renderInjury(item, editable, orderOverride = null) {
   }
 
   const isWash = isWashCondition(item);
-  const isNormalInjury = !isArc && !isMorCondition(item) && !isAddictionCondition(item) && !isHeatCondition(item) && !isWash;
+  const isNormalInjury = !getConditionKind(item);
   return renderTemplate(TEMPLATE_PATHS.injury, {
     ...common,
     name: isWash ? getWashDisplayName(name) : name,
     notes: item.getFlag(MODULE_ID, FLAGS.NOTES) || "",
-    timeControlsHtml: buildTimeControlsHtml(item, editable),
+    timeControlsHtml: buildTimeControlsHtml(item, editable && (isNormalInjury || isWash)),
     lethalHtml: buildLethalHtml(item, editable),
     treatmentBadgeHtml: buildTreatmentBadgeHtml(item, editable, isNormalInjury),
     treatmentHtml: buildTreatmentHtml(item, editable, isNormalInjury)
@@ -247,7 +248,7 @@ export async function renderConditionsRows({ customConditions, injuries, editabl
     const order = Number(explicitOrder ?? fallbackOrder);
     const rendered = await renderInjury(injury, editable, order);
     const entry = { html: rendered, order };
-    if (isArcName(injury.name)) arcRows.push(entry);
+    if (getConditionKind(injury) === "arc") arcRows.push(entry);
     else normalRows.push(entry);
   }
 

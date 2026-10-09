@@ -1,6 +1,6 @@
 import { MODULE_ID, FLAGS } from "../constants.js";
 import { createChatMessage, escapeHTML, localize, rollToMessage } from "../utils.js";
-import { getAddictionState, updateAddictionModifiers } from "../features/special-counters.js";
+import { getAddictionState, saveAddictionState } from "../features/special-counters.js";
 import { buildAddictionFlatMessage, buildAddictionRollMessage } from "./chat-service.js";
 
 const ADDICTION_DICE_STEPS = Object.freeze([6, 8, 10, 12]);
@@ -130,7 +130,6 @@ export async function advanceAddictionCycle(actor, item, options = {}) {
     return { changed: true, cured: true, previousState, state: null };
   }
 
-  await item.update({ [`flags.${MODULE_ID}.${FLAGS.ADDICTION_STATE}`]: result.state }, documentOptions);
-  await updateAddictionModifiers(item, result.state, documentOptions);
+  await saveAddictionState(item, result.state, documentOptions);
   return { changed: true, cured: false, previousState, state: result.state };
 }

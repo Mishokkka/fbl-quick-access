@@ -79,7 +79,7 @@ test("New Day batches simple embedded Item writes and Calendaria suppresses only
 test("BIO saves one dirty subtree when safe and does not recalculate language layout for unrelated controls", () => {
   const source = read("scripts", "biography.js");
   assert.match(source, /const SAVE_DIRTY_PATHS = new Map\(\)/);
-  assert.match(source, /dirtyPaths\.size === 1 && !dirtyPaths\.has\("\*"\)/);
+  assert.match(source, /pending\.patches\.set\(persistedPath/);
   assert.match(source, /if \(control\.closest\?\.\("\.fblqa-language-list"\)\) scheduleLanguageLayout\(scope\)/);
   assert.match(source, /persistedPath === "languages"/);
   assert.match(source, /persistedPath === "rumors"/);

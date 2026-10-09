@@ -90,7 +90,7 @@ export function getActorAttributePath(actor, attributeName) {
   return state.hasValue ? state.valuePath : null;
 }
 
-export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}) {
+export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}, extraUpdate = null) {
   if (!actor || !damages || typeof damages !== "object") return [];
 
   const update = {};
@@ -111,6 +111,7 @@ export async function applyActorAttributeDamage(actor, damages = {}, documentOpt
     applied.push({ attribute: attributeName, path, amount, previous, value });
   }
 
+  if (extraUpdate) Object.assign(update, typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate);
   if (Object.keys(update).length) await actor.update(update, documentOptions);
   return applied;
 }

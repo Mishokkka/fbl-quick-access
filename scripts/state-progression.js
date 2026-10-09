@@ -439,8 +439,15 @@ async function processActorAutomaticDays(actor, startDate, context, requestedDay
 async function processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays, options = {}) {
   const api = getCalendariaApi();
   const dayResults = [];
-  let cursor = normalizeCalendariaDate(startDate);
-  const requested = Math.max(0, Math.floor(Number(requestedDays) || 0));
+  // Requests target a date. Another queued request may already have advanced
+  // this Actor while this request was waiting for the queue.
+  const marker = getActorCalendarMarker(actor);
+  const currentStatus = calculateActorCalendarStatus(marker, context, api);
+  if (marker && currentStatus.status === "baseline") return emptyCalendarResult(context.date);
+  const initialDate = normalizeCalendariaDate(marker?.date ?? startDate);
+  let cursor = initialDate;
+  const pendingDays = marker ? Math.max(0, Number(currentStatus.days) || 0) : Number(requestedDays);
+  const requested = Math.min(Math.max(0, Math.floor(Number(requestedDays) || 0)), Math.floor(pendingDays));
   const configuredLimit = Number.isFinite(Number(options.maxDays))
     ? Math.max(0, Math.floor(Number(options.maxDays)))
     : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT;
@@ -456,6 +463,17 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     const plan = await buildNewDayPlanWithProviders(actor);
     const selectedIds = plan.actions.filter((action) => action.checked !== false).map((action) => action.id);
 
+    if (plan.providerErrors?.length) {
+      failedDays += 1;
+      failedActions += plan.providerErrors.length;
+      await recordCalendarFailures(actor, context, nextDate, plan.providerErrors.map(error => ({
+        id: String(error.providerId ?? error.id ?? "provider"), kind: "provider-build"
+      })));
+      // Nothing for this date has been applied yet. Leave its marker unchanged
+      // so a recovered provider can be tried after reload without double ticks.
+      break;
+    }
+
     // If only the bookkeeping Short Rest reset remains, repeating an empty day
     // hundreds of times would create document traffic with no gameplay value.
     const meaningful = plan.actions.filter((action) => action.kind !== "short-rest-reset");
@@ -467,6 +485,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
         if (resetResult.failed.length) {
           failedDays += 1;
           failedActions += resetResult.failed.length;
+          await recordCalendarFailures(actor, context, nextDate, resetResult.failed);
         }
       }
       // Keep the marker as the final Actor mutation for this shortcut. Core
@@ -483,6 +502,9 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     if (applied.failed.length) {
       failedDays += 1;
       failedActions += applied.failed.length;
+      await recordCalendarFailures(actor, context, nextDate, applied.failed.map(entry => ({
+        id: String(entry.action?.id ?? entry.id ?? "action"), kind: "action-apply"
+      })));
     }
 
     // Consume this day even if an individual action failed. Re-running an
@@ -505,7 +527,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
   // derive the contract from marker advancement instead of result count.
   let processedDays = Math.max(0, requested - remaining);
   try {
-    const markerAdvance = Number(api?.daysBetween?.(normalizeCalendariaDate(startDate), cursor));
+    const markerAdvance = Number(api?.daysBetween?.(initialDate, cursor));
     if (Number.isFinite(markerAdvance)) {
       processedDays = Math.max(0, Math.min(requested, Math.floor(markerAdvance)));
     }
@@ -522,6 +544,21 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     failedActions,
     days: dayResults
   };
+}
+
+async function recordCalendarFailures(actor, context, date, failures) {
+  const key = "stateProgressionFailures";
+  const previous = actor.getFlag?.(MODULE_ID, key);
+  const entries = Array.isArray(previous) ? previous : [];
+  // Store identifiers only. Provider actions/results can contain private data.
+  const safeFailures = failures.map(value => ({
+    id: String(value.action?.id ?? value.id ?? "action"),
+    kind: value.kind === "provider-build" ? "provider-build" : "action-apply"
+  }));
+  const entry = { calendarId: context.calendarId, date, failures: safeFailures, at: Date.now() };
+  const next = entries.filter(value => value.calendarId !== entry.calendarId || calendariaDateKey(value.date) !== calendariaDateKey(date));
+  next.push(entry);
+  await actor.setFlag(MODULE_ID, key, next.slice(-100));
 }
 
 async function checkCurrentPlayerPending({ context = null } = {}) {
@@ -644,6 +681,10 @@ async function handleCalendariaApplyRequest(payload, context) {
     }
 
     const plan = await buildNewDayPlanWithProviders(actorEntry.actor);
+    if (plan.providerErrors?.length) {
+      await recordCalendarFailures(actorEntry.actor, calendaria, targetDate, plan.providerErrors.map(error => ({ id: error.providerId, kind: "provider-build" })));
+      throw progressionError("provider-build-failed", "A New Day provider is unavailable. The day was not applied.");
+    }
     const selectedIds = normalizeSelectedActionIds(payload?.selectedIds);
     const knownIds = new Set(plan.actions.map((action) => action.id));
     const unknown = selectedIds.find((id) => !knownIds.has(id));
@@ -651,6 +692,7 @@ async function handleCalendariaApplyRequest(payload, context) {
 
     updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "processing", days: 1 });
     const applied = await applyNewDayPlan(actorEntry.actor, plan, selectedIds, calendarApplyOptions());
+    if (applied.failed.length) await recordCalendarFailures(actorEntry.actor, calendaria, targetDate, applied.failed);
     await setActorCalendarMarker(actorEntry.actor, calendaria);
 
     const calendarResult = {

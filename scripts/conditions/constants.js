@@ -4,7 +4,7 @@ export const MODULE_ID = QUICK_ACCESS_MODULE_ID;
 export const LEGACY_MODULE_ID = "forbidden-lands-expanded-conditions";
 export const CONDITIONS_TAB_ID = "conditions";
 export const CONDITIONS_TAB_LABEL = "STAT";
-export const MIGRATION_VERSION = 6;
+export const MIGRATION_VERSION = 7;
 
 export const DEFAULT_ADDICTION_STATE = Object.freeze({
   phase: "down",

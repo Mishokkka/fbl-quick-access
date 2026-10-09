@@ -32,7 +32,7 @@ background: transparent !important;
   cursor: pointer;
   font-size: 0.85em;
   font-weight: bold;
-  transition: all 0.2s ease-in-out;
+  transition: background-color 0.2s ease-in-out, border-color 0.2s ease-in-out, color 0.2s ease-in-out;
   height: auto;
   line-height: 1.5;
 }
@@ -312,7 +312,7 @@ width: 100%;
   font-size: 0.85em;
   font-style: italic;
   padding: 2px 5px !important;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .fblec-stat-tab .notes-input:focus {
@@ -616,7 +616,7 @@ width: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
-  transition: all 0.2s;
+  transition: background-color 0.2s, border-color 0.2s, color 0.2s;
 }
 
 .fblec-stat-tab .addiction-btn:hover {
