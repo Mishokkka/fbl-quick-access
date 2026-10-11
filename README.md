@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.29
+Version 1.7.30
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -140,7 +140,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.29:
+Available methods in 1.7.30:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -302,6 +302,12 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 ## Changelog
 
+### 1.7.30
+
+- Add read-only held-item presentation for YZE widget 1.5.0: native weapon stats/features, normalized optional FL Firearms data, locale-independent mechanical revisions and permission-checked plain-text descriptions.
+- Preserve equipment API version 1, flags and existing callers. Weapon operations/payment live in the companion widget; magazines/ammunition remain FL Firearms-owned.
+- Document the released ribbon, native attacks and configurable manual reload progress; add seven presentation regressions.
+
 ### 1.7.29
 
 - Complete the equipment contract for YZE widget 1.3.0: previews, eligible inventory, assign/swap slots, grip changes for items removed from slots, atomic operation receipts and guarded undo.
@@ -376,3 +382,7 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 - The Rest subsystem also has a DOM fallback for the visible `.condition[data-condition]` controls if a future sheet variant does not expose condition data where expected.
 - Short Rest Quarter Day tracking now prefers `CALENDARIA.api.getCurrentDateTime()` when Calendaria is active, then falls back to `game.time.worldTime`, then manual reset.
 - The Rest dialog shows which time source is currently used for the Quarter Day lockout.
+
+## Weapon ribbon integration (1.7.30)
+
+YZE widget **1.5.0+** optionally reads `getHeldItemPresentation(actor)` to show grips, stats, ammo and properties in separate compact groups. It provides native attacks and manually configurable load/top-off progress with a price chosen per operation. Quick Access owns slots/grips; FL Firearms owns magazines/ammunition. Equipment API version 1 remains compatible. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md).
