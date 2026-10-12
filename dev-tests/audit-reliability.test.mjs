@@ -174,15 +174,15 @@ test("A10: observer preview fails closed on secret HTML even without a DOM", () 
 test("A06: failed Heat damage keeps an intent and can be completed safely", async () => {
   reset(); const h = item("heat", { healingTime: "" }, "Heat"); const a = actor([h]); a.system.attribute.strength.value = 5;
   set(h.flags, `${scope}.conditions.heatValue`, 2); const update = a.update; a.update = async () => { throw new Error("damage failure"); };
-  await assert.rejects(updateHeatItem(a, h, 3)); assert.equal(parseHeatValue(h), 2); assert.ok(h.getFlag(scope, "conditions.heatPendingChange"));
-  a.update = update; await updateHeatItem(a, h, 3); assert.equal(parseHeatValue(h), 3); assert.equal(a.system.attribute.strength.value, 4);
+  await assert.rejects(updateHeatItem(a, h, 3, "failure")); assert.equal(parseHeatValue(h), 2); assert.ok(h.getFlag(scope, "conditions.heatPendingChange"));
+  a.update = update; await updateHeatItem(a, h, 3, "failure"); assert.equal(parseHeatValue(h), 3); assert.equal(a.system.attribute.strength.value, 4);
 });
 test("A06: retry after failed Heat finalization does not apply damage twice", async () => {
   reset(); const h = item("heat", { healingTime: "" }, "Heat"); const a = actor([h]); a.system.attribute.strength.value = 5;
   set(h.flags, `${scope}.conditions.heatValue`, 2); const update = h.update;
   h.update = async data => { if (data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failure"); return update(data); };
-  await assert.rejects(updateHeatItem(a, h, 3)); assert.equal(a.system.attribute.strength.value, 4);
-  h.update = update; await updateHeatItem(a, h, 3); assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 3);
+  await assert.rejects(updateHeatItem(a, h, 3, "failure")); assert.equal(a.system.attribute.strength.value, 4);
+  h.update = update; await updateHeatItem(a, h, 3, "failure"); assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 3);
 });
 test("A06: Addiction phase and modifiers are one Item update", async () => {
   reset(); const dependency = item("dependency", { rollModifiers: {} }, "Addiction"); actor([dependency]);

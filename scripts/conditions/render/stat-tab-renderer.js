@@ -14,6 +14,7 @@ import {
   isMorCondition,
   parseHeatValue
 } from "../features/special-counters.js";
+import { getAddictionDayKey, getAddictionMorning } from "../services/addiction-service.js";
 
 function toUpperTitle(name) {
   return String(name || "").toUpperCase();
@@ -140,8 +141,8 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
 }
 
 function getAddictionStatusText(state) {
-  if (state.phase === "down" || state.phase === "up") return `d${state.die}`;
-  if (state.phase === "flat") return localize("Addiction.DaysShort", "{days} d.", { days: state.daysLeft });
+  if (state.phase === "down" || state.phase === "up") return `${getAddictionStatusTitle(state)} d${state.die}`;
+  if (state.phase === "flat") return `${getAddictionStatusTitle(state)}: ${localize("Addiction.DaysShort", "{days} d.", { days: state.daysLeft })}`;
   return "";
 }
 
@@ -150,6 +151,17 @@ function getAddictionStatusTitle(state) {
   if (state.phase === "flat") return localize("Addiction.PhaseFlat", "Withdrawal");
   if (state.phase === "up") return localize("Addiction.PhaseUp", "Recovery");
   return localize("Addiction.Stage", "Current stage");
+}
+
+function getAddictionModifierText(item) {
+  const labels = ["Strength", "Agility", "Wits", "Empathy"];
+  const modifiers = labels.flatMap(label => {
+    const value = Number(item.system?.rollModifiers?.[`fblecAddiction${label}`]?.value ?? 0);
+    return value ? [`${localize(`Attribute.${label}`, label)}: ${value}`] : [];
+  });
+  return modifiers.length
+    ? localize("Addiction.Modifiers", "Current penalties: {modifiers}", { modifiers: modifiers.join(", ") })
+    : localize("Addiction.NoModifiers", "No Addiction attribute penalties.");
 }
 
 async function renderInjury(item, editable, orderOverride = null) {
@@ -199,8 +211,18 @@ async function renderInjury(item, editable, orderOverride = null) {
 
   if (isAddictionCondition(item)) {
     const state = getAddictionState(item);
+    const morning = getAddictionMorning(item);
+    const pending = morning?.status === "pending";
+    const processed = morning?.dayKey === getAddictionDayKey(item.parent);
     return renderTemplate(TEMPLATE_PATHS.addiction, {
       ...common,
+      pending,
+      modifierText: getAddictionModifierText(item),
+      morningDisabled: pending || processed,
+      morningText: pending ? localize("Addiction.Pending", "Awaiting manual Endurance")
+        : processed ? localize(`Addiction.Outcome.${morning.outcome}`, "Morning resolved")
+          : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
+      rollText: morning?.total != null ? localize("Addiction.LastCraving", "Craving: {total}", { total: morning.total }) : "",
       statusText: getAddictionStatusText(state),
       statusTitle: getAddictionStatusTitle(state),
       severityOptions: [

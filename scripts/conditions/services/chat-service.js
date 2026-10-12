@@ -28,7 +28,7 @@ export function buildAddictionFlatMessage(actorName, itemName, state) {
     localize("Chat.Addiction.Flat", "<span class=\"fblec-chat-danger\">Severe withdrawal. Days remaining: {days}.</span><br>", {
       days: Number(state.daysLeft) || 0
     }),
-    localize("Chat.Addiction.EnduranceRequired", "No craving die is rolled. <b>Make an Endurance roll.</b> Failure causes a relapse.")
+    localize("Chat.Addiction.EnduranceRequired", "<b>Make a manual Endurance roll, then record Success or Failure in STAT.</b> Failure asks whether a dose is available.")
   ].join("");
 }
 
@@ -44,7 +44,7 @@ export function buildAddictionRollMessage(actorName, itemName, state, rollTotal,
 
   if (rollTotal === 1 || rollTotal === 2) {
     content += localize("Chat.Addiction.Urge", "<span class=\"fblec-chat-danger\">Rolled {total}. Compulsive urge.</span><br>", { total: rollTotal });
-    content += localize("Chat.Addiction.EnduranceRequired", "<b>Make an Endurance roll.</b> Failure causes a relapse.");
+    content += localize("Chat.Addiction.EnduranceRequired", "<b>Make a manual Endurance roll, then record Success or Failure in STAT.</b> Failure asks whether a dose is available.");
   } else if (options.cured) {
     content += localize("Chat.Addiction.ControlledCured", "The craving is controlled. The addiction cycle advances automatically and the condition is cured.");
   } else if (options.autoAdvanced) {
@@ -66,6 +66,8 @@ export function buildAddictionRelapseMessage(actorName, itemName) {
 export function buildHeatChangeMessage(actorName, result, mode = "gain") {
   const verbKey = result.overcap
     ? "Chat.Heat.VerbIntensify"
+    : mode === "manual"
+      ? "Chat.Heat.VerbCorrect"
     : mode === "reduce"
       ? "Chat.Heat.VerbReduce"
       : "Chat.Heat.VerbGain";

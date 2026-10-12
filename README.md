@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.31
+Version 1.7.32
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -86,11 +86,11 @@ Long Rest is treated as 6 hours of sleep. It restores 1 point of each damaged at
 
 Daily state progression is controlled by the world-level **State progression** setting. In **Long Rest** mode, Long Rest has the familiar **starts a new day** checkbox and opens the separate New Day preview after a successful rest. In **Calendaria — new day** mode that checkbox is removed: Long Rest never advances daily states, and Quick Access listens to Calendaria's `calendaria.dayChange` hook instead.
 
-The New Day plan proposes daily changes for injury healing timers, day-based lethal limits, wash-state progression, timed custom STAT conditions, Addiction morning checks and Addiction cycle progression. It also resets the module's Short Rest recovery lock. Every action is individually selectable during a normal single-day player prompt. Heat, Mor, ARC entries, permanent timers, dice formulas, and non-day lethal limits are not advanced automatically.
+The New Day plan proposes daily changes for injury healing timers, day-based lethal limits, wash-state progression, timed custom STAT conditions, Addiction morning checks and Addiction cycle progression. It also resets the module's Short Rest recovery lock. Every action is individually selectable during a normal single-day player prompt. Heat, Mor, ARC entries, permanent timers, dice formulas, and non-day lethal limits are not advanced automatically. An unresolved Addiction Endurance blocks the next daily plan, including provider actions, until its outcome is recorded in STAT.
 
 Calendaria mode handles only `character` Actors assigned to non-GM users through `user.character`. Each online player receives only the prompt/result for their own character. The deterministic active GM receives one live summary for the group. Quick Access suppresses its New Day chat card, Addiction roll/chat output, wash notifications and provider private-summary chat while processing calendar-driven days. Registered New Day providers receive `context.suppressChat === true` so integrations can suppress their own presentation as well.
 
-No polling is used. The module sleeps until Calendaria emits a day-change hook. A per-Actor marker records the processed calendar date, making normal reload/reconnect and duplicate hook delivery idempotent. A multi-day jump is confirmed once by the GM and then simulated day-by-day; a backwards calendar move never rolls states back. Switching into Calendaria mode sets the current date as the baseline instead of processing old calendar history.
+No polling is used. The module sleeps until Calendaria emits a day-change hook. A per-Actor marker records the processed calendar date, making normal reload/reconnect and duplicate hook delivery idempotent. A multi-day jump is confirmed once by the GM and then simulated day-by-day; a backwards calendar move never rolls states back. Addiction can stop that simulation at a manual Endurance: the started day's other changes remain applied once, while later days stay pending. Record the outcome in STAT, then resume remaining days from the GM summary. Switching into Calendaria mode sets the current date as the baseline instead of processing old calendar history.
 
 Short Rest is treated as a 15 minute breather. It can be used for extended actions outside this module. Once per Quarter Day, the actor may restore 1 point in one damaged and unblocked attribute if the player enters an appropriate consumable or justification. The module records the once-per-Quarter-Day use in an actor flag and uses Foundry world time in 6-hour blocks when available. A manual reset checkbox is included for tables that do not advance world time. It is GM-only by default; a world setting can allow actor owners to use it.
 
@@ -104,6 +104,10 @@ Quick Access now includes the functionality of the former `forbidden-lands-expan
 Existing actor and item data is migrated by the GM on `ready`. Legacy flags under `flags.forbidden-lands-expanded-conditions` are copied into `flags.fbl-quick-access.conditions.*`, then the old flag scope is removed from those documents. Legacy world settings are copied from the old world setting keys into Quick Access settings.
 
 The first integrated release intentionally keeps the Expanded Conditions UI and CSS mostly intact. It is mounted as a separate subsystem under `scripts/conditions`, `templates/conditions`, and `styles/11-expanded-conditions.css` so the old behavior can be verified before deeper visual refactoring.
+
+Addiction uses one persisted morning across STAT and New Day. A controlled craving result (3+) advances automatically; 1–2 or withdrawal waits for a manual Endurance roll. Apply talents, abilities and any rerolls before choosing **Endurance: success** or **Endurance: failure**. Success advances the cycle. Failure asks whether a dose is available: taking it resets decline d12, while failure without a dose still advances the cycle. Withdrawal days and attribute modifiers remain unchanged until this decision. Morning records survive reopening/reloading and prevent another roll of the same morning. With an active GM, player actions use the GM's per-Item queue; otherwise they use the local queue. Long Rest uses explicit numbered New Days, while Calendaria uses the actual processed date.
+
+Heat rises only when the player records a final manual Endurance failure; the GM sets check frequency. Failure at levels 0/1 raises the level without damage, 2 → 3 deals 1 Strength damage, 3 → 4 deals 1 Strength and 1 Wits damage, and a further failure at 4 keeps 4/4 and deals 1 damage each to Strength, Wits and Agility. Level 4 applies −1 to Endurance and Move automatically. **Cool down** reduces Heat by 1 and removes those penalties below 4; it neither damages nor heals attributes. **+/−** are manual corrections without damage. **Rules** posts a reminder and rolls no dice. Migration 8 adds the owned level-4 modifiers to existing Heat Items without changing their level or attributes.
 
 ## item-piles integration
 
@@ -140,7 +144,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.31:
+Available methods in 1.7.32:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -301,6 +305,13 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.32
+
+- Unify Addiction mornings across STAT and New Day, persist pending manual Endurance, keep withdrawal modifiers until resolution, ask about dose availability on failure, and prevent repeat rolls/steps through the active GM when available.
+- Pause calendar time skips at unresolved Addiction checks and show the pending action in player results and the GM summary, with a direct STAT shortcut.
+- Separate final Heat failure from manual counter correction; apply Endurance/Move penalties only at level 4, retain the confirmed threshold/overcap damage, and expose consequences beside named action buttons.
+- Add migration 8 for existing Heat modifiers and regressions for manual outcomes, day replay, calendar resume, ownership, cooling and interrupted damage recovery.
 
 ### 1.7.31
 

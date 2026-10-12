@@ -216,10 +216,19 @@ export async function updateAddictionModifiers(item, state, documentOptions = {}
   if (item) await item.update(buildAddictionModifierUpdate(item, state), documentOptions);
 }
 
-export async function saveAddictionState(item, state, documentOptions = {}) {
+export async function saveAddictionState(item, state, documentOptions = {}, extraUpdate = {}) {
   if (!item) return;
-  await item.update({ ...buildAddictionModifierUpdate(item, state),
+  await item.update({ ...extraUpdate, ...buildAddictionModifierUpdate(item, state),
     [flagUpdatePath(FLAGS.ADDICTION_STATE)]: state }, documentOptions);
+}
+
+export function buildHeatModifierUpdate(value) {
+  const update = {};
+  for (const [key, name] of [["fblecHeatEndurance", "SKILL.ENDURANCE"], ["fblecHeatMove", "SKILL.MOVE"]]) {
+    if (value === getHeatDefinition().max) update[`system.rollModifiers.${key}`] = { name, value: "-1" };
+    else update[`system.rollModifiers.-=${key}`] = null;
+  }
+  return update;
 }
 
 function getHeatThresholdDamage(previousValue, value, overcap = false) {
@@ -245,17 +254,28 @@ export async function updateHeatItem(actor, item, newValue, reason = "manual", d
   return enqueueHeatChange(item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
 }
 
+export async function applyHeatFailure(actor, item, documentOptions = {}) {
+  if (!item) return null;
+  return enqueueHeatChange(item, () => applyHeatChange(actor, item, parseHeatValue(item) + 1, "failure", documentOptions));
+}
+
 async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 
   const heat = getHeatDefinition();
   const previousValue = parseHeatValue(item);
-  const overcap = Number(newValue) > previousValue && previousValue >= heat.max;
+  const overcap = reason === "failure" && Number(newValue) > previousValue && previousValue >= heat.max;
   const value = clampNumber(newValue, 0, heat.max);
-  const damage = (value > previousValue || overcap) ? getHeatThresholdDamage(previousValue, value, overcap) : {};
+  // Manual correction and cooling never cause damage. Only a recorded failure
+  // of the player's final Endurance result applies the Heat consequences.
+  const damage = reason === "failure" && (value > previousValue || overcap)
+    ? getHeatThresholdDamage(previousValue, value, overcap) : {};
 
   const pendingKey = "conditions.heatPendingChange";
   let pending = item.getFlag?.(MODULE_ID, pendingKey);
   if (pending && pending.value !== value) {
+    throw new Error(localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again."));
+  }
+  if (pending && reason !== "failure") {
     throw new Error(localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again."));
   }
   if (!pending && Object.keys(damage).length) {
@@ -273,6 +293,7 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
     }));
   }
   await item.update({
+    ...buildHeatModifierUpdate(value),
     [flagUpdatePath(FLAGS.HEAT_VALUE)]: value,
     [flagUpdatePath(pendingKey)]: null,
     "system.healingTime": ""

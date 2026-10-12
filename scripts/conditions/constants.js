@@ -4,7 +4,7 @@ export const MODULE_ID = QUICK_ACCESS_MODULE_ID;
 export const LEGACY_MODULE_ID = "forbidden-lands-expanded-conditions";
 export const CONDITIONS_TAB_ID = "conditions";
 export const CONDITIONS_TAB_LABEL = "STAT";
-export const MIGRATION_VERSION = 7;
+export const MIGRATION_VERSION = 8;
 
 export const DEFAULT_ADDICTION_STATE = Object.freeze({
   phase: "down",
@@ -43,6 +43,8 @@ export const FLAGS = Object.freeze({
   TREATMENT_STATUS: "conditions.treatmentStatus",
   TREATMENT_DATA: "conditions.treatmentData",
   ADDICTION_STATE: "conditions.addictionState",
+  ADDICTION_MORNING: "conditions.addictionMorning",
+  ADDICTION_DAY: "conditions.addictionDay",
   ADDICTION_MODIFIER_KEYS: "conditions.addictionModifierKeys",
   HEAT_VALUE: "conditions.heatValue",
   MOR_STATE: "conditions.morState"

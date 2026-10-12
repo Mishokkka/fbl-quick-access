@@ -13,9 +13,11 @@ import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
 import {
   buildSpecialCounterMigrationUpdate,
+  buildHeatModifierUpdate,
   getAddictionState,
   isAddictionCondition,
   needsAddictionModifierSync,
+  parseHeatValue,
   updateAddictionModifiers
 } from "./features/special-counters.js";
 
@@ -228,6 +230,17 @@ export async function migrateActorData(actor) {
     changed = true;
   }
 
+  for (const item of actor.items.filter(item => item.type === "criticalInjury" && getConditionKind(item) === "heat")) {
+    const update = buildHeatModifierUpdate(parseHeatValue(item));
+    const current = item.system?.rollModifiers ?? {};
+    const needsSync = Object.entries(update).some(([path, modifier]) => {
+      const key = path.split(".").at(-1);
+      if (key.startsWith("-=")) return current[key.slice(2)] !== undefined;
+      return current[key]?.name !== modifier.name || String(current[key]?.value) !== modifier.value;
+    });
+    if (needsSync) { await item.update(update, { render: false }); changed = true; }
+  }
+
   return changed;
 }
 
@@ -242,7 +255,9 @@ export async function runWorldMigration() {
   let changedActors = 0;
 
   try {
-    await migrateLegacyWorldSettings();
+    // Version 7 already imported legacy preferences. A modifier-only upgrade
+    // must not overwrite preferences changed since that import.
+    if (current < 7) await migrateLegacyWorldSettings();
   } catch (error) {
     failures += 1;
     console.error(`${MODULE_ID} | Failed to migrate expanded condition world settings`, error);

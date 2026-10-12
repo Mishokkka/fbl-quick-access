@@ -11,7 +11,7 @@ import {
   getAddictionState,
   isAddictionCondition
 } from "./conditions/features/special-counters.js";
-import { processAddictionNewDay } from "./conditions/services/addiction-service.js";
+import { getAddictionDayKey, getAddictionMorning, getPendingAddictions, processAddictionNewDay } from "./conditions/services/addiction-service.js";
 import {
   applyNewDayProviderAction,
   buildNewDayProviderActions,
@@ -79,12 +79,16 @@ export function isDailyLethalLimit(value) {
   return /^\d+$/.test(text) || /day|days|день|дня|дней|сутк/i.test(text);
 }
 
-export function buildNewDayPlan(actor) {
+export function buildNewDayPlan(actor, options = {}) {
   const actions = [];
   const items = getActorItems(actor);
+  const pendingItems = getPendingAddictions(actor);
+  const blockedByAddiction = pendingItems.length > 0;
+  const dayKey = getAddictionDayKey(actor, { ...options, newDay: true });
 
   for (const item of items) {
     if (item?.type !== "criticalInjury") continue;
+    if (blockedByAddiction && !pendingItems.includes(item)) continue;
     const itemName = String(item.name ?? qaLocalize("NewDay.UnnamedEntry", "Без названия"));
     const conditionKind = getConditionKind(item);
 
@@ -96,6 +100,8 @@ export function buildNewDayPlan(actor) {
         itemId: item.id,
         itemName,
         checked: true,
+        dayKey: getAddictionMorning(item)?.status === "pending" ? getAddictionMorning(item).dayKey : dayKey,
+        pending: getAddictionMorning(item)?.status === "pending",
         state: getAddictionState(item)
       });
       continue;
@@ -181,7 +187,7 @@ export function buildNewDayPlan(actor) {
     }
   }
 
-  const customConditions = getCustomConditions(actor);
+  const customConditions = blockedByAddiction ? [] : getCustomConditions(actor);
   for (const condition of customConditions) {
     if (isArcName(condition?.name)) continue;
     const timer = decrementFirstInteger(condition?.time, 1);
@@ -202,7 +208,7 @@ export function buildNewDayPlan(actor) {
     });
   }
 
-  actions.push({
+  if (!blockedByAddiction) actions.push({
     id: "system:short-rest-reset",
     kind: "short-rest-reset",
     category: "system",
@@ -215,6 +221,7 @@ export function buildNewDayPlan(actor) {
 
   return {
     actorId: actor?.id ?? "", actorName: actor?.name ?? "", actions, categories, providerErrors: [],
+    blockedByAddiction,
     preconditions: Object.fromEntries(actions.map(action => [action.id, actionPrecondition(actor, action)]))
   };
 }
@@ -228,7 +235,7 @@ function actionPrecondition(actor, action) {
   }
   const item = getActorItem(actor, action.itemId);
   if (!item) return "missing";
-  if (action.kind === "addiction-day") return JSON.stringify([getConditionKind(item), isAddictionCondition(item), getAddictionState(item)]);
+  if (action.kind === "addiction-day") return JSON.stringify([getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
   const value = action.kind === "lethal-limit" ? item.system?.limit : item.system?.healingTime;
   return JSON.stringify([item.type, item.name, value, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
 }
@@ -246,8 +253,9 @@ function assertActionCurrent(actor, plan, action) {
  * Build the complete plan, including actions supplied by registered modules.
  * The legacy buildNewDayPlan() remains synchronous for backwards compatibility.
  */
-export async function buildNewDayPlanWithProviders(actor) {
-  const plan = buildNewDayPlan(actor);
+export async function buildNewDayPlanWithProviders(actor, options = {}) {
+  const plan = buildNewDayPlan(actor, options);
+  if (plan.blockedByAddiction) return plan;
   const providerResult = await buildNewDayProviderActions(actor);
   plan.actions.push(...providerResult.actions);
   plan.providerErrors = providerResult.errors;
@@ -268,7 +276,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
   const suppressNotifications = Boolean(options.suppressNotifications);
   const documentOptions = options.documentOptions ?? {};
 
-  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results };
+  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [] };
 
   const customActions = actions.filter((action) =>
     !action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire")
@@ -349,12 +357,14 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
         if (!transition?.changed) throw new Error(transition?.reason ?? "Wash transition failed");
       } else if (action.kind === "addiction-day") {
         const addictionResult = await processAddictionNewDay(actor, item, {
+          dayKey: action.dayKey,
           postChat,
           notify: !suppressNotifications,
           documentOptions
         });
         results.push(successResult(action, {
           changed: addictionResult?.changed,
+          pending: addictionResult?.pending,
           summary: formatAddictionNewDayResult(addictionResult)
         }));
         continue;
@@ -382,6 +392,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     selected: selectedActions.length,
     succeeded,
     failed,
+    pending: succeeded.filter(entry => entry.pending),
     notificationError
   };
 }
@@ -545,14 +556,17 @@ export function serializeNewDayResult(result) {
     selected: Number(result?.selected) || 0,
     successCount: succeeded.length,
     failedCount: failed.length,
+    pendingCount: succeeded.filter(entry => entry.pending).length,
     entries: [
       ...succeeded.map((entry) => ({
         ok: true,
+        pending: Boolean(entry.pending),
         itemName: String(entry?.action?.itemName ?? ""),
         detail: String(entry?.summary || actionDetail(entry?.action ?? {}))
       })),
       ...failed.map((entry) => ({
         ok: false,
+        pending: false,
         itemName: String(entry?.action?.itemName ?? ""),
         detail: String(entry?.error ?? qaLocalize("NewDay.UnknownError", "Unknown error"))
       }))
@@ -563,9 +577,15 @@ export function serializeNewDayResult(result) {
 function formatAddictionNewDayResult(result) {
   if (!result) return "";
   if (result.cured) return qaLocalize("NewDay.AddictionCured", "Addiction resolved.");
+  if (result.pending) return result.total == null
+    ? qaLocalize("NewDay.AddictionPendingFlat", "Withdrawal: manual Endurance is required. Record Success or Failure in STAT; the cycle and penalties are unchanged.")
+    : qaLocalize("NewDay.AddictionPendingRoll", "Craving: {total}. Manual Endurance is required. Record Success or Failure in STAT; the cycle is unchanged.", { total: result.total });
+  if (result.reused) return qaLocalize("NewDay.AddictionAlreadyProcessed", "This morning was already processed; no repeat roll or step was performed. Current state: {state}.", {
+    state: formatAddictionState(result.nextState)
+  });
   const from = formatAddictionState(result.state);
   const to = formatAddictionState(result.nextState);
-  if (Number.isFinite(Number(result.total))) {
+  if (result.total != null && Number.isFinite(Number(result.total))) {
     const outcome = result.advanced
       ? qaLocalize("NewDay.AddictionAdvanced", "cycle advanced")
       : qaLocalize("NewDay.AddictionHeld", "cycle unchanged");
@@ -590,7 +610,7 @@ export async function openNewDayDialog(app, actor, options = {}) {
     return null;
   }
 
-  const plan = await buildNewDayPlanWithProviders(actor);
+  const plan = await buildNewDayPlanWithProviders(actor, { dayKey: options.dayKey });
   if (plan.providerErrors?.length) {
     ui.notifications?.warn?.(qaLocalize(
       "NewDay.ProviderBuildErrors",
@@ -659,6 +679,8 @@ export async function openNewDayDialog(app, actor, options = {}) {
                   success: result.succeeded.length,
                   failed: result.failed.length
                 }));
+              } else if (result?.pending?.length) {
+                ui.notifications?.warn?.(qaLocalize("NewDay.ManualChecksPending", "Manual Endurance is still required for {count} addictions. Record the outcomes in STAT.", { count: result.pending.length }));
               } else if (result?.succeeded?.length) {
                 ui.notifications?.info?.(qaLocalize("NewDay.Completed", "Новый день обработан. Выполнено действий: {count}.", {
                   count: result.succeeded.length
@@ -724,7 +746,9 @@ function buildNewDayDialogContent(plan) {
         </div>
       </div>
       <div class="fblqa-new-day-groups">${groups}</div>
-      <p class="fblqa-rest-note">${escapeHtml(qaLocalize("NewDay.Note", "Таймеры уменьшаются на один день. Непостоянные травмы и состояния, достигшие нуля, удаляются. Помытость и зависимость используют текущие правила STAT."))}</p>
+      <p class="fblqa-rest-note">${escapeHtml(plan.blockedByAddiction
+        ? qaLocalize("NewDay.PendingBlocked", "Resolve the pending addiction Endurance in STAT before advancing another day. Other timers will not change.")
+        : qaLocalize("NewDay.Note", "Таймеры уменьшаются на один день. Непостоянные травмы и состояния, достигшие нуля, удаляются. Помытость и зависимость используют текущие правила STAT."))}</p>
     </form>`;
 }
 
@@ -771,9 +795,10 @@ function actionDetail(action) {
     return qaLocalize("NewDay.ConditionTimer", "Срок состояния: {beforeText} → {afterText}", action);
   }
   if (action.kind === "addiction-day") {
+    if (action.pending) return qaLocalize("NewDay.AddictionPendingFlat", "Manual Endurance is required. Record the result in STAT before advancing another day.");
     return action.state?.phase === "flat"
-      ? qaLocalize("NewDay.AddictionDayFlat", "Утренняя проверка Endurance; после неё цикл ломки продвинется автоматически.")
-      : qaLocalize("NewDay.AddictionDayRoll", "Автобросок тяги 1d{die}: на 1–2 цикл не меняется, на 3+ продвигается автоматически.", {
+      ? qaLocalize("NewDay.AddictionDayFlat", "Ручная Endurance: отметьте результат в STAT. До этого дни ломки и штрафы не меняются.")
+      : qaLocalize("NewDay.AddictionDayRoll", "Тяга 1d{die}: на 3+ шаг автоматически; на 1–2 нужна ручная Endurance и отметка результата в STAT.", {
           die: action.state?.die ?? 6
         });
   }
@@ -908,6 +933,7 @@ function successResult(action, result = null) {
     ok: true,
     action,
     changed: result?.changed ?? true,
+    pending: !action.providerId && action.kind === "addiction-day" && Boolean(result?.pending),
     summary: String(result?.summary ?? ""),
     privateSummary: String(result?.privateSummary ?? "")
   };
