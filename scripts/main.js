@@ -27,6 +27,7 @@ import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
 import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
 import { EQUIPMENT_API_VERSION, getEquipmentState, getEquipmentReceipt, previewEquipmentAction, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
+import { getHeldItemPresentation } from "./integration/weapon-presentation.js";
 
 const BIO_ACTIVATION_GUARDS = new WeakMap();
 
@@ -55,7 +56,8 @@ Hooks.once("init", () => {
         stateProgression: true,
         itemTooltips: true,
         equipment: true,
-        equipmentControls: true
+        equipmentControls: true,
+        heldItemPresentation: true
       }),
       refreshGearPresentation,
       setupTalentItemTooltips,
@@ -70,6 +72,7 @@ Hooks.once("init", () => {
       setQuickAccessSlots: saveSlots,
       equipmentApiVersion: EQUIPMENT_API_VERSION,
       getEquipmentState,
+      getHeldItemPresentation,
       getEquipmentReceipt,
       previewEquipmentAction,
       performEquipmentAction,

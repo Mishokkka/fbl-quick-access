@@ -28,6 +28,7 @@ qa.capabilities.pilgrimCardProfile;
 qa.capabilities.itemTooltips;
 qa.capabilities.equipment;
 qa.capabilities.equipmentControls; // additive controls contract since 1.7.29
+qa.capabilities.heldItemPresentation; // read-only weapon presentation since 1.7.30
 ```
 
 ## Equipment and action-widget integration
@@ -470,3 +471,15 @@ Condition Items use `flags.fbl-quick-access.conditions.kind` (`heat`, `mor`, `ad
 Calendar provider build failures leave the day pending. Partial apply failures retain the existing consumed-day policy to avoid rerunning successful actions; `stateProgressionFailures` retains at most 100 date/calendar/action-ID records for manual diagnosis. It does not contain private provider text and is not an automatic retry queue. A page reload during an uncommitted cross-document operation is still outside a database transaction.
 
 BIO retry removes committed paths from the pending map immediately; failed and unsent paths alone remain retryable. Finite reputation amounts above the 1,000-point cap are preserved when read for display, including oversized legacy/imported values. Validation still rejects them on save and before random/dice allocation. Reading a profile never clamps existing reputation to the cap.
+
+## Held-item presentation (1.7.30)
+
+Check `capabilities.heldItemPresentation` before calling synchronous read-only `getHeldItemPresentation(actor)`. It uses existing equipment permission checks and never writes, rolls, or loads optional modules.
+
+Result: `apiVersion: 1`, `actorUuid`, `equipmentRevision`, `editable`, `items[]`. Each distinct held Item appears once with itemId/itemUuid/name/img/type, hand (left/right/both), requiredGrip, bonus/damage/range/artifact, broken/attack/reload eligibility, features[], optional firearm and revision.
+
+Features contain key/label/value/description/automated/source. Descriptions are plain text; FL journal text requires observer permission on both Rich Info Tooltips and its matching page. Render strings safely. Mechanical revision excludes viewer-specific translations/descriptions so the GM can validate a player's request.
+
+Optional active FL Firearms data includes reloadType/reloadValue/type, normalized MAG magazine {current, capacity}, armorPiercing {value, operator}, load/topOff eligibility and features in Item order. Non-MAG has no invented loaded flag; TopOff requires MAG, API support and the property. Absent/incompatible optional API falls back to native fields.
+
+This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.
