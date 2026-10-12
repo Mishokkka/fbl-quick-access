@@ -98,7 +98,7 @@ export function getHeldItemPresentation(actor) {
     // Never include viewer-specific labels/descriptions in a comparison token.
     snapshot.revision = JSON.stringify([
       itemId, item.uuid ?? null, item.name, item.img, item.type, snapshot.hand,
-      system.grip, snapshot.bonus, snapshot.damage, system.range, snapshot.artifact, snapshot.broken,
+      system.grip, system.category, snapshot.bonus, snapshot.damage, system.range, snapshot.artifact, snapshot.broken,
       nativeFeatures.map(key => [key, system.features?.[key] === true]), text(typeof system.features === "string" ? system.features : system.features?.others),
       gun && [gun.reloadType, gun.reloadValue, gun.type, gun.magazine, gun.armorPiercing, gun.load, gun.topOff,
         gun.features.map(feature => [feature.key, feature.value, feature.automated])],

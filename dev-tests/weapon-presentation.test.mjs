@@ -25,6 +25,14 @@ test("one detached row for a two-handed Item, current gear bonus and native prop
   assert.equal(f.gun.system.features.edged, true);
   assert.equal(getHeldItemPresentation(f.actor).items[0].name, "Gun");
 });
+test("changing the category invalidates a native slow-reload weapon revision", () => {
+  const f = fixture(); f.gun.system.features.slowReload = true; f.gun.system.category = "ranged";
+  const before = getHeldItemPresentation(f.actor).items[0];
+  assert.equal(before.reload, true);
+  f.gun.system.category = "melee";
+  const after = getHeldItemPresentation(f.actor).items[0];
+  assert.equal(after.reload, false); assert.notEqual(after.revision, before.revision);
+});
 test("observers can read, private characters cannot; missing/inactive firearms preserve native data", () => {
   const f = fixture(); f.actor.isOwner = false;
   assert.throws(() => getHeldItemPresentation(f.actor), /permission/i);

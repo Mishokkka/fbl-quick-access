@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.30
+Version 1.7.31
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -140,7 +140,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.30:
+Available methods in 1.7.31:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -301,6 +301,10 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.31
+
+- Include native weapon category in held-item revisions so slow-reload drafts become stale after ranged/melee changes; add a regression. Companion widget 1.6.0 supports F/S/ten-second reloads and explicit manual abilities.
 
 ### 1.7.30
 
