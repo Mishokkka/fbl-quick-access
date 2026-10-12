@@ -12,16 +12,24 @@
       <input class="heat-input" type="text" value="{{value}}/{{max}}" readonly>
       {{#if editable}}
         <button type="button" class="heat-btn heat-plus" title="{{localize 'FBLEC.Heat.Plus'}}">+</button>
-        <button type="button" class="heat-btn heat-exposure" title="{{localize 'FBLEC.Heat.Exposure'}}"><i class="fas fa-sun"></i></button>
-        <button type="button" class="heat-btn heat-rest" title="{{localize 'FBLEC.Heat.Rest'}}"><i class="fas fa-campground"></i></button>
       {{/if}}
-      <button type="button" class="heat-btn heat-check" title="{{localize 'FBLEC.Heat.Check'}}"><i class="fas fa-dice-d6"></i></button>
     </div>
     {{#if editable}}<button type="button" class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Heat.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
   <div class="heat-summary">
     <span class="heat-summary-title">{{levelLabel}}:</span>
     <span>{{levelSummary}}</span>
+    <span class="heat-consequence">{{levelConsequence}}</span>
+  </div>
+  <div class="heat-workflow">
+    <p>{{localize 'FBLEC.Heat.WorkflowHint'}}</p>
+    <div class="heat-actions">
+      {{#if editable}}
+        <button type="button" class="heat-btn heat-exposure" title="{{localize 'FBLEC.Heat.Exposure'}}"><i class="fas fa-times"></i> {{localize 'FBLEC.Heat.Failure'}}</button>
+        <button type="button" class="heat-btn heat-rest" title="{{localize 'FBLEC.Heat.Rest'}}"><i class="fas fa-campground"></i> {{localize 'FBLEC.Heat.Cool'}}</button>
+      {{/if}}
+      <button type="button" class="heat-btn heat-check" title="{{localize 'FBLEC.Heat.Check'}}"><i class="fas fa-book-open"></i> {{localize 'FBLEC.Heat.Rules'}}</button>
+    </div>
   </div>
   <div class="injury-desc heat-desc">
     <p><b>{{localize "FBLEC.Heat.Consequence"}}:</b> {{levelConsequence}}</p>

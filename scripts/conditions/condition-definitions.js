@@ -1,28 +1,28 @@
 const HEAT_LEVELS = Object.freeze({
   0: Object.freeze({
     label: "Normal",
-    summary: "The temperature is tolerable. There is no mechanical effect.",
-    consequence: "Heat deals no damage. Travel can continue normally."
+    summary: "No mechanical effect. Heat rises only after Endurance failure.",
+    consequence: "Failure: 0 → 1, no damage."
   }),
   1: Object.freeze({
     label: "Warming",
-    summary: "The character is warming up. The next hot quarter day is dangerous.",
-    consequence: "There is no penalty. Resting in shade with water removes 1 Heat point."
+    summary: "Warming up. No skill penalties.",
+    consequence: "Failure: 1 → 2, no damage."
   }),
   2: Object.freeze({
     label: "Overheating",
-    summary: "-1 to Endurance and Move while the character remains in the heat.",
-    consequence: "At the end of each hot quarter day, make an Endurance roll. Failure increases Heat by 1."
+    summary: "Overheating. No Endurance or Move penalties.",
+    consequence: "Failure: 2 → 3 and 1 Strength damage."
   }),
   3: Object.freeze({
     label: "Heat exhaustion",
     summary: "On reaching this level, the character suffers 1 Strength damage.",
-    consequence: "Each further hot quarter day requires Endurance. Failure deals another 1 Strength damage."
+    consequence: "Next failure: 3 → 4 and 1 damage each to Strength and Wits."
   }),
   4: Object.freeze({
     label: "Heat stroke",
-    summary: "A failed Endurance roll deals 1 Strength damage and 1 Wits damage.",
-    consequence: "Daytime travel without water, shade, or magic carries severe risk."
+    summary: "−1 to Endurance and Move is applied automatically.",
+    consequence: "Next failure: Heat remains 4/4 and deals 1 damage each to Strength, Wits and Agility. Cooling below 4 removes the penalties."
   })
 });
 

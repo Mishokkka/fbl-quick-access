@@ -1,5 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID, flagDeletePath, flagUpdatePath } from "./constants.js";
-import { confirmDangerAction } from "../dialogs.js";
+import { confirmDangerAction, createFoundryDialog } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
@@ -17,6 +17,8 @@ import {
 import { removeOtherWashStates, transitionWashLevel, isWashCondition } from "./features/wash.js";
 import {
   getAddictionState,
+  applyHeatFailure,
+  buildHeatModifierUpdate,
   getHeatDefinition,
   getHeatLevel,
   getMorState,
@@ -42,13 +44,33 @@ import {
   buildMorGainMessage,
   buildMorRemoveMessage
 } from "./services/chat-service.js";
-import { advanceAddictionCycle, performAddictionMorning } from "./services/addiction-service.js";
+import { getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
-import { conditionKindUpdate, getWashStage } from "./condition-kind.js";
+import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
 import { decrementFirstInteger } from "../new-day.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
+const SPECIAL_ACTION_ITEMS = new WeakSet();
+
+function askAddictionDose(failure = true) {
+  return new Promise(resolve => {
+    const dialog = createFoundryDialog({
+      title: localize("Addiction.DoseTitle", "Dose available?"),
+      content: `<p>${escapeHTML(failure
+        ? localize("Addiction.DoseQuestion", "Is a dose available to take? Taking it resets the cycle to d12; without it the cycle advances.")
+        : localize("Addiction.TakeDoseQuestion", "Confirm that an available dose is taken. This resets the cycle to decline d12; No dose or Cancel leaves it unchanged."))}</p>`,
+      buttons: {
+        dose: { label: localize("Addiction.HasDose", "Take a dose"), callback: () => resolve(true) },
+        none: { label: localize("Addiction.NoDose", "No dose"), callback: () => resolve(false) },
+        cancel: { label: localize("Delete.ConfirmNo", "Cancel"), callback: () => resolve(null) }
+      },
+      close: () => resolve(null)
+    }, { classes: ["fblqa-rest-dialog"], width: 440 });
+    if (!dialog) { resolve(null); return; }
+    dialog.render(true);
+  });
+}
 
 export function invalidateExpandedConditionsRender(app) {
   if (app && typeof app === "object") STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
@@ -56,6 +78,7 @@ export function invalidateExpandedConditionsRender(app) {
 
 export function initExpandedConditions() {
   registerSettings();
+  initializeAddictionOperations();
 }
 
 export async function readyExpandedConditions() {
@@ -70,6 +93,9 @@ export async function handleExpandedConditionsCreateItem(item, options, userId) 
   if (item.type !== "criticalInjury") return;
   const kindUpdate = conditionKindUpdate(item);
   if (kindUpdate) { const { _id, ...update } = kindUpdate; await item.update(update, { render: false }); }
+  if (getConditionKind(item) === "heat") {
+    await item.update(buildHeatModifierUpdate(parseHeatValue(item)), { render: false });
+  }
   if (!isWashCondition(item)) return;
   if (options?.fblqaWashTransition) return;
 
@@ -292,6 +318,31 @@ export async function renderExpandedConditions(app, html) {
     return false;
   }
 
+  async function runSpecialItemAction(ev, operation) {
+    if (!requireEditable()) return;
+    const row = $(ev.currentTarget).closest(".injury-row");
+    const item = getRowItem(row);
+    if (!item || SPECIAL_ACTION_ITEMS.has(item)) return;
+    SPECIAL_ACTION_ITEMS.add(item);
+    row.find("button, select").prop("disabled", true);
+    let result;
+    try { result = await operation(item); }
+    catch (error) {
+      console.error(`${MODULE_ID} | condition action failed`, error);
+      ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+    } finally {
+      SPECIAL_ACTION_ITEMS.delete(item);
+      await refreshAfterSpecialItemAction(item, row, result);
+    }
+    return result;
+  }
+
+  async function postHeatResult(result, mode) {
+    if (!result?.changed) return;
+    try { await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content: buildHeatChangeMessage(app.actor.name, result, mode) }); }
+    catch (error) { console.error(`${MODULE_ID} | heat result chat failed`, error); }
+  }
+
   html.find(".conditions-tab").off("click", ".injury-header, .condition-header").on("click", ".injury-header, .condition-header", (ev) => {
     const header = $(ev.currentTarget);
     const row = header.parent();
@@ -456,6 +507,7 @@ export async function renderExpandedConditions(app, html) {
     if (!requireEditable()) return;
     const item = getRowItem($(ev.currentTarget).closest(".special-addiction-row"));
     if (!item) return;
+    if (getAddictionMorning(item)?.status === "pending") return;
 
     const state = normalizeAddictionSeverityChange(
       getAddictionState(item),
@@ -467,88 +519,63 @@ export async function renderExpandedConditions(app, html) {
   });
 
   html.find(".conditions-tab").off("click", ".addiction-morning").on("click", ".addiction-morning", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".special-addiction-row"));
-    if (!item) return;
-
-    const row = $(ev.currentTarget).closest(".special-addiction-row");
-    const result = await performAddictionMorning(app.actor, item, { documentOptions: { render: false } });
-    await refreshAfterSpecialItemAction(item, row, result);
+    await runSpecialItemAction(ev, item => performAddictionMorning(app.actor, item, { documentOptions: { render: false } }));
   });
 
   html.find(".conditions-tab").off("click", ".addiction-advance").on("click", ".addiction-advance", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".special-addiction-row"));
-    if (!item) return;
+    await runSpecialItemAction(ev, item => resolveAddictionMorning(app.actor, item, "success", {
+      morningId: getAddictionMorning(item)?.id, documentOptions: { render: false }
+    }));
+  });
 
-    const row = $(ev.currentTarget).closest(".special-addiction-row");
-    const result = await advanceAddictionCycle(app.actor, item, { documentOptions: { render: false } });
-    await refreshAfterSpecialItemAction(item, row, result);
+  html.find(".conditions-tab").off("click", ".addiction-failure").on("click", ".addiction-failure", async (ev) => {
+    await runSpecialItemAction(ev, async item => {
+      const morningId = getAddictionMorning(item)?.id;
+      if (getAddictionMorning(item)?.status !== "pending") return;
+      const hasDose = await askAddictionDose();
+      if (hasDose === null) return;
+      return resolveAddictionMorning(app.actor, item, hasDose ? "failure-dose" : "failure-no-dose", {
+        morningId, documentOptions: { render: false }
+      });
+    });
   });
 
   html.find(".conditions-tab").off("click", ".addiction-relapse").on("click", ".addiction-relapse", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".special-addiction-row"));
-    if (!item) return;
-
-    const state = getAddictionState(item);
-    state.phase = "down";
-    state.die = 12;
-    state.daysLeft = 0;
-
-    const content = buildAddictionRelapseMessage(app.actor.name, item.name);
-    await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
-
-    await saveAddictionState(item, state, { render: false });
-    await refreshItemRow(item, $(ev.currentTarget).closest(".special-addiction-row"));
+    await runSpecialItemAction(ev, async item => {
+      if (await askAddictionDose(false) !== true) return;
+      const result = await relapseAddiction(app.actor, item, { documentOptions: { render: false } });
+      try { await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content: buildAddictionRelapseMessage(app.actor.name, item.name) }); }
+      catch (error) { console.error(`${MODULE_ID} | addiction relapse chat failed`, error); }
+      return result;
+    });
   });
 
   // Heat.
   html.find(".conditions-tab").off("click", ".heat-plus, .heat-minus").on("click", ".heat-plus, .heat-minus", async (ev) => {
-    if (!requireEditable()) return;
     const btn = $(ev.currentTarget);
-    const row = btn.closest(".special-heat-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    const currentValue = parseHeatValue(item);
     const delta = btn.hasClass("heat-plus") ? 1 : -1;
-    const result = await updateHeatItem(app.actor, item, currentValue + delta, "manual", { render: false });
-    syncAttributeDamageInputs(result?.appliedDamage);
-    if (result?.changed) {
-      const mode = result.value < result.previousValue ? "reduce" : "gain";
-      const content = buildHeatChangeMessage(app.actor.name, result, mode);
-      await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
-    }
-    await refreshItemRow(item, row);
+    await runSpecialItemAction(ev, async item => {
+      const result = await updateHeatItem(app.actor, item, parseHeatValue(item) + delta, "manual", { render: false });
+      await postHeatResult(result, "manual");
+      return result;
+    });
   });
 
   html.find(".conditions-tab").off("click", ".heat-exposure").on("click", ".heat-exposure", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-heat-row");
-    const item = getRowItem(row);
-    if (!item) return;
-    const result = await updateHeatItem(app.actor, item, parseHeatValue(item) + 1, "exposure", { render: false });
-    syncAttributeDamageInputs(result?.appliedDamage);
-    if (result?.changed) {
-      const content = buildHeatChangeMessage(app.actor.name, result, "gain");
-      await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
-    }
-    await refreshItemRow(item, row);
+    await runSpecialItemAction(ev, async item => {
+      const result = await applyHeatFailure(app.actor, item, { render: false });
+      syncAttributeDamageInputs(result?.appliedDamage);
+      await postHeatResult(result, "failure");
+      return result;
+    });
   });
 
   html.find(".conditions-tab").off("click", ".heat-rest").on("click", ".heat-rest", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-heat-row");
-    const item = getRowItem(row);
-    if (!item) return;
-    const result = await updateHeatItem(app.actor, item, parseHeatValue(item) - 1, "rest", { render: false });
-    syncAttributeDamageInputs(result?.appliedDamage);
-    if (result?.changed) {
-      const content = buildHeatChangeMessage(app.actor.name, result, "reduce");
-      await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
-    }
-    await refreshItemRow(item, row);
+    await runSpecialItemAction(ev, async item => {
+      const result = await updateHeatItem(app.actor, item, parseHeatValue(item) - 1, "rest", { render: false });
+      await postHeatResult(result, "reduce");
+      return result;
+    });
   });
 
   html.find(".conditions-tab").off("click", ".heat-check").on("click", ".heat-check", async (ev) => {

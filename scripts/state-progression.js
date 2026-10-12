@@ -34,6 +34,7 @@ import {
   normalizeSocketRequestId
 } from "./socket-utils.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
+import { addictionCalendarDayKey, getPendingAddictions } from "./conditions/services/addiction-service.js";
 
 export const STATE_PROGRESSION_MODES = Object.freeze({
   LONG_REST: "long-rest",
@@ -79,6 +80,23 @@ export function initializeStateProgression() {
   globalThis.Hooks?.on?.("fblQuickAccess.stateProgressionModeChanged", (mode) => {
     void handleProgressionModeChanged(mode);
   });
+  const refreshMorningSummary = item => {
+    const actor = item?.parent;
+    if (!actor || !isActiveQuickAccessGM()) return;
+    for (const state of gmSummaryWindows.values()) {
+      if (!state.entries.has(actor.id)) continue;
+      const old = state.statuses.get(actor.id);
+      if (!getPendingAddictions(actor).length && old?.pendingManual) {
+        const status = calculateActorCalendarStatus(getActorCalendarMarker(actor), state.context);
+        updateGMSummaryStatus(state, actor.id, { state: status.days > 0 ? "pending" : "done", days: status.days ?? 0,
+          pendingManual: 0, detail: "", result: null });
+      } else if (getPendingAddictions(actor).length) {
+        updateGMSummaryStatus(state, actor.id, { ...old, pendingManual: getPendingAddictions(actor).length });
+      }
+    }
+  };
+  globalThis.Hooks?.on?.("updateItem", refreshMorningSummary);
+  globalThis.Hooks?.on?.("deleteItem", refreshMorningSummary);
   initialized = true;
 }
 
@@ -455,12 +473,13 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
   let remaining = Math.min(requested, effectiveLimit);
   let failedDays = 0;
   let failedActions = 0;
+  let pendingManual = getPendingAddictions(actor).length;
 
-  while (remaining > 0 && cursor) {
+  while (remaining > 0 && cursor && !pendingManual) {
     const nextDate = normalizeCalendariaDate(api?.addDays?.(cursor, 1));
     if (!nextDate) break;
 
-    const plan = await buildNewDayPlanWithProviders(actor);
+    const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, nextDate) });
     const selectedIds = plan.actions.filter((action) => action.checked !== false).map((action) => action.id);
 
     if (plan.providerErrors?.length) {
@@ -519,6 +538,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     );
     cursor = nextDate;
     remaining -= 1;
+    pendingManual = getPendingAddictions(actor).length;
   }
 
   // `dayResults` counts days that produced an explicit result entry, not days
@@ -542,6 +562,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     limitedDays: Math.max(0, requested - processedDays),
     failedDays,
     failedActions,
+    pendingManual,
     days: dayResults
   };
 }
@@ -605,6 +626,7 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
       source: "calendaria",
       allowDelegatedApply: true,
       targetDate: context.date,
+      dayKey: addictionCalendarDayKey(context.calendarId, context.date),
       applyHandler: async ({ selectedIds }) => executeAsActiveGM(APPLY_OPERATION, {
         actorId: actor.id,
         targetDate: context.date,
@@ -657,6 +679,11 @@ async function handleCalendariaApplyRequest(payload, context) {
     // Undo and multi-day GM resolution mutually exclusive even if two clients
     // act on the same calendar prompt at nearly the same moment.
     let marker = getActorCalendarMarker(actorEntry.actor);
+    const pendingManual = getPendingAddictions(actorEntry.actor).length;
+    if (pendingManual) {
+      updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "blocked", days: calculateActorCalendarStatus(marker, calendaria).days ?? 0 });
+      return { status: "awaiting-endurance", calendarResult: { ...emptyCalendarResult(marker?.date ?? targetDate), pendingManual } };
+    }
     if (!marker || marker.calendarId !== calendaria.calendarId) {
       await setActorCalendarMarker(actorEntry.actor, calendaria);
       updateCurrentGMSummary(actorEntry.actor.id, calendaria, {
@@ -680,7 +707,7 @@ async function handleCalendariaApplyRequest(payload, context) {
       throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
     }
 
-    const plan = await buildNewDayPlanWithProviders(actorEntry.actor);
+    const plan = await buildNewDayPlanWithProviders(actorEntry.actor, { dayKey: addictionCalendarDayKey(calendaria.calendarId, targetDate) });
     if (plan.providerErrors?.length) {
       await recordCalendarFailures(actorEntry.actor, calendaria, targetDate, plan.providerErrors.map(error => ({ id: error.providerId, kind: "provider-build" })));
       throw progressionError("provider-build-failed", "A New Day provider is unavailable. The day was not applied.");
@@ -700,6 +727,7 @@ async function handleCalendariaApplyRequest(payload, context) {
       processedDays: 1,
       failedDays: applied.failed.length ? 1 : 0,
       failedActions: applied.failed.length,
+      pendingManual: getPendingAddictions(actorEntry.actor).length,
       days: [{ date: targetDate, result: serializeNewDayResult(applied) }]
     };
 
@@ -861,14 +889,16 @@ function buildGMSummaryContent(state) {
 
 function renderGMSummaryRow(state, entry) {
   const status = state.statuses.get(entry.actor.id) ?? { state: entry.primaryUser?.active ? "pending" : "offline", days: 0 };
+  const pendingManual = getPendingAddictions(entry.actor).length;
   const pendingDays = Math.max(0, Number(status.days) || 0);
-  const canResolve = ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0;
-  const canMarkAbsent = ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0;
+  const canResolve = ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
+  const canMarkAbsent = ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
   const canUndoAbsent = status.state === "absent" && Boolean(status.undoAvailable);
   const playerNames = entry.users.map((user) => user.name ?? user.id).filter(Boolean).join(", ") || "—";
   const detail = status.detail || progressionStatusDetail(status);
   const resultDetails = renderGMSummaryResult(status.result);
   const actions = [
+    pendingManual ? `<button type="button" data-action="open-stat"><i class="fas fa-list"></i> ${escapeHtml(qaLocalize("StateProgression.OpenStat", "Open STAT"))}</button>` : "",
     canResolve ? `
       <button type="button" class="fblqa-progression-resolve" data-action="resolve">
         <i class="fas fa-list-check" aria-hidden="true"></i>
@@ -923,6 +953,10 @@ function renderGMSummaryResult(result) {
 
 function updateGMSummaryStatus(state, actorId, status) {
   if (!state) return;
+  const pendingManual = getPendingAddictions(state.entries.get(actorId)?.actor).length;
+  if (pendingManual && status.state !== "processing" && status.state !== "error") {
+    status = { ...status, state: "blocked", pendingManual, detail: manualEnduranceDetail() };
+  }
   state.statuses.set(actorId, { ...(state.statuses.get(actorId) ?? {}), ...status });
   refreshGMSummaryDom(state);
 }
@@ -951,6 +985,10 @@ function bindGMSummaryActions(state) {
       if (!actorId) return;
       const action = String(button.dataset.action ?? "");
       if (action === "resolve") void resolveActorFromGMSummary(state, actorId);
+      else if (action === "open-stat") {
+        const sheet = state.entries.get(actorId)?.actor?.sheet;
+        if (sheet) { sheet._customActiveTab = "conditions"; sheet.render(true); }
+      }
       else if (action === "absent") void markActorAbsentFromGMSummary(state, actorId);
       else if (action === "undo-absent") void undoActorAbsentFromGMSummary(state, actorId);
     });
@@ -1021,6 +1059,12 @@ async function resolveActorFromGMSummary(state, actorId) {
   const marker = getActorCalendarMarker(entry.actor);
   const status = calculateActorCalendarStatus(marker, context);
   const days = Math.max(0, Number(status.days) || 0);
+  if (getPendingAddictions(entry.actor).length) {
+    ui.notifications?.warn?.(manualEnduranceDetail());
+    entry.actor.sheet._customActiveTab = "conditions";
+    entry.actor.sheet.render(true);
+    return;
+  }
   if (!days) {
     updateGMSummaryStatus(state, actorId, summaryStatusForCurrentMarker(marker, context));
     return;
@@ -1062,6 +1106,7 @@ async function resolveActorFromGMSummary(state, actorId) {
   const result = await openNewDayDialog(null, entry.actor, {
     source: "calendaria-gm",
     targetDate: context.date,
+    dayKey: addictionCalendarDayKey(context.calendarId, context.date),
     applyHandler: async ({ selectedIds }) => handleCalendariaApplyRequest({
       actorId: entry.actor.id,
       targetDate: context.date,
@@ -1327,7 +1372,7 @@ function buildPlayerResultContent(result) {
   const rows = days.map((day) => {
     const entries = Array.isArray(day?.result?.entries) ? day.result.entries : [];
     const list = entries.length
-      ? `<ul>${entries.map((entry) => `<li class="${entry.ok ? "is-ok" : "is-failed"}"><strong>${escapeHtml(entry.itemName ?? "")}</strong><span>${escapeHtml(entry.detail ?? "")}</span></li>`).join("")}</ul>`
+      ? `<ul>${entries.map((entry) => `<li class="${entry.pending ? "is-pending" : entry.ok ? "is-ok" : "is-failed"}"><strong>${escapeHtml(entry.itemName ?? "")}</strong><span>${escapeHtml(entry.detail ?? "")}</span></li>`).join("")}</ul>`
       : `<p>${escapeHtml(qaLocalize("StateProgression.NoStateChanges", "No selected state changes were needed."))}</p>`;
     return `
       <section class="fblqa-progression-result-day">
@@ -1343,7 +1388,12 @@ function buildPlayerResultContent(result) {
         <span>${escapeHtml(qaLocalize("StateProgression.PlayerResultHint", "These changes were applied without posting individual messages to chat."))}</span>
       </div>
       ${rows || `<p>${escapeHtml(qaLocalize("StateProgression.NoStateChanges", "No selected state changes were needed."))}</p>`}
+      ${result.pendingManual ? `<p class="fblqa-rest-note">${escapeHtml(manualEnduranceDetail())}</p>` : ""}
     </div>`;
+}
+
+function manualEnduranceDetail() {
+  return qaLocalize("StateProgression.AddictionPending", "Manual addiction Endurance is required. Record Success or Failure in STAT before processing the next day.");
 }
 
 function calendarApplyOptions() {
