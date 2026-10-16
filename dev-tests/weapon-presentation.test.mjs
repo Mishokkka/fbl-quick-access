@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {getHeldItemPresentation} from "../scripts/integration/weapon-presentation.js";
+import {getItemFeatureInfo} from "../scripts/item-feature-info.js";
 
 function fixture() {
   globalThis.CONFIG = {fbl: {}};
@@ -78,6 +79,31 @@ test("private tooltip journals do not leak property descriptions", () => {
   game.modules.set("fl-firearms", {active: true, api: {getFirearmTooltipData: () => ({isFirearm: true,
     features: [{key: "Reliable", label: "Reliable", descriptionHtml: "GM secret"}]})}});
   assert.equal(getHeldItemPresentation(f.actor).items[0].firearm.features[0].description, "");
+});
+
+test("firearm hover availability uses live journal rules even with empty or stale provider descriptions", () => {
+  const f = fixture();
+  const feature = {key: "Reliable", label: "Надежное", descriptionHtml: ""};
+  const page = {name: "Надежное", text: {content: "Live firearm rule"}, isOwner: false, testUserPermission: () => true};
+  game.journal = [{name: "Rich Info Tooltips", pages: [page], testUserPermission: () => true}];
+  let calls = 0;
+  game.modules.set("fl-firearms", {active: true, api: {getFirearmTooltipData: () => {
+    calls++; return {isFirearm: true, features: [feature]};
+  }}});
+  const read = () => getHeldItemPresentation(f.actor).items[0];
+  const before = read();
+  assert.equal(before.firearm.features[0].description, page.text.content);
+  assert.equal(calls, 1, "read the optional provider once per weapon snapshot");
+  assert.equal(before.firearm.features[0].description, getItemFeatureInfo(f.gun, feature.key).html);
+  feature.descriptionHtml = "Outdated provider rule";
+  page.name = "  надежное  "; page.text.content = "Edited rule";
+  assert.equal(read().firearm.features[0].description, page.text.content);
+  page.name = "Reliable"; // The public stable key is also a supported rule-page name.
+  assert.equal(read().firearm.features[0].description, page.text.content);
+  assert.equal(read().revision, before.revision, "rule text never changes the mechanical comparison token");
+  page.testUserPermission = () => false;
+  assert.equal(read().firearm.features[0].description, "");
+  assert.equal(getItemFeatureInfo(f.gun, feature.key).html, "");
 });
 test("the player's revision matches the GM across locales and journal/page permissions", () => {
   const f = fixture();

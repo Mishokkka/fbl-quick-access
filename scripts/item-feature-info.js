@@ -22,6 +22,13 @@ function rule(labels, fallback = "") {
     relativeTo: page, secrets: Boolean(page.isOwner)};
 }
 
+/** Resolve a public FL Firearms descriptor without fetching the optional API again. */
+export function getFirearmFeatureInfo(feature) {
+  if (!feature || typeof feature.key !== "string") return null;
+  const label = String(feature.label ?? feature.key);
+  return {label, ...(rule([label, feature.key], feature.descriptionHtml) ?? {html: ""})};
+}
+
 /** Resolve one real, active property. Missing rules stay plain labels in callers. */
 export function getItemFeatureInfo(item, key) {
   if (!["weapon", "gear"].includes(item?.type)) return null;
@@ -38,7 +45,5 @@ export function getItemFeatureInfo(item, key) {
   }
   const features = getFirearmTooltipData(item)?.features;
   const feature = Array.isArray(features) ? features.find(value => value?.key === key) : null;
-  if (!feature) return null;
-  const label = String(feature.label ?? feature.key);
-  return {label, ...(rule([label, feature.key], feature.descriptionHtml) ?? {html: ""})};
+  return getFirearmFeatureInfo(feature);
 }

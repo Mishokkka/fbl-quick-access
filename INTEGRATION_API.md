@@ -503,6 +503,8 @@ Result: `apiVersion: 1`, `actorUuid`, `equipmentRevision`, `editable`, `items[]`
 
 Features contain key/label/value/description/automated/source. Descriptions are plain text; FL journal text requires observer permission on both Rich Info Tooltips and its matching page. Render strings safely. Mechanical revision excludes viewer-specific translations/descriptions so the GM can validate a player's request.
 
+From 1.7.34, firearm `description` and rich property tooltips share the same live rule resolver. It matches the public label or stable key without case/outer-whitespace differences, prefers the journal page content and uses the provider's `descriptionHtml` only when an accessible matching page has no content field. A page owner's secret sections are preserved; other readers' previews and tooltips omit them. A missing/stale FL cache entry does not suppress a rule available in the live journal. The public feature fields and API major remain unchanged.
+
 Optional active FL Firearms data includes reloadType/reloadValue/type, normalized MAG magazine {current, capacity}, armorPiercing {value, operator}, load/topOff eligibility and features in Item order. Non-MAG has no invented loaded flag; TopOff requires MAG, API support and the property. Absent/incompatible optional API falls back to native fields.
 
 This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.

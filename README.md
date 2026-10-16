@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.33
+Version 1.7.34
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -146,7 +146,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.33:
+Available methods in 1.7.34:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -307,6 +307,12 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.34
+
+- Resolve FL Firearms hover availability and rich property text through the same live, permission-checked journal lookup. Empty/stale provider descriptions and label case/spacing differences no longer prevent an available rule tooltip from being attached.
+- Preserve secret-section visibility for a rule page's owner; keep those sections hidden from other readers. Rule changes never alter mechanical revisions or action costs.
+- Add regressions for live rules, cached descriptions, page visibility, keyboard focus and owner-only sections.
 
 ### 1.7.33
 
