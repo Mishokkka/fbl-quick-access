@@ -1,4 +1,5 @@
 import { getEquipmentState } from "./equipment-api.js";
+import { getItemFeatureInfo } from "../item-feature-info.js";
 
 const FIREARMS = "fl-firearms";
 const nativeFeatures = ["edged", "pointed", "blunt", "parrying", "shield", "hook", "slowReload"];
@@ -13,7 +14,7 @@ function plain(value) {
   const html = text(value);
   if (typeof DOMParser === "function") {
     const document = new DOMParser().parseFromString(html, "text/html");
-    document.querySelectorAll("script, style, iframe, object").forEach(node => node.remove());
+    document.querySelectorAll("script, style, iframe, object, section.secret").forEach(node => node.remove());
     document.querySelectorAll("br, p, li, div").forEach(node => node.append("\n"));
     return document.body.textContent.trim();
   }
@@ -79,7 +80,7 @@ export function getHeldItemPresentation(actor) {
     const gun = firearm(item);
     const features = nativeFeatures.filter(key => system.features?.[key] === true).map(key => ({
       key, label: localized(`WEAPON.FEATURES.${featureKeys[key] ?? key.toUpperCase()}`, fallbackFeatures[key]),
-      value: "", description: "", automated: false, source: "system",
+      value: "", description: plain(getItemFeatureInfo(item, key)?.html), automated: false, source: "system",
     }));
     const other = plain(typeof system.features === "string" ? system.features : system.features?.others);
     if (other) features.push({key: "others", label: localized("WEAPON.FEATURES.OTHERS", "Другие свойства"), value: "", description: other, automated: false, source: "system"});

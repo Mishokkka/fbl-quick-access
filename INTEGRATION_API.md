@@ -33,6 +33,27 @@ qa.capabilities.heldItemPresentation; // read-only weapon presentation since 1.7
 
 ## Equipment and action-widget integration
 
+Quick Access 1.7.33 adds `capabilities.inventoryHands` and
+`capabilities.equipmentFeatureTooltips`. API major versions remain 1.
+`getEquipmentState(actor).handInventory` lists carried `weapon`/`gear` Items,
+including heavy and unslotted Items, but excludes dropped Items. The existing
+`inventory` list retains the quick-slot eligibility filter.
+`holdInventory` (`itemId`, `hand: left/right/both`) uses the same owner, queue,
+revision, receipt and undo checks as `hold`. It changes only manual grips;
+quick slots and native Item carry fields are preserved. The opaque revision
+also tracks inventory-hand eligibility. Legacy `hold` keeps its slot limits.
+
+For property tooltips, mark a button with `data-equipment-item`, `data-item-id`
+and `data-equipment-feature` (an active native feature key, `others`, or an FL
+Firearms feature key), then call `setupEquipmentItemTooltips(actor, container)`.
+The tooltip resolves the actual Item/reference text and enriches it through the
+same rich-text pipeline as normal item tooltips. Journal references require
+OBSERVER on both journal and page; journal secret sections use the page's
+ownership rather than the Item's ownership. Missing descriptions stay empty,
+so consumers should show a plain label in that case. Native labels can resolve
+English/Russian rule-page names. Set `data-equipment-tooltip-theme="dark"` on
+the container to keep these shared tooltips dark independently of sheet themes.
+
 Introduced in Quick Access **1.7.27**, with `equipmentApiVersion === 1`.
 The existing `apiVersion === 1`, `getQuickAccessSlots(actor)` and
 `setQuickAccessSlots(actor, slots)` keep their signatures and storage format.

@@ -1,5 +1,6 @@
 import { MAX_QUICK_WEIGHT, MODULE_ID } from "./constants.js";
 import { buildFirearmTooltipSection } from "./firearms.js";
+import { getItemFeatureInfo } from "./item-feature-info.js";
 import { qaLocalize } from "./i18n.js";
 import {
   compactPlainText,
@@ -16,6 +17,11 @@ const QUICK_ACCESS_ITEM_TYPES = new Set(["weapon", "armor", "gear", "rawMaterial
 
 export function isAllowedQuickItem(item) {
   return isQuickAccessItemType(item) && getItemWeightValue(item) <= MAX_QUICK_WEIGHT;
+}
+
+/** Inventory grips have no quick-slot weight limit; dropped items stay unavailable. */
+export function isHandInventoryItem(item) {
+  return ["weapon", "gear"].includes(item?.type) && getItemCarryState(item) !== "dropped";
 }
 
 export function isQuickAccessItemType(item) {
@@ -189,6 +195,14 @@ export async function buildItemTooltipHtml(item) {
     ${firearmSection}
     ${textBlocks}
   `;
+}
+
+/** Reuse item tooltip enrichment for a property's actual journal or Item text. */
+export async function buildItemFeatureTooltipHtml(item, key) {
+  const info = getItemFeatureInfo(item, key);
+  if (!info?.html?.trim()) return "";
+  const html = await enrichTooltipText(info.html, item, info);
+  return `<div class="fblqa-item-tooltip-header"><div class="fblqa-item-tooltip-title">${escapeHtml(info.label)}</div></div><div class="fblqa-rich-text">${html}</div>`;
 }
 
 function isDescriptionOnlyTooltipItem(item) {
@@ -432,7 +446,7 @@ function isForbiddenLandsRichFieldVisible(item, flag) {
   return !hidden;
 }
 
-async function enrichTooltipText(text, item) {
+async function enrichTooltipText(text, item, {secrets = item.isOwner, relativeTo = item} = {}) {
   const raw = decodeHtmlEntities(String(text ?? "").trim());
   if (!raw) return "";
 
@@ -440,8 +454,8 @@ async function enrichTooltipText(text, item) {
     try {
       const enriched = await TextEditor.enrichHTML(raw, {
         async: true,
-        secrets: item.isOwner,
-        relativeTo: item
+        secrets,
+        relativeTo
       });
       const cleanHTML = globalThis.foundry?.utils?.cleanHTML;
       if (typeof cleanHTML === "function") return String(cleanHTML(enriched) ?? "");

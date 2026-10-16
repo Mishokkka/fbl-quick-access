@@ -57,7 +57,9 @@ Hooks.once("init", () => {
         itemTooltips: true,
         equipment: true,
         equipmentControls: true,
-        heldItemPresentation: true
+        heldItemPresentation: true,
+        inventoryHands: true,
+        equipmentFeatureTooltips: true
       }),
       refreshGearPresentation,
       setupTalentItemTooltips,

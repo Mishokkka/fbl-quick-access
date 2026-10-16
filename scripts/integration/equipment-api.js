@@ -1,6 +1,6 @@
 import { MODULE_ID, FLAG_SLOTS } from "../constants.js";
 import { getQuickCapacity, getStoredSlots, normalizeSlots } from "../quick-access.js";
-import { getItemCarryState, getItemWeightValue, isAllowedQuickItem } from "../item-utils.js";
+import { getItemCarryState, getItemWeightValue, isAllowedQuickItem, isHandInventoryItem } from "../item-utils.js";
 import { canModifyActor } from "../permissions.js";
 import { createObjectOperationQueue } from "../operation-queue.js";
 import { readEquipmentHands } from "../equipment-hands.js";
@@ -53,12 +53,14 @@ export function getEquipmentState(actor) {
     version: EQUIPMENT_API_VERSION, actorUuid: actor.uuid ?? null,
     editable: canModifyActor(actor), capacity, slots, hands,
     inventory: Array.from(actor.items.values()).filter(isAllowedQuickItem).map(describeItem),
+    handInventory: Array.from(actor.items.values()).filter(isHandInventoryItem).map(describeItem),
     heldItems: {
       left: describeItem(actor.items.get(hands.left)),
       right: describeItem(actor.items.get(hands.right))
     },
     // A comparison token, not a database lock. Include eligibility and capacity.
-    revision: JSON.stringify([actor.uuid ?? null, capacity, slots.map(s => [s.itemId, s.missing, s.canHold]), hands])
+    revision: JSON.stringify([actor.uuid ?? null, capacity, slots.map(s => [s.itemId, s.missing, s.canHold]), hands,
+      Array.from(actor.items.values()).filter(isHandInventoryItem).map(item => [item.id, getItemCarryState(item)])])
   };
 }
 
@@ -97,6 +99,18 @@ function planCommand(actor, state, command) {
   const update = {};
   const validIndex = index => Number.isInteger(index) && index >= 0 && index < state.slots.length;
   switch (command.type) {
+    case "holdInventory": {
+      assertHand(command.hand);
+      const item = actor.items.get(command.itemId);
+      if (typeof command.itemId !== "string" || !item || !isHandInventoryItem(item)) {
+        throw new Error("Only an existing carried weapon or gear item can be held from inventory.");
+      }
+      const targets = command.hand === "both" ? ["left", "right"] : [command.hand];
+      stowItem(hands, command.itemId);
+      for (const hand of targets) stowItem(hands, hands[hand]);
+      for (const hand of targets) hands[hand] = command.itemId;
+      break;
+    }
     case "hold": {
       assertHand(command.hand);
       const item = actor.items.get(command.itemId);
