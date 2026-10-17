@@ -593,7 +593,8 @@
       "Cool": "Cool down (−1)",
       "Rules": "Expand or collapse Heat rules",
       "WorkflowHint": "After a final Endurance failure, press +. At 4/4 another failure deals damage. The − button reduces Heat without damage. To correct the level manually, type it in the counter.",
-      "EditLevel": "Correct level manually (0–4), without damage"
+      "EditLevel": "Correct level manually (0–4), without damage",
+      "DamageRules": "Damage on failure: 0→1 and 1→2 deal no damage; 2→3 deals 1 Strength; 3→4 deals 1 Strength and 1 Wits; another failure at 4/4 deals 1 Strength, Wits and Agility each. Level 4 automatically applies −1 Endurance and Move."
     },
     "Mor": {
       "CurrentTitle": "Current Mor points (X)",
@@ -642,7 +643,14 @@
       "DaysLeft": "Withdrawal days left",
       "Back": "Correct cycle: previous step",
       "Forward": "Correct cycle: next step",
-      "PendingShort": "Endurance check"
+      "PendingShort": "Endurance check",
+      "Rules": {
+        "Cycle": "Cycle: decline d12 → d10 → d8 → d6; then withdrawal for 1 / 5 / 10 days for light / medium / severe Addiction; then recovery d6 → d8 → d10 → d12. The next completed step after d12 cures Addiction.",
+        "Morning": "Each morning, roll the current craving die: 3+ advances the cycle automatically; 1–2 requires a manual Endurance check. During withdrawal, Endurance is required every morning without a craving roll.",
+        "Result": "Apply abilities and rerolls before recording the final Endurance result. Success advances the cycle. On failure, confirm dose availability: taking a dose resets decline d12; without a dose, the cycle still advances.",
+        "Penalties": "Penalties: d8/d6 during decline or recovery gives −1 Strength and Agility. Withdrawal days 1–2 give −2 Strength and Agility; days 3–4 give −2 to all attributes; days 5–8 give −3 to all; day 9 onward gives −4 to all. Modifiers are applied automatically.",
+        "Correction": "Manual correction: −/+ move the cycle without rolling. Click the current phase to edit phase, die, days or severity. A correction replaces any unresolved morning check. The dose button resets decline d12 after confirmation."
+      }
     },
     "Permissions": {
       "ReadOnly": "STAT is read-only. Editing is disabled in module settings."

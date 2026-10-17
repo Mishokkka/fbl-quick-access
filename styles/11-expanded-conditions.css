@@ -1325,24 +1325,6 @@ color: #7a1600 !important;
   margin: 0;
 }
 
-.fblec-stat-tab .addiction-pending {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  flex-wrap: wrap;
-  gap: 4px 6px;
-  margin-top: 5px;
-  color: #361446;
-  font-size: 0.85em;
-}
-
-.fblec-stat-tab .addiction-pending .addiction-btn {
-  flex: 0 0 auto;
-  width: auto;
-  padding: 0 6px;
-  gap: 4px;
-}
-
 .fblec-stat-tab .special-heat-row .heat-summary {
   margin: 0;
 }

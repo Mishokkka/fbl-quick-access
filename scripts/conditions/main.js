@@ -49,6 +49,19 @@ const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
 const SPECIAL_ACTION_ITEMS = new WeakSet();
 
+function setConditionDetailsExpanded(row, expanded) {
+  row.children(".injury-desc, .condition-desc").stop(true, true).toggle(expanded);
+  const title = row.find(".condition-details-toggle");
+  title.attr("aria-expanded", String(expanded));
+  title.find(".collapse-icon").toggleClass("fa-chevron-right", !expanded).toggleClass("fa-chevron-down", expanded);
+  row.find(".heat-check").attr("aria-expanded", String(expanded));
+}
+
+function toggleConditionDetails(row) {
+  const expanded = row.children(".injury-desc").css("display") === "none";
+  setConditionDetailsExpanded(row, expanded);
+}
+
 function askAddictionDose(failure = true) {
   return new Promise(resolve => {
     const dialog = createFoundryDialog({
@@ -319,7 +332,7 @@ export async function renderExpandedConditions(app, html) {
     if (!isCurrent()) return null;
     const replacement = $(rowHtml);
     current.replaceWith(replacement);
-    if (wasExpanded) replacement.children(".injury-desc, .condition-desc").show();
+    if (wasExpanded) setConditionDetailsExpanded(replacement, true);
     restoreScroll();
     return replacement;
   }
@@ -389,12 +402,24 @@ export async function renderExpandedConditions(app, html) {
 
     if ($(ev.target).closest(".injury-healing-inline, .condition-time-inline, .mor-controls, .heat-controls, .addiction-controls, .addiction-delete-btn, .fblec-drag-handle, input, textarea, button, select").length) return;
 
+    if (row.is(".special-addiction-row, .special-heat-row")) {
+      toggleConditionDetails(row);
+      return;
+    }
+
     const desc = row.children(".injury-desc, .condition-desc");
     const icon = header.find(".collapse-icon");
     desc.slideToggle(200);
     if (!icon.hasClass("fa-pills") && !icon.hasClass("fa-biohazard") && !icon.hasClass("fa-temperature-high")) {
       icon.toggleClass("fa-chevron-down fa-chevron-up");
     }
+  });
+
+  html.find(".conditions-tab").off("keydown", ".condition-details-toggle").on("keydown", ".condition-details-toggle", ev => {
+    if (ev.key !== "Enter" && ev.key !== " ") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    toggleConditionDetails($(ev.currentTarget).closest(".injury-row"));
   });
 
   // System injuries.
@@ -619,7 +644,7 @@ export async function renderExpandedConditions(app, html) {
 
   html.find(".conditions-tab").off("click", ".heat-check").on("click", ".heat-check", async (ev) => {
     const row = $(ev.currentTarget).closest(".special-heat-row");
-    row.children(".injury-desc").slideToggle(200);
+    toggleConditionDetails(row);
   });
 
   // Mor.

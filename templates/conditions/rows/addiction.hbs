@@ -1,8 +1,8 @@
 <div class="injury-row special-addiction-row" data-row-kind="item" data-item-id="{{itemId}}" data-order="{{order}}">
   <div class="injury-header">
     {{#if editable}}<span class="fblec-drag-handle" title="{{localize 'FBLEC.UI.Drag'}}"><i class="fas fa-grip-vertical"></i></span>{{/if}}
-    <div class="injury-title-block addiction-title-block">
-      <i class="fas fa-pills collapse-icon addiction-collapse-toggle" title="{{localize 'FBLEC.UI.ToggleDescription'}}"></i>
+    <div class="injury-title-block addiction-title-block condition-details-toggle" role="button" tabindex="0" aria-expanded="false" title="{{localize 'FBLEC.UI.ToggleDescription'}}">
+      <i class="fas fa-chevron-right collapse-icon addiction-collapse-toggle" aria-hidden="true"></i>
       <img class="injury-img" src="{{img}}" title="{{name}}" />
       <span class="condition-name addiction-name-display">{{name}}</span>
     </div>
@@ -22,24 +22,26 @@
         </span>
         <button type="button" class="addiction-btn addiction-morning" title="{{localize 'FBLEC.Addiction.Morning'}}" aria-label="{{localize 'FBLEC.Addiction.Morning'}}" {{#if morningDisabled}}disabled{{/if}}><i class="fas fa-sun" aria-hidden="true"></i></button>
         <button type="button" class="addiction-btn addiction-relapse" title="{{localize 'FBLEC.Addiction.TakeDose'}}" aria-label="{{localize 'FBLEC.Addiction.TakeDose'}}"><i class="fas fa-syringe" aria-hidden="true"></i></button>
+        {{#if pending}}
+          <button type="button" class="addiction-btn addiction-advance" title="{{localize 'FBLEC.Addiction.EnduranceSuccess'}}" aria-label="{{localize 'FBLEC.Addiction.EnduranceSuccess'}}"><i class="fas fa-check" aria-hidden="true"></i></button>
+          <button type="button" class="addiction-btn addiction-failure" title="{{localize 'FBLEC.Addiction.EnduranceFailure'}}" aria-label="{{localize 'FBLEC.Addiction.EnduranceFailure'}}"><i class="fas fa-times" aria-hidden="true"></i></button>
+        {{/if}}
       {{else}}
         <span class="addiction-status" title="{{statusTitle}}">{{statusText}}</span>
       {{/if}}
     </div>
     {{#if editable}}<button type="button" class="delete-condition delete-injury addiction-delete-btn" title="{{localize 'FBLEC.Addiction.Delete'}}"><i class="fas fa-trash"></i></button>{{/if}}
   </div>
-  {{#if pending}}
-    <div class="addiction-pending" role="status">
-      <span title="{{morningText}} {{rollText}}">{{localize 'FBLEC.Addiction.PendingShort'}}</span>
-      {{#if editable}}
-        <button type="button" class="addiction-btn addiction-advance" title="{{localize 'FBLEC.Addiction.EnduranceSuccess'}}"><i class="fas fa-check" aria-hidden="true"></i> {{localize 'FBLEC.UI.Success'}}</button>
-        <button type="button" class="addiction-btn addiction-failure" title="{{localize 'FBLEC.Addiction.EnduranceFailure'}}"><i class="fas fa-times" aria-hidden="true"></i> {{localize 'FBLEC.UI.Failure'}}</button>
-      {{/if}}
-    </div>
-  {{/if}}
   <div class="injury-desc">
     <p class="addiction-modifier-status">{{modifierText}}</p>
     <p class="addiction-daily-status">{{morningText}} {{rollText}}</p>
+    <ul class="addiction-rules">
+      <li>{{localize 'FBLEC.Addiction.Rules.Cycle'}}</li>
+      <li>{{localize 'FBLEC.Addiction.Rules.Morning'}}</li>
+      <li>{{localize 'FBLEC.Addiction.Rules.Result'}}</li>
+      <li>{{localize 'FBLEC.Addiction.Rules.Penalties'}}</li>
+      <li>{{localize 'FBLEC.Addiction.Rules.Correction'}}</li>
+    </ul>
     {{{effect}}}
   </div>
 </div>
