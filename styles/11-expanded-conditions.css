@@ -716,8 +716,8 @@ background: rgba(196, 106, 26, 0.55);
 
 .fblec-stat-tab .heat-input {
 width: 42px !important;
-  height: 26px !important;
-  font-size: 1em !important;
+  height: 26px;
+  font-size: 1em;
   font-weight: bold;
   text-align: center;
   background: rgba(0,0,0,0.7) !important;
@@ -1217,6 +1217,7 @@ color: #7a1600 !important;
 
 /* Localized STAT chat emphasis */
 .fblec-stat-tab :is(.special-addiction-row, .special-heat-row) {
+  --fblec-control-height: 28px;
   container-type: inline-size;
 }
 
@@ -1323,6 +1324,45 @@ color: #7a1600 !important;
   min-width: 46px;
   max-width: 46px;
   margin: 0;
+}
+
+/* Foundry buttons also have a font-dependent min-height. Set all three size
+   constraints so native controls and custom counters share one visible box. */
+.fblec-stat-tab :is(.special-addiction-row, .special-heat-row) .injury-header :is(button, select, input, .addiction-status, .condition-details-toggle, .injury-img) {
+  box-sizing: border-box;
+  height: var(--fblec-control-height);
+  min-height: var(--fblec-control-height);
+  max-height: var(--fblec-control-height);
+  margin-top: 0;
+  margin-bottom: 0;
+  align-self: center;
+}
+
+.fblec-stat-tab :is(.special-addiction-row, .special-heat-row) .injury-header :is(button, select, input, .addiction-status) {
+  padding-top: 0;
+  padding-bottom: 0;
+  line-height: 20px;
+  font-size: 13px;
+}
+
+.fblec-stat-tab :is(.special-addiction-row, .special-heat-row) :is(.addiction-btn, .heat-btn) {
+  flex: 0 0 var(--fblec-control-height);
+  width: var(--fblec-control-height);
+  min-width: var(--fblec-control-height);
+  max-width: var(--fblec-control-height);
+}
+
+.fblec-stat-tab :is(.special-addiction-row, .special-heat-row) .injury-img {
+  flex: 0 0 var(--fblec-control-height);
+  width: var(--fblec-control-height);
+  min-width: var(--fblec-control-height);
+  max-width: var(--fblec-control-height);
+}
+
+.fblec-stat-tab .special-addiction-row .addiction-status {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
 
 .fblec-stat-tab .special-heat-row .heat-summary {
