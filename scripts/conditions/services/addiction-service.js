@@ -27,6 +27,7 @@ export async function handleAddictionOperation(payload, context) {
   }
   const options = { dayKey: submitted.dayKey, newDay: submitted.newDay === true,
     morningId: submitted.morningId, postChat: submitted.postChat !== false, notify: submitted.notify !== false,
+    state: submitted.state, delta: submitted.delta,
     documentOptions: submitted.render === false ? { render: false } : {} };
   if (payload.kind === "morning") {
     const expected = getAddictionDayKey(actor, { newDay: options.newDay });
@@ -36,7 +37,8 @@ export async function handleAddictionOperation(payload, context) {
   }
   const result = payload.kind === "morning" ? await performAddictionMorning(actor, item, options)
     : payload.kind === "resolve" ? await resolveAddictionMorning(actor, item, payload.outcome, options)
-      : payload.kind === "dose" ? await relapseAddiction(actor, item, options) : null;
+      : payload.kind === "dose" ? await relapseAddiction(actor, item, options)
+        : payload.kind === "adjust" ? await correctAddictionState(actor, item, options) : null;
   if (!result) throw new TypeError("Invalid addiction action");
   return { ...result, roll: null };
 }
@@ -54,6 +56,7 @@ function remoteMorningOperation(actor, item, kind, options, outcome) {
   return executeAsActiveGM(MORNING_OPERATION, {
     actorUuid: actor.uuid, actorId: actor.id, itemId: item.id, kind, outcome,
     options: { dayKey: options.dayKey, newDay: options.newDay === true, morningId: options.morningId,
+      state: options.state, delta: options.delta,
       postChat: options.postChat !== false, notify: options.notify !== false, render: options.documentOptions?.render }
   });
 }
@@ -225,6 +228,56 @@ export async function relapseAddiction(actor, item, options = {}) {
     } : {});
     return { changed: true, state };
   });
+}
+
+/** Adjust the cycle without a roll, dose, chat message, or automatic recovery. */
+export async function correctAddictionState(actor, item, options = {}) {
+  if (!actor || !item) return { changed: false, skipped: true };
+  const remote = remoteMorningOperation(actor, item, "adjust", options);
+  if (remote) return remote;
+  return enqueueMorning(item, async () => {
+    if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
+    const previous = getAddictionState(item);
+    const state = options.delta === 1 || options.delta === -1
+      ? shiftAddictionState(previous, options.delta)
+      : normalizeManualAddictionState(options.state, previous);
+    if (Object.keys(state).every(key => state[key] === previous[key])) return { changed: false, state };
+    const morning = getAddictionMorning(item);
+    await saveAddictionState(item, state, options.documentOptions ?? {}, morning ? {
+      [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...morning, status: "resolved", outcome: "manual",
+        advanced: false, cured: false, nextState: state }
+    } : {});
+    return { changed: true, state };
+  });
+}
+
+function normalizeManualAddictionState(input, previous) {
+  if (!input || !["down", "flat", "up"].includes(input.phase)) throw new TypeError("Invalid addiction phase");
+  const die = Number(input.die);
+  const severity = Number(input.severity ?? previous.severity);
+  const daysLeft = Number(input.daysLeft ?? previous.daysLeft);
+  if (!ADDICTION_DICE_STEPS.includes(die) || ![1, 5, 10].includes(severity)
+    || !Number.isInteger(daysLeft) || daysLeft < 0 || daysLeft > 365 || (input.phase === "flat" && daysLeft < 1)) {
+    throw new TypeError("Invalid addiction state");
+  }
+  return { phase: input.phase, die: input.phase === "flat" ? 6 : die,
+    daysLeft: input.phase === "flat" ? daysLeft : 0, severity };
+}
+
+function shiftAddictionState(previous, delta) {
+  if (delta > 0) return calculateNextAddictionState(previous).state;
+  const state = { ...previous };
+  if (state.phase === "down") {
+    state.die = ADDICTION_DICE_STEPS[Math.min(3, ADDICTION_DICE_STEPS.indexOf(Number(state.die)) + 1)];
+  } else if (state.phase === "flat") {
+    if (state.daysLeft < state.severity) state.daysLeft += 1;
+    else { state.phase = "down"; state.die = 6; state.daysLeft = 0; }
+  } else if (state.phase === "up") {
+    const index = ADDICTION_DICE_STEPS.indexOf(Number(state.die));
+    if (index > 0) state.die = ADDICTION_DICE_STEPS[index - 1];
+    else { state.phase = "flat"; state.die = 6; state.daysLeft = 1; }
+  }
+  return state;
 }
 
 export function calculateNextAddictionState(inputState = {}) {

@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.34
+Version 1.7.35
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -109,7 +109,9 @@ The first integrated release intentionally keeps the Expanded Conditions UI and 
 
 Addiction uses one persisted morning across STAT and New Day. A controlled craving result (3+) advances automatically; 1–2 or withdrawal waits for a manual Endurance roll. Apply talents, abilities and any rerolls before choosing **Endurance: success** or **Endurance: failure**. Success advances the cycle. Failure asks whether a dose is available: taking it resets decline d12, while failure without a dose still advances the cycle. Withdrawal days and attribute modifiers remain unchanged until this decision. Morning records survive reopening/reloading and prevent another roll of the same morning. With an active GM, player actions use the GM's per-Item queue; otherwise they use the local queue. Long Rest uses explicit numbered New Days, while Calendaria uses the actual processed date.
 
-Heat rises only when the player records a final manual Endurance failure; the GM sets check frequency. Failure at levels 0/1 raises the level without damage, 2 → 3 deals 1 Strength damage, 3 → 4 deals 1 Strength and 1 Wits damage, and a further failure at 4 keeps 4/4 and deals 1 damage each to Strength, Wits and Agility. Level 4 applies −1 to Endurance and Move automatically. **Cool down** reduces Heat by 1 and removes those penalties below 4; it neither damages nor heals attributes. **+/−** are manual corrections without damage. **Rules** posts a reminder and rolls no dice. Migration 8 adds the owned level-4 modifiers to existing Heat Items without changing their level or attributes.
+Heat rises when the player presses **+** after a final manual Endurance failure; the GM sets check frequency. Failure at levels 0/1 raises the level without damage, 2 → 3 deals 1 Strength damage, 3 → 4 deals 1 Strength and 1 Wits damage, and a further failure at 4 keeps 4/4 and deals 1 damage each to Strength, Wits and Agility. Level 4 applies −1 to Endurance and Move automatically. **−** reduces Heat by 1 and removes those penalties below 4; it neither damages nor heals attributes. Type a level (0–4) directly into the counter to correct it without damage. The book button expands/collapses the rules locally without sending anything to chat. Migration 8 adds the owned level-4 modifiers to existing Heat Items without changing their level or attributes.
+
+Heat and Addiction keep their controls in compact headers. Click the name/icon to expand or collapse descriptions, current modifiers and daily details. Addiction **−/+** move the cycle backward/forward without rolling or automatically deleting a recovered Item; clicking the phase/die opens an editor for phase, die, withdrawal days and severity. These manual corrections synchronize modifiers and replace any pending morning result, so that a later click cannot apply the old result again.
 
 ## item-piles integration
 
@@ -146,7 +148,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.34:
+Available methods in 1.7.35:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -307,6 +309,12 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.35
+
+- Restore compact, collapsible Heat/Addiction cards and manual cycle corrections. Keep Heat +/- functional, allow direct level correction, and expand rules locally without posting to chat.
+- Normalize translation namespaces so Foundry's language loader preserves all STAT labels, including Russian buttons and ordinary injury fields.
+- Add regressions for manual cycle edits, pending-check replacement, ownership and localization namespace collisions; check real button handlers with Foundry/system CSS.
 
 ### 1.7.34
 

@@ -1,5 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID, flagDeletePath, flagUpdatePath } from "./constants.js";
-import { confirmDangerAction, createFoundryDialog } from "../dialogs.js";
+import { confirmDangerAction, createFoundryDialog, findDialogForm } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
@@ -19,12 +19,9 @@ import {
   getAddictionState,
   applyHeatFailure,
   buildHeatModifierUpdate,
-  getHeatDefinition,
-  getHeatLevel,
   getMorState,
   normalizeAddictionSeverityChange,
   parseHeatValue,
-  saveAddictionState,
   updateHeatItem,
   updateMorItem
 } from "./features/special-counters.js";
@@ -40,11 +37,10 @@ import { refreshConditionsRows } from "./render/refresh-rows.js";
 import {
   buildAddictionRelapseMessage,
   buildHeatChangeMessage,
-  buildHeatCheckMessage,
   buildMorGainMessage,
   buildMorRemoveMessage
 } from "./services/chat-service.js";
-import { getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
+import { correctAddictionState, getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
 import { decrementFirstInteger } from "../new-day.js";
@@ -68,6 +64,50 @@ function askAddictionDose(failure = true) {
       close: () => resolve(null)
     }, { classes: ["fblqa-rest-dialog"], width: 440 });
     if (!dialog) { resolve(null); return; }
+    dialog.render(true);
+  });
+}
+
+function editAddictionState(state) {
+  return new Promise(resolve => {
+    const options = (values, selected) => values.map(([value, label]) =>
+      `<option value="${value}"${String(value) === String(selected) ? " selected" : ""}>${escapeHTML(label)}</option>`).join("");
+    const dialog = createFoundryDialog({
+      title: localize("Addiction.EditState", "Edit Addiction cycle"),
+      content: `<form class="fblqa-condition-editor">
+        <label>${escapeHTML(localize("Addiction.Stage", "Stage"))}<select name="phase">${options([
+          ["down", localize("Addiction.PhaseDown", "Decline")], ["flat", localize("Addiction.PhaseFlat", "Withdrawal")],
+          ["up", localize("Addiction.PhaseUp", "Recovery")]], state.phase)}</select></label>
+        <label>${escapeHTML(localize("Addiction.Die", "Die"))}<select name="die">${options([6, 8, 10, 12].map(value => [value, `d${value}`]), state.die)}</select></label>
+        <label>${escapeHTML(localize("Addiction.DaysLeft", "Days left"))}<input name="daysLeft" type="number" min="1" max="365" value="${Number(state.daysLeft) || Number(state.severity)}"></label>
+        <label>${escapeHTML(localize("Addiction.Severity", "Severity"))}<select name="severity">${options([
+          [1, localize("Addiction.SeverityLight", "Light")], [5, localize("Addiction.SeverityMedium", "Medium")],
+          [10, localize("Addiction.SeveritySevere", "Severe")]], state.severity)}</select></label>
+      </form>`,
+      render: root => {
+        const form = findDialogForm(root);
+        if (!form) return;
+        const sync = () => {
+          const flat = form.elements.phase.value === "flat";
+          form.elements.die.disabled = flat;
+          form.elements.daysLeft.disabled = !flat;
+        };
+        form.elements.phase.addEventListener("change", sync);
+        sync();
+      },
+      buttons: {
+        save: { label: localize("UI.Save", "Save"), callback: root => {
+          const form = findDialogForm(root);
+          if (!form) return resolve(null);
+          resolve({ phase: form.elements.phase.value, die: Number(form.elements.die.value),
+            daysLeft: form.elements.phase.value === "flat" ? Number(form.elements.daysLeft.value) : 0,
+            severity: Number(form.elements.severity.value) });
+        } },
+        cancel: { label: localize("Delete.ConfirmNo", "Cancel"), callback: () => resolve(null) }
+      },
+      close: () => resolve(null)
+    }, { classes: ["fblqa-rest-dialog"], width: 360 });
+    if (!dialog) return resolve(null);
     dialog.render(true);
   });
 }
@@ -324,7 +364,7 @@ export async function renderExpandedConditions(app, html) {
     const item = getRowItem(row);
     if (!item || SPECIAL_ACTION_ITEMS.has(item)) return;
     SPECIAL_ACTION_ITEMS.add(item);
-    row.find("button, select").prop("disabled", true);
+    row.find("button, select, input").prop("disabled", true);
     let result;
     try { result = await operation(item); }
     catch (error) {
@@ -347,11 +387,7 @@ export async function renderExpandedConditions(app, html) {
     const header = $(ev.currentTarget);
     const row = header.parent();
 
-    if (row.hasClass("special-addiction-row")) {
-      if (!$(ev.target).closest(".addiction-collapse-toggle").length) return;
-    } else {
-      if ($(ev.target).closest(".injury-healing-inline, .condition-time-inline, .mor-controls, .heat-controls, .addiction-delete-btn, .fblec-drag-handle, input, textarea, button, select").length) return;
-    }
+    if ($(ev.target).closest(".injury-healing-inline, .condition-time-inline, .mor-controls, .heat-controls, .addiction-controls, .addiction-delete-btn, .fblec-drag-handle, input, textarea, button, select").length) return;
 
     const desc = row.children(".injury-desc, .condition-desc");
     const icon = header.find(".collapse-icon");
@@ -504,18 +540,23 @@ export async function renderExpandedConditions(app, html) {
 
   // Addiction.
   html.find(".conditions-tab").off("change", ".addiction-severity-select").on("change", ".addiction-severity-select", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".special-addiction-row"));
-    if (!item) return;
-    if (getAddictionMorning(item)?.status === "pending") return;
+    const severity = Number(ev.currentTarget.value);
+    await runSpecialItemAction(ev, item => correctAddictionState(app.actor, item, {
+      state: normalizeAddictionSeverityChange(getAddictionState(item), severity), documentOptions: { render: false }
+    }));
+  });
 
-    const state = normalizeAddictionSeverityChange(
-      getAddictionState(item),
-      parseInt(ev.currentTarget.value, 10)
-    );
-    const row = $(ev.currentTarget).closest(".special-addiction-row");
-    await saveAddictionState(item, state, { render: false });
-    await refreshItemRow(item, row);
+  html.find(".conditions-tab").off("click", ".addiction-plus, .addiction-minus").on("click", ".addiction-plus, .addiction-minus", async (ev) => {
+    const delta = $(ev.currentTarget).hasClass("addiction-plus") ? 1 : -1;
+    await runSpecialItemAction(ev, item => correctAddictionState(app.actor, item, { delta, documentOptions: { render: false } }));
+  });
+
+  html.find(".conditions-tab").off("click", ".addiction-edit").on("click", ".addiction-edit", async (ev) => {
+    await runSpecialItemAction(ev, async item => {
+      const state = await editAddictionState(getAddictionState(item));
+      if (!state) return;
+      return correctAddictionState(app.actor, item, { state, documentOptions: { render: false } });
+    });
   });
 
   html.find(".conditions-tab").off("click", ".addiction-morning").on("click", ".addiction-morning", async (ev) => {
@@ -555,41 +596,30 @@ export async function renderExpandedConditions(app, html) {
     const btn = $(ev.currentTarget);
     const delta = btn.hasClass("heat-plus") ? 1 : -1;
     await runSpecialItemAction(ev, async item => {
-      const result = await updateHeatItem(app.actor, item, parseHeatValue(item) + delta, "manual", { render: false });
-      await postHeatResult(result, "manual");
-      return result;
-    });
-  });
-
-  html.find(".conditions-tab").off("click", ".heat-exposure").on("click", ".heat-exposure", async (ev) => {
-    await runSpecialItemAction(ev, async item => {
-      const result = await applyHeatFailure(app.actor, item, { render: false });
+      const result = delta > 0 ? await applyHeatFailure(app.actor, item, { render: false })
+        : await updateHeatItem(app.actor, item, parseHeatValue(item) - 1, "rest", { render: false });
       syncAttributeDamageInputs(result?.appliedDamage);
-      await postHeatResult(result, "failure");
+      await postHeatResult(result, delta > 0 ? "failure" : "reduce");
       return result;
     });
   });
 
-  html.find(".conditions-tab").off("click", ".heat-rest").on("click", ".heat-rest", async (ev) => {
-    await runSpecialItemAction(ev, async item => {
-      const result = await updateHeatItem(app.actor, item, parseHeatValue(item) - 1, "rest", { render: false });
-      await postHeatResult(result, "reduce");
-      return result;
-    });
+  html.find(".conditions-tab").off("change", ".heat-input").on("change", ".heat-input", async (ev) => {
+    const match = String(ev.currentTarget.value).trim().match(/^([0-4])(?:\s*\/\s*4)?$/);
+    await runSpecialItemAction(ev, item => match
+      ? updateHeatItem(app.actor, item, Number(match[1]), "manual", { render: false }) : null);
+  });
+
+  html.find(".conditions-tab").off("keydown", ".heat-input").on("keydown", ".heat-input", ev => {
+    if (ev.key !== "Enter") return;
+    ev.preventDefault();
+    ev.stopPropagation();
+    $(ev.currentTarget).trigger("change");
   });
 
   html.find(".conditions-tab").off("click", ".heat-check").on("click", ".heat-check", async (ev) => {
     const row = $(ev.currentTarget).closest(".special-heat-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    const heat = getHeatDefinition();
-    const value = parseHeatValue(item);
-    const level = getHeatLevel(value);
-
-    // This action only posts a rules summary and does not mutate actor data.
-    const content = buildHeatCheckMessage(app.actor.name, value, heat, level);
-    await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content });
+    row.children(".injury-desc").slideToggle(200);
   });
 
   // Mor.
