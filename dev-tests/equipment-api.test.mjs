@@ -63,6 +63,31 @@ test("holding in both hands uses one write and leaves native item/slot data inta
   assert.equal(actor.items.get("sword").system.weight, "normal");
 });
 
+test("inventory grips accept unslotted heavy gear and weapons without changing quick slots", async () => {
+  const actor = actorFixture(), before = structuredClone(actor.flags.slots);
+  const inventory = getEquipmentState(actor).handInventory;
+  assert.deepEqual(inventory.map(item => item.id), ["sword", "heavy"]);
+  const result = await performEquipmentAction(actor, {type: "holdInventory", hand: "both", itemId: "heavy"}, {operationId: "heavy-grip"});
+  assert.equal(result.changed, true);
+  assert.deepEqual(getEquipmentState(actor).hands, {left: "heavy", right: "heavy"});
+  assert.deepEqual(actor.flags.slots, before);
+  await performEquipmentAction(actor, {type: "holdInventory", hand: "left", itemId: "heavy"});
+  assert.deepEqual(getEquipmentState(actor).hands, {left: "heavy", right: null});
+});
+
+test("inventory grips reject non-gear, dropped, foreign and stale entries before writing", async () => {
+  const actor = actorFixture();
+  for (const itemId of ["shield", "missing"]) {
+    await assert.rejects(performEquipmentAction(actor, {type: "holdInventory", hand: "left", itemId}), /carried weapon or gear/);
+  }
+  const revision = getEquipmentState(actor).revision;
+  actor.items.get("heavy").system.state = "dropped";
+  assert.equal(getEquipmentState(actor).handInventory.some(item => item.id === "heavy"), false);
+  await assert.rejects(performEquipmentAction(actor, {type: "holdInventory", hand: "left", itemId: "heavy"}), /carried weapon or gear/);
+  await assert.rejects(performEquipmentAction(actor, {type: "holdInventory", hand: "left", itemId: "sword"}, {expectedRevision: revision}), /changed/);
+  assert.equal(actor.writes.length, 0);
+});
+
 test("replacing or stowing either side releases the entire two-handed grip", async () => {
   const actor = actorFixture({ hands: { left: "sword", right: "sword" } });
   await performEquipmentAction(actor, { type: "hold", hand: "right", itemId: "shield" });

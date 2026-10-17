@@ -210,3 +210,22 @@
   font-weight: 800;
   opacity: 0.9;
 }
+
+/* Widget tooltips use its fixed dark palette, independent of the sheet theme. */
+.fblqa-item-tooltip.fblqa-tooltip-dark {
+  background: #242019; color: #f1eade; border-color: #655640;
+  font: 400 12px/1.3 Arial, sans-serif; color-scheme: dark;
+}
+.fblqa-tooltip-dark :is(p,div,span,h2,h3,h4,dt,dd,strong,b,small,li) {
+  color: #f1eade; font-family: Arial, sans-serif; line-height: 1.3; text-shadow: none;
+}
+.fblqa-tooltip-dark :is(a,.fblqa-firearm-feature-value) { color: #e1c38c; }
+.fblqa-tooltip-dark :is(.fblqa-item-tooltip-stat-label,.fblqa-firearm-field-label) { color: #c1b49e; opacity: 1; }
+.fblqa-tooltip-dark :is(.fblqa-firearm-feature,.fblqa-firearm-field,.fblqa-item-tooltip-stat) { background: #201c16; color: #f1eade; border-color: #655640; }
+.fblqa-tooltip-dark :is(.fblqa-item-tooltip-header,.fblqa-item-tooltip-section) { border-color: #655640; }
+.fblqa-tooltip-dark .fblqa-rich-text,
+.fblqa-tooltip-dark .fblqa-rich-text * {
+  color: #f1eade; background-color: transparent;
+  font-family: Arial, sans-serif; font-size: 12px; line-height: 1.3;
+}
+.fblqa-tooltip-dark .fblqa-rich-text a { color: #e1c38c; }

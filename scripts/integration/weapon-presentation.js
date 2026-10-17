@@ -1,4 +1,5 @@
 import { getEquipmentState } from "./equipment-api.js";
+import { getFirearmFeatureInfo, getItemFeatureInfo } from "../item-feature-info.js";
 
 const FIREARMS = "fl-firearms";
 const nativeFeatures = ["edged", "pointed", "blunt", "parrying", "shield", "hook", "slowReload"];
@@ -9,29 +10,24 @@ const number = value => value !== "" && value !== null && value !== undefined &&
 const text = value => typeof value === "string" || typeof value === "number" ? String(value).slice(0, 12000) : "";
 
 /** Descriptions cross the public contract as plain text, never executable markup. */
-function plain(value) {
+function plain(value, secrets = false) {
   const html = text(value);
   if (typeof DOMParser === "function") {
     const document = new DOMParser().parseFromString(html, "text/html");
-    document.querySelectorAll("script, style, iframe, object").forEach(node => node.remove());
+    document.querySelectorAll(`script, style, iframe, object${secrets ? "" : ", section.secret"}`).forEach(node => node.remove());
     document.querySelectorAll("br, p, li, div").forEach(node => node.append("\n"));
     return document.body.textContent.trim();
   }
   return html.replace(/<[^>]*>/g, " ").trim();
 }
 
+function featureDescription(info) {
+  return plain(info?.html, info?.secrets === true);
+}
+
 function localized(key, fallback) {
   const value = game.i18n?.localize?.(key);
   return value && value !== key ? value : fallback;
-}
-
-function descriptionsVisible(label) {
-  const journal = game.journal?.find?.(entry => entry.name === "Rich Info Tooltips");
-  if (!journal) return false;
-  const level = CONST.DOCUMENT_OWNERSHIP_LEVELS.OBSERVER;
-  if (!journal.testUserPermission?.(game.user, level)) return false;
-  const page = journal.pages?.find?.(entry => entry.name === label);
-  return Boolean(page?.testUserPermission?.(game.user, level));
 }
 
 function firearm(item) {
@@ -48,7 +44,8 @@ function firearm(item) {
     const features = Array.isArray(data.features) ? data.features.slice(0, 100).map(feature => ({
       key: text(feature.key), label: text(feature.label ?? feature.key),
       value: feature.hasInput ? text(feature.value) : "", automated: feature.automated === true,
-      description: descriptionsVisible(feature.label) ? plain(feature.descriptionHtml) : "",
+      // Hover availability and the rich tooltip must resolve the same live rule.
+      description: featureDescription(getFirearmFeatureInfo(feature)),
       source: FIREARMS,
     })) : [];
     return {
@@ -79,7 +76,7 @@ export function getHeldItemPresentation(actor) {
     const gun = firearm(item);
     const features = nativeFeatures.filter(key => system.features?.[key] === true).map(key => ({
       key, label: localized(`WEAPON.FEATURES.${featureKeys[key] ?? key.toUpperCase()}`, fallbackFeatures[key]),
-      value: "", description: "", automated: false, source: "system",
+      value: "", description: featureDescription(getItemFeatureInfo(item, key)), automated: false, source: "system",
     }));
     const other = plain(typeof system.features === "string" ? system.features : system.features?.others);
     if (other) features.push({key: "others", label: localized("WEAPON.FEATURES.OTHERS", "Другие свойства"), value: "", description: other, automated: false, source: "system"});

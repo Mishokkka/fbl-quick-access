@@ -1,6 +1,6 @@
 import { ITEM_TOOLTIP_DELAY_MS } from "./constants.js";
 import { collectItemRows, resolveItemFromRow } from "./dom-items.js";
-import { buildItemTooltipHtml } from "./item-utils.js";
+import { buildItemTooltipHtml, buildItemFeatureTooltipHtml } from "./item-utils.js";
 import { findPrimaryGearContainer } from "./sheet-adapter/forbidden-lands-v1.js";
 
 let itemTooltipElement = null;
@@ -202,11 +202,21 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   itemTooltipTimer = window.setTimeout(async () => {
     if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor) return;
 
-    const html = await buildItemTooltipHtml(item);
+    const html = row.dataset.equipmentFeature
+      ? await buildItemFeatureTooltipHtml(item, row.dataset.equipmentFeature)
+      : await buildItemTooltipHtml(item);
     if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor || !anchor.isConnected) return;
+    if (!html) { hideItemTooltip(); return; }
 
     const tooltip = ensureItemTooltipElement();
+    const dark = Boolean(anchor.closest('[data-equipment-tooltip-theme="dark"]'));
+    tooltip.classList.toggle("fblqa-tooltip-dark", dark);
     tooltip.innerHTML = html;
+    // Rich editor inline palettes must not override the fixed widget palette.
+    // Change only this rendered preview; leave Item/journal sources untouched.
+    if (dark) for (const node of tooltip.querySelectorAll(".fblqa-rich-text [style]")) {
+      for (const property of ["color", "background", "background-color", "font-family", "font-size", "line-height"]) node.style.removeProperty(property);
+    }
     tooltip.classList.add("is-visible");
     measureItemTooltip();
     addTooltipDescription(anchor, tooltip.id);

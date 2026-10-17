@@ -27,7 +27,7 @@ export function buildFirearmTooltipSection(item) {
   `;
 }
 
-function getFirearmTooltipData(item) {
+export function getFirearmTooltipData(item) {
   const api = getFirearmsApi();
   if (!api) return null;
 

@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.32
+Version 1.7.34
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -17,6 +17,8 @@ Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 - Quick Access slots based on `Agility max + Sleight of Hand`, capped at 10.
 - Quick Access accepts only actor-owned `weapon`, `armor`, `gear`, and `rawMaterial` items with weight Normal or lighter.
 - Left/right/two-handed grip badges synchronized with the optional YZE widget. Preview, assignment/reordering, bounded durable receipts and safe undo through equipment API v1.
+- Widget 1.7.0 can take carried weapon/gear Items directly from inventory, including heavy unslotted Items. This uses separate inventory grips; quick-slot weight and capacity rules stay intact.
+- Widget property tooltips reuse rich text/@INFO enrichment and the Rich Info Tooltips journal used by FL Firearms, with journal/page visibility checks and a fixed dark tooltip palette.
 - Compact encumbrance counter with overload highlight.
 - Wallet popover and optional expanded currency line for Gold / Silver / Copper, with direct player-to-player denomination transfer.
 - Wallet arithmetic supports direct values, expressions such as `10-2`, and relative operations such as `+5` or `-13`.
@@ -144,7 +146,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.32:
+Available methods in 1.7.34:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -305,6 +307,19 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.34
+
+- Resolve FL Firearms hover availability and rich property text through the same live, permission-checked journal lookup. Empty/stale provider descriptions and label case/spacing differences no longer prevent an available rule tooltip from being attached.
+- Preserve secret-section visibility for a rule page's owner; keep those sections hidden from other readers. Rule changes never alter mechanical revisions or action costs.
+- Add regressions for live rules, cached descriptions, page visibility, keyboard focus and owner-only sections.
+
+### 1.7.33
+
+- Add carried weapon/gear inventory grips for the companion widget, including heavy unslotted Items, through the existing owner/queue/revision/receipt/undo checks. Preserve the quick-slot eligibility rules.
+- Reuse rich item-tooltip mechanics for property buttons and Other Features; resolve native and FL Firearms rules from the permission-checked Rich Info Tooltips journal.
+- Add a fixed dark tooltip palette for widget anchors, while leaving character-sheet tooltips unchanged.
+- Keep public API majors and existing callers compatible; cover inventory, property sources, privacy and enrichment with regressions.
 
 ### 1.7.32
 

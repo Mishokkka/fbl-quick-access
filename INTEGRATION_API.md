@@ -33,6 +33,27 @@ qa.capabilities.heldItemPresentation; // read-only weapon presentation since 1.7
 
 ## Equipment and action-widget integration
 
+Quick Access 1.7.33 adds `capabilities.inventoryHands` and
+`capabilities.equipmentFeatureTooltips`. API major versions remain 1.
+`getEquipmentState(actor).handInventory` lists carried `weapon`/`gear` Items,
+including heavy and unslotted Items, but excludes dropped Items. The existing
+`inventory` list retains the quick-slot eligibility filter.
+`holdInventory` (`itemId`, `hand: left/right/both`) uses the same owner, queue,
+revision, receipt and undo checks as `hold`. It changes only manual grips;
+quick slots and native Item carry fields are preserved. The opaque revision
+also tracks inventory-hand eligibility. Legacy `hold` keeps its slot limits.
+
+For property tooltips, mark a button with `data-equipment-item`, `data-item-id`
+and `data-equipment-feature` (an active native feature key, `others`, or an FL
+Firearms feature key), then call `setupEquipmentItemTooltips(actor, container)`.
+The tooltip resolves the actual Item/reference text and enriches it through the
+same rich-text pipeline as normal item tooltips. Journal references require
+OBSERVER on both journal and page; journal secret sections use the page's
+ownership rather than the Item's ownership. Missing descriptions stay empty,
+so consumers should show a plain label in that case. Native labels can resolve
+English/Russian rule-page names. Set `data-equipment-tooltip-theme="dark"` on
+the container to keep these shared tooltips dark independently of sheet themes.
+
 Introduced in Quick Access **1.7.27**, with `equipmentApiVersion === 1`.
 The existing `apiVersion === 1`, `getQuickAccessSlots(actor)` and
 `setQuickAccessSlots(actor, slots)` keep their signatures and storage format.
@@ -481,6 +502,8 @@ Check `capabilities.heldItemPresentation` before calling synchronous read-only `
 Result: `apiVersion: 1`, `actorUuid`, `equipmentRevision`, `editable`, `items[]`. Each distinct held Item appears once with itemId/itemUuid/name/img/type, hand (left/right/both), requiredGrip, bonus/damage/range/artifact, broken/attack/reload eligibility, features[], optional firearm and revision.
 
 Features contain key/label/value/description/automated/source. Descriptions are plain text; FL journal text requires observer permission on both Rich Info Tooltips and its matching page. Render strings safely. Mechanical revision excludes viewer-specific translations/descriptions so the GM can validate a player's request.
+
+From 1.7.34, firearm `description` and rich property tooltips share the same live rule resolver. It matches the public label or stable key without case/outer-whitespace differences, prefers the journal page content and uses the provider's `descriptionHtml` only when an accessible matching page has no content field. A page owner's secret sections are preserved; other readers' previews and tooltips omit them. A missing/stale FL cache entry does not suppress a rule available in the live journal. The public feature fields and API major remain unchanged.
 
 Optional active FL Firearms data includes reloadType/reloadValue/type, normalized MAG magazine {current, capacity}, armorPiercing {value, operator}, load/topOff eligibility and features in Item order. Non-MAG has no invented loaded flag; TopOff requires MAG, API support and the property. Absent/incompatible optional API falls back to native fields.
 
