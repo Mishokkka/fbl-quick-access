@@ -7,6 +7,24 @@ import { fileURLToPath } from "node:url";
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const conditionsDir = join(root, "scripts", "conditions");
 
+test("localization namespaces survive Foundry's ordered expansion without overwriting sibling keys", () => {
+  for (const lang of ["ru", "en"]) {
+    const dictionary = JSON.parse(readFileSync(join(root, "lang", `${lang}.json`), "utf8"));
+    function check(object, prefix = "") {
+      const keys = Object.keys(object);
+      for (const key of keys) {
+        assert.equal(keys.some(other => other !== key && other.startsWith(`${key}.`)), false,
+          `${lang}: ${prefix}${key} must not overwrite dotted sibling translations`);
+        if (object[key] && typeof object[key] === "object") check(object[key], `${prefix}${key}.`);
+      }
+    }
+    check(dictionary);
+    assert.equal(typeof dictionary.FBLEC.Addiction.Morning, "string");
+    assert.equal(typeof dictionary.FBLEC.UI.AddCustom, "string");
+    assert.equal(typeof dictionary.FBLEC.Heat.Level3.Label, "string");
+  }
+});
+
 test("integrated Expanded Conditions no longer uses legacy scope for active flags/settings", () => {
   const offenders = [];
   for (const file of collectJsFiles(conditionsDir)) {

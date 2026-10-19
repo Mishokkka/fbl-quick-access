@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   getAddictionMorning, getAddictionDayKey, performAddictionMorning,
-  processAddictionNewDay, resolveAddictionMorning, relapseAddiction, handleAddictionOperation
+  processAddictionNewDay, resolveAddictionMorning, relapseAddiction, handleAddictionOperation, correctAddictionState
 } from "../scripts/conditions/services/addiction-service.js";
 import { applyHeatFailure, getAddictionState, parseHeatValue, saveAddictionState, updateHeatItem } from "../scripts/conditions/features/special-counters.js";
 import { applyNewDayPlan, buildNewDayPlan, serializeNewDayResult } from "../scripts/new-day.js";
@@ -61,6 +61,71 @@ function actor(...items) {
 }
 const decline = () => ({ phase: "down", die: 12, daysLeft: 0, severity: 5 });
 const quiet = { postChat: false, notify: false };
+
+test("manual Addiction +/- can move both ways across decline, withdrawal and recovery without rolls", async () => {
+  const rolls = setup(); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  for (const die of [10, 8, 6]) {
+    await correctAddictionState(owner, dependency, { delta: 1 });
+    assert.equal(getAddictionState(dependency).die, die);
+  }
+  await correctAddictionState(owner, dependency, { delta: 1 });
+  assert.equal(getAddictionState(dependency).phase, "flat");
+  assert.equal(getAddictionState(dependency).daysLeft, 5);
+  for (let day = 0; day < 5; day++) await correctAddictionState(owner, dependency, { delta: 1 });
+  assert.equal(getAddictionState(dependency).phase, "up");
+  await correctAddictionState(owner, dependency, { delta: -1 });
+  assert.equal(getAddictionState(dependency).daysLeft, 1);
+  for (let day = 0; day < 5; day++) await correctAddictionState(owner, dependency, { delta: -1 });
+  assert.equal(getAddictionState(dependency).phase, "down");
+  assert.equal(getAddictionState(dependency).die, 6);
+  await correctAddictionState(owner, dependency, { delta: -1 });
+  assert.equal(getAddictionState(dependency).die, 8);
+  assert.deepEqual(rolls, []);
+});
+
+test("manual Addiction correction resolves a pending morning and synchronizes modifiers atomically", async () => {
+  setup([1]); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  await performAddictionMorning(owner, dependency, quiet);
+  const pending = getAddictionMorning(dependency);
+  const state = { phase: "flat", die: 6, daysLeft: 3, severity: 10 };
+  const result = await correctAddictionState(owner, dependency, { state });
+  assert.equal(result.changed, true); assert.deepEqual(getAddictionState(dependency), state);
+  assert.equal(getAddictionMorning(dependency).id, pending.id);
+  assert.equal(getAddictionMorning(dependency).status, "resolved");
+  assert.equal(getAddictionMorning(dependency).outcome, "manual");
+  assert.equal(dependency.system.rollModifiers.fblecAddictionStrength.value, "-3");
+  const duplicate = await resolveAddictionMorning(owner, dependency, "success", quiet);
+  assert.equal(duplicate.changed, false);
+  assert.deepEqual(getAddictionState(dependency), state);
+});
+
+test("manual Addiction corrections clamp cycle endpoints without deleting the Item", async () => {
+  setup(); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  assert.equal((await correctAddictionState(owner, dependency, { delta: -1 })).changed, false);
+  await correctAddictionState(owner, dependency, { state: { ...decline(), phase: "up" } });
+  assert.equal((await correctAddictionState(owner, dependency, { delta: 1 })).changed, false);
+  assert.equal(owner.items.get(dependency.id), dependency);
+});
+
+test("manual Addiction editor rejects invalid states before any document writes", async () => {
+  setup(); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  for (const patch of [{ phase: "unknown" }, { die: 20 }, { severity: 20 }, { phase: "flat", daysLeft: 0 }, { phase: "flat", daysLeft: -1 }]) {
+    await assert.rejects(correctAddictionState(owner, dependency, { state: { ...decline(), ...patch } }), TypeError);
+  }
+  assert.equal(dependency.updates.length, 0);
+});
+
+test("GM-authoritative manual Addiction corrections require ownership and editable STAT", async () => {
+  setup(); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  game.actors = new Map([[owner.id, owner]]);
+  const payload = { actorId: owner.id, itemId: dependency.id, kind: "adjust", options: { delta: 1 } };
+  await assert.rejects(handleAddictionOperation(payload, { requestUser: { id: "outsider" } }), /ownership/);
+  await handleAddictionOperation(payload, { requestUser: { id: "owner" } });
+  assert.equal(getAddictionState(dependency).die, 10);
+  game.settings.get = (_scope, key) => key !== "playersCanEdit";
+  await assert.rejects(handleAddictionOperation(payload, { requestUser: { id: "owner" } }), /disabled/);
+  assert.equal(getAddictionState(dependency).die, 10);
+});
 
 test("STAT and New Day share one controlled morning even when world time does not move", async () => {
   const rolls = setup([4]); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
