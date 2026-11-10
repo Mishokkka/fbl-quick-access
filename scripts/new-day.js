@@ -33,7 +33,7 @@ export function decrementFirstInteger(value, amount = 1) {
   const text = String(value ?? "");
   // A free-text description is not a duration. Preserve unknown units/formulas
   // for manual resolution instead of interpreting their first digit as days.
-  const match = text.match(/^\s*(\d+)(?:\s*(?:days?|день|дня|дней|сутки|суток))?\s*$/iu);
+  const match = text.match(/^\s*(\d+)(?:\s*(?:day(?:s|\(s\))?|день|дня|дней|сутки|суток))?\s*$/iu);
   if (!match) return null;
   const current = Number(match[1]);
   if (!Number.isSafeInteger(current)) return null;
@@ -50,8 +50,8 @@ export function decrementFirstInteger(value, amount = 1) {
 function normalizeDayUnit(text, value) {
   let normalized = String(text ?? "");
 
-  if (/\bdays?\b/i.test(normalized)) {
-    normalized = normalized.replace(/\bdays?\b/i, Number(value) === 1 ? "day" : "days");
+  if (/\bday(?:s|\(s\))?(?=\s|$)/i.test(normalized)) {
+    normalized = normalized.replace(/\bday(?:s|\(s\))?(?=\s|$)/i, Number(value) === 1 ? "day" : "days");
   }
 
   if (/(?:^|\s)(?:день|дня|дней)(?=\s|$)/iu.test(normalized)) {

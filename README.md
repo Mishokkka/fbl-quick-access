@@ -1,5 +1,5 @@
 # Forbidden Lands Quick Access
-Version 1.7.35
+Version 1.7.36
 Quality-of-life module for the Forbidden Lands system in Foundry VTT v13.
 
 ## Compatibility
@@ -148,7 +148,7 @@ The module exposes data-oriented helpers at:
 const api = game.modules.get("fbl-quick-access")?.api;
 ```
 
-Available methods in 1.7.35:
+Available methods in 1.7.36:
 
 - `refreshGearPresentation(app, actor?, gearTab?)`
 - `setupTalentItemTooltips(actor, root)`
@@ -309,6 +309,11 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 
 ## Changelog
+
+### 1.7.36
+
+- Recognize resolved day(s) durations from Forbidden Lands condition Items, including Wash. Normalize them to day/days when a selected daily action is applied, so Wash timers and final-day transitions appear alongside injuries.
+- Keep unresolved dice formulas and non-day durations under manual control. Add regressions for the parser, mixed injury/Wash progression, and the final Wash day.
 
 ### 1.7.35
 

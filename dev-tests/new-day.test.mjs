@@ -24,6 +24,55 @@ const newDay = await import("../scripts/new-day.js");
 const addiction = await import("../scripts/conditions/services/addiction-service.js");
 const addictionChat = await import("../scripts/conditions/services/chat-service.js");
 
+for (const [text, after] of [["1 day(s)", "0 days"], ["2 day(s)", "1 day"], ["4 day(s)", "3 days"], ["2 DAY(S)", "1 day"]]) {
+  test(`resolved day(s) duration ${text} is recognized and normalized`, () => {
+    const result = newDay.decrementFirstInteger(text);
+    assert.equal(result?.afterText, after);
+    assert.equal(result.beforeText, text);
+  });
+}
+
+test("day(s) support preserves unresolved formulas and non-day durations for manual resolution", () => {
+  for (const text of ["[[1d3]] day(s)", "[[2D3]] days", "1d6 day(s)", "2 hours", "3 rounds", "2 day(s) + 1"]) {
+    assert.equal(newDay.decrementFirstInteger(text), null, text);
+  }
+});
+
+test("wash day(s) timers appear and advance alongside ordinary injury days", async () => {
+  const actor = makeActor();
+  const wash = actor.items.find(item => item.id === "wash");
+  const injury = actor.items.find(item => item.id === "injury");
+  wash.system.healingTime = "4 day(s)";
+  injury.system.healingTime = "5 days";
+  actor.updateEmbeddedDocuments = async (_type, updates) => updates.map(update => {
+    const item = actor.items.find(item => item.id === update._id);
+    item.system.healingTime = update["system.healingTime"];
+    return item;
+  });
+  const plan = newDay.buildNewDayPlan(actor);
+  const washAction = plan.actions.find(action => action.itemId === wash.id);
+  const injuryAction = plan.actions.find(action => action.itemId === injury.id && action.kind === "injury-healing");
+  assert.equal(washAction?.kind, "wash-timer");
+  assert.equal(washAction.afterText, "3 days");
+  assert.equal(injuryAction.afterText, "4 days");
+  assert.equal(wash.system.healingTime, "4 day(s)", "preview must not mutate stored timers");
+  const result = await newDay.applyNewDayPlan(actor, plan, [washAction.id, injuryAction.id], { postChat: false });
+  assert.equal(result.failed.length, 0);
+  assert.equal(result.succeeded.length, 2);
+  assert.equal(wash.system.healingTime, "3 days");
+  assert.equal(injury.system.healingTime, "4 days");
+});
+
+test("the last resolved day(s) of Wash proposes a state transition instead of disappearing", () => {
+  const actor = makeActor();
+  const wash = actor.items.find(item => item.id === "wash");
+  wash.system.healingTime = "1 day(s)";
+  const action = newDay.buildNewDayPlan(actor).actions.find(action => action.itemId === wash.id);
+  assert.equal(action?.kind, "wash-transition");
+  assert.equal(action.nextWashName, "Немытый");
+  assert.equal(wash.system.healingTime, "1 day(s)");
+});
+
 test("new-day timer helpers preserve text and reject unresolved dice formulas", () => {
   assert.deepEqual(newDay.decrementFirstInteger("3 days"), {
     beforeNumber: 3,
