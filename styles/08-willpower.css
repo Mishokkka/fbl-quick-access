@@ -32,6 +32,11 @@
   pointer-events: none;
 }
 
+/* Keep the native label, injected controls and trailing colon on one line. */
+label:has(> .fblqa-wp-label-anchor) {
+  white-space: nowrap;
+}
+
 /* v0.37: Willpower talent selector popover. */
 .fblqa-wp-label-anchor {
   cursor: pointer;
