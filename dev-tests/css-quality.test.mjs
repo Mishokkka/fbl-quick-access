@@ -69,3 +69,12 @@ function assertCompactGearDeclaration(source, tailPattern, property, expectedVal
   const rules = findCssRules(source, (selector) => compactAncestor.test(selector) && tailPattern.test(selector));
   assert.ok(rules.some((rule) => hasExactDeclaration(rule, property, expectedValue)), message);
 }
+
+test("Willpower header keeps the label, scale button and colon on one line", () => {
+  const css = readFileSync(join(root, "styles/08-willpower.css"), "utf8");
+  const rules = findCssRules(css, (selector) => selector === "label:has(> .fblqa-wp-label-anchor)");
+  assert.ok(rules.some((rule) => hasExactDeclaration(rule, "white-space", "nowrap")),
+    "the entire native label must be non-wrapping, not just the clickable word");
+  assert.ok(rules.every((rule) => rule.selectors.length === 1),
+    "the no-wrap rule must remain scoped to the modified Willpower label");
+});
