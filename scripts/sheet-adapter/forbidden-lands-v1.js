@@ -23,14 +23,14 @@ export function findApplicationRoot(element) {
 
 export function findGearTab(root) {
   return root?.querySelector?.(".gear-tab")
-    ?? root?.querySelector?.('[data-tab="gear"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="gear"]')
     ?? root?.querySelector?.('.tab[data-tab="gear"]')
     ?? null;
 }
 
 export function findCombatTab(root) {
   return root?.querySelector?.(".combat-tab")
-    ?? root?.querySelector?.('[data-tab="combat"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="combat"]')
     ?? root?.querySelector?.('.tab[data-tab="combat"]')
     ?? null;
 }
@@ -38,8 +38,8 @@ export function findCombatTab(root) {
 export function findTalentTab(root) {
   return root?.querySelector?.(".talent-tab")
     ?? root?.querySelector?.(".talents-tab")
-    ?? root?.querySelector?.('[data-tab="talent"]')
-    ?? root?.querySelector?.('[data-tab="talents"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="talent"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="talents"]')
     ?? root?.querySelector?.('.tab[data-tab="talent"]')
     ?? root?.querySelector?.('.tab[data-tab="talents"]')
     ?? null;
@@ -68,7 +68,7 @@ export function findNoteTab(root) {
 
 export function findMainTab(root) {
   return root?.querySelector?.(".main-tab")
-    ?? root?.querySelector?.('[data-tab="main"]')
+    ?? root?.querySelector?.('.sheet-body > .tab[data-tab="main"]')
     ?? root?.querySelector?.('.tab[data-tab="main"]')
     ?? null;
 }
@@ -131,13 +131,15 @@ export function findRestButton(root) {
   }
 
   const appRoot = findApplicationRoot(root) ?? root;
-  const headerScope = root.matches?.(".window-header, .sheet-header, header")
-    ? root
-    : appRoot.querySelector?.(".window-header, .sheet-header, header");
-  for (const candidate of headerScope?.querySelectorAll?.("a, button, [role='button']") ?? []) {
-    if (!(candidate instanceof HTMLElement)) continue;
-    const text = `${candidate.textContent ?? ""} ${candidate.title ?? ""} ${candidate.getAttribute("aria-label") ?? ""}`.toLowerCase();
-    if (/\brest\b|отдых|передыш/.test(text)) return candidate;
+  const headerScopes = root.matches?.(".window-header, .sheet-header, header")
+    ? [root]
+    : [...(appRoot.querySelectorAll?.(".window-header, .sheet-header, header") ?? [])];
+  for (const headerScope of headerScopes) {
+    for (const candidate of headerScope?.querySelectorAll?.("a, button, [role='button']") ?? []) {
+      if (!(candidate instanceof HTMLElement)) continue;
+      const text = `${candidate.textContent ?? ""} ${candidate.title ?? ""} ${candidate.getAttribute("aria-label") ?? ""}`.toLowerCase();
+      if (/\brest\b|отдых|передыш/.test(text)) return candidate;
+    }
   }
 
   return null;

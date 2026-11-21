@@ -90,7 +90,9 @@ export function compactOriginalGearSpacing(gearTab, panel) {
   gears.classList.add("fblqa-gears-compacted");
 
   const firstVisible = [...gears.children].find((element) => {
-    return !element.classList.contains("fblqa-original-hidden") && element.offsetParent !== null;
+    return !element.hidden
+      && !element.classList.contains("fblqa-original-hidden")
+      && element.style?.display !== "none";
   });
 
   if (firstVisible) firstVisible.classList.add("fblqa-first-visible-gear-block");

@@ -1,8 +1,8 @@
-import { MODULE_ID } from "./constants.js";
+import { FLAG_EQUIPMENT_HANDS, MODULE_ID } from "./constants.js";
 
 /** Resolve manual grips without repairing or writing legacy data during reads. */
 export function readEquipmentHands(actor) {
-  const stored = actor.getFlag(MODULE_ID, "equipmentHands");
+  const stored = actor.getFlag(MODULE_ID, FLAG_EQUIPMENT_HANDS);
   const resolve = id => typeof id === "string" && actor.items.get(id) ? id : null;
   return { left: resolve(stored?.left), right: resolve(stored?.right) };
 }
