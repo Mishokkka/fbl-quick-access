@@ -5,5 +5,5 @@ export function canModifyActor(actor) {
 }
 
 export function warnCannotModifyActor(message = qaLocalize("Permissions.NoActorModify", "Нет прав на изменение этого персонажа.")) {
-  ui.notifications?.warn(message);
+  globalThis.ui?.notifications?.warn?.(message);
 }

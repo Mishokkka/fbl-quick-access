@@ -290,6 +290,7 @@ test("biography rich text is sanitized before rendering and persistence", async 
     let update = null;
     const actor = {
       name: "Actor",
+      isOwner: true,
       async update(value) { update = value; },
       getFlag() { return null; },
       system: { bio: {} }

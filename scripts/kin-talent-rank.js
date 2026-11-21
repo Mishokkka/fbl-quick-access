@@ -1,5 +1,6 @@
-import { MODULE_ID } from "./constants.js";
+import { MODULE_ID, SYSTEM_ID } from "./constants.js";
 import { findActorSheetRoot } from "./sheet-adapter/forbidden-lands-v1.js";
+import { localizeOrFallback } from "./utils.js";
 
 const TALENT_RANK_INPUT = 'input[name="system.rank"]';
 const TALENT_TYPE_SELECT = 'select[name="system.type"]';
@@ -35,7 +36,7 @@ export function ensureKinTalentRankField(app, item, root) {
 
   const label = doc.createElement("label");
   label.classList.add("fblqa-kin-talent-rank-label");
-  label.textContent = globalThis.game?.i18n?.localize?.("TALENT.RANK") || "Rank";
+  label.textContent = localizeOrFallback("TALENT.RANK", "Rank");
 
   const rank = doc.createElement("div");
   rank.classList.add("rank", "fblqa-kin-talent-rank");
@@ -44,14 +45,16 @@ export function ensureKinTalentRankField(app, item, root) {
   input.name = "system.rank";
   input.type = "text";
   input.value = item.system?.rank == null ? "" : String(item.system.rank);
-  input.disabled = app?.options?.editable === false || item.isOwner === false;
+  input.disabled = app?.isEditable === false || app?.options?.editable === false || item.isOwner === false;
 
   input.addEventListener("change", async (event) => {
+    event.stopPropagation?.();
     const control = event.currentTarget;
     if (control?.disabled) return;
 
+    const nextValue = String(control.value ?? "").trim();
     try {
-      await item.update({ "system.rank": control.value });
+      await item.update({ "system.rank": nextValue });
     } catch (error) {
       console.error(`${MODULE_ID} | failed to update Kin talent rank`, error);
       control.value = item.system?.rank == null ? "" : String(item.system.rank);
@@ -69,7 +72,7 @@ export function ensureKinTalentRankField(app, item, root) {
 
 function renderKinTalentRank(app, htmlOrElement) {
   try {
-    if (globalThis.game?.system?.id !== "forbidden-lands") return;
+    if (globalThis.game?.system?.id !== SYSTEM_ID) return;
 
     const item = app?.item ?? app?.document ?? app?.object;
     if (item?.documentName !== "Item" || item.type !== "talent") return;

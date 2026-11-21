@@ -328,6 +328,7 @@ test("Pilgrim Card is stored independently from Actor name and Forbidden Lands B
   const actor = {
     id: "pilgrim-independent",
     name: "Имя на листе",
+    isOwner: true,
     system: { bio: { kin: { value: "Elf" }, profession: { value: "Hunter" } } },
     getFlag(moduleId, key) {
       if (moduleId === "fbl-quick-access" && key === "pilgrimCardProfile") return storedCard;
