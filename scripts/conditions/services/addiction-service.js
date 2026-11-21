@@ -5,17 +5,24 @@ import { buildAddictionFlatMessage, buildAddictionRollMessage } from "./chat-ser
 import { createObjectOperationQueue } from "../../operation-queue.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
 import { executeAsActiveGM, getActiveGM, registerSocketHandler } from "../../integration/socket-api.js";
+import { getCalendariaApi, registerCalendariaReadyHook } from "../../integration/calendaria-adapter.js";
+import { createCodedError } from "../../document-writes.js";
 
 const ADDICTION_DICE_STEPS = Object.freeze([6, 8, 10, 12]);
 const enqueueMorning = createObjectOperationQueue();
 const MORNING_OPERATION = "conditions.addiction-morning";
 let operationsInitialized = false;
-let calendariaReadyApi = null;
+
+function hasActorItem(actor, itemId) {
+  if (!actor?.items || !itemId) return false;
+  if (typeof actor.items.get === "function") return Boolean(actor.items.get(itemId));
+  return Array.from(actor.items).some((entry) => entry?.id === itemId);
+}
 
 export async function handleAddictionOperation(payload, context) {
   const actor = payload?.actorUuid ? await globalThis.fromUuid?.(payload.actorUuid) : game.actors?.get?.(payload?.actorId);
   const item = actor?.items?.get?.(payload?.itemId);
-  if (!actor || actor.documentName !== "Actor" || actor.type !== "character" || item?.type !== "criticalInjury" || !isAddictionCondition(item)
+  if (!actor || actor.pack || actor.documentName !== "Actor" || actor.type !== "character" || item?.type !== "criticalInjury" || !isAddictionCondition(item)
     || context.requestUser?.active === false
     || (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER"))) {
     throw new Error("Addiction changes require ownership of a character");
@@ -31,7 +38,10 @@ export async function handleAddictionOperation(payload, context) {
     documentOptions: submitted.render === false ? { render: false } : {} };
   if (payload.kind === "morning") {
     const expected = getAddictionDayKey(actor, { newDay: options.newDay });
-    if (options.dayKey && options.dayKey !== expected && options.dayKey !== getAddictionMorning(item)?.dayKey) {
+    const currentDay = options.newDay ? getAddictionDayKey(actor, { newDay: false }) : expected;
+    const itemDay = getAddictionMorning(item)?.dayKey;
+    const allowedMultiAddictionSameDay = options.newDay && options.dayKey === currentDay && itemDay !== currentDay;
+    if (options.dayKey && options.dayKey !== expected && options.dayKey !== itemDay && !allowedMultiAddictionSameDay) {
       throw new Error("The addiction day changed; refresh the preview");
     }
   }
@@ -46,7 +56,7 @@ export async function handleAddictionOperation(payload, context) {
 export function initializeAddictionOperations() {
   if (operationsInitialized) return;
   registerSocketHandler(MORNING_OPERATION, handleAddictionOperation);
-  globalThis.Hooks?.on?.("calendaria.ready", data => { calendariaReadyApi = data?.api ?? null; });
+  registerCalendariaReadyHook();
   operationsInitialized = true;
 }
 
@@ -78,7 +88,7 @@ export function addictionCalendarDayKey(calendarId, date) {
 export function getAddictionDayKey(actor, { dayKey, newDay = false } = {}) {
   if (dayKey) return String(dayKey);
   if (globalThis.game?.settings?.get?.(MODULE_ID, "stateProgressionMode") === "calendaria") {
-    const api = globalThis.CALENDARIA?.api ?? calendariaReadyApi ?? game.modules?.get?.("calendaria")?.api;
+    const api = getCalendariaApi({ requireActiveModule: false });
     const date = api?.getCurrentDateTime?.();
     const calendar = api?.getActiveCalendar?.();
     const calendarId = calendar?.metadata?.id ?? calendar?.id;
@@ -118,15 +128,22 @@ function morningResult(morning, { changed = false, reused = false } = {}) {
 async function commitMorning(actor, item, morning, nextState, options) {
   if (morning.cured) {
     await item.delete(options.documentOptions ?? {});
+    if (hasActorItem(actor, item.id)) {
+      throw createCodedError("write-not-persisted", "Addiction cure deletion was not persisted.");
+    }
     if (options.notify !== false) {
       try { ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
-        actor: escapeHTML(actor.name), condition: escapeHTML(item.name)
+        actor: actor.name, condition: item.name
       })); } catch (error) { console.error(`${MODULE_ID} | addiction recovery notification failed`, error); }
     }
   } else {
     await saveAddictionState(item, nextState, options.documentOptions ?? {}, {
       [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: morning
     });
+    const persistedMorning = getAddictionMorning(item);
+    if (persistedMorning?.id !== morning.id || persistedMorning?.status !== morning.status) {
+      throw createCodedError("write-not-persisted", "Addiction morning state was not persisted.");
+    }
   }
 }
 
@@ -268,14 +285,16 @@ function shiftAddictionState(previous, delta) {
   if (delta > 0) return calculateNextAddictionState(previous).state;
   const state = { ...previous };
   if (state.phase === "down") {
-    state.die = ADDICTION_DICE_STEPS[Math.min(3, ADDICTION_DICE_STEPS.indexOf(Number(state.die)) + 1)];
+    const index = ADDICTION_DICE_STEPS.indexOf(Number(state.die));
+    state.die = index >= 0 ? ADDICTION_DICE_STEPS[Math.min(3, index + 1)] : 12;
   } else if (state.phase === "flat") {
     if (state.daysLeft < state.severity) state.daysLeft += 1;
     else { state.phase = "down"; state.die = 6; state.daysLeft = 0; }
   } else if (state.phase === "up") {
     const index = ADDICTION_DICE_STEPS.indexOf(Number(state.die));
     if (index > 0) state.die = ADDICTION_DICE_STEPS[index - 1];
-    else { state.phase = "flat"; state.die = 6; state.daysLeft = 1; }
+    else if (index === 0) { state.phase = "flat"; state.die = 6; state.daysLeft = 1; }
+    else state.die = 6;
   }
   return state;
 }
@@ -290,7 +309,8 @@ export function calculateNextAddictionState(inputState = {}) {
 
   if (state.phase === "down") {
     const currentIndex = ADDICTION_DICE_STEPS.indexOf(state.die);
-    if (currentIndex > 0) state.die = ADDICTION_DICE_STEPS[currentIndex - 1];
+    if (currentIndex < 0) state.die = 12;
+    else if (currentIndex > 0) state.die = ADDICTION_DICE_STEPS[currentIndex - 1];
     else {
       state.phase = "flat";
       state.daysLeft = state.severity;
@@ -310,7 +330,11 @@ export function calculateNextAddictionState(inputState = {}) {
 
   if (state.phase === "up") {
     const currentIndex = ADDICTION_DICE_STEPS.indexOf(state.die);
-    if (currentIndex >= 0 && currentIndex < ADDICTION_DICE_STEPS.length - 1) {
+    if (currentIndex < 0) {
+      state.die = 6;
+      return { state, cured: false };
+    }
+    if (currentIndex < ADDICTION_DICE_STEPS.length - 1) {
       state.die = ADDICTION_DICE_STEPS[currentIndex + 1];
       return { state, cured: false };
     }
@@ -321,24 +345,4 @@ export function calculateNextAddictionState(inputState = {}) {
   state.die = 12;
   state.daysLeft = 0;
   return { state, cured: false };
-}
-
-export async function advanceAddictionCycle(actor, item, options = {}) {
-  if (!actor || !item) return { changed: false, skipped: true };
-
-  const documentOptions = options.documentOptions ?? {};
-  const previousState = getAddictionState(item);
-  const result = calculateNextAddictionState(previousState);
-
-  if (result.cured) {
-    if (options.notify !== false) ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
-      actor: escapeHTML(actor.name),
-      condition: escapeHTML(item.name)
-    }));
-    await item.delete(documentOptions);
-    return { changed: true, cured: true, previousState, state: null };
-  }
-
-  await saveAddictionState(item, result.state, documentOptions);
-  return { changed: true, cured: false, previousState, state: result.state };
 }

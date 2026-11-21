@@ -341,19 +341,24 @@ function makeAddictionItem(initialState) {
     system: { rollModifiers: {} },
     savedState: structuredClone(initialState),
     modifierKeys: [],
+    morning: null,
     getFlag(_moduleId, key) {
       if (key === "conditions.addictionState") return this.savedState;
       if (key === "conditions.addictionModifierKeys") return this.modifierKeys;
+      if (key === "conditions.addictionMorning") return this.morning;
       return undefined;
     },
     async setFlag(_moduleId, key, value) {
       if (key === "conditions.addictionState") this.savedState = structuredClone(value);
+      if (key === "conditions.addictionMorning") this.morning = structuredClone(value);
     },
     async update(data) {
       const addictionStatePath = "flags.fbl-quick-access.conditions.addictionState";
       const modifierKeysPath = "flags.fbl-quick-access.conditions.addictionModifierKeys";
+      const morningPath = "flags.fbl-quick-access.conditions.addictionMorning";
       if (data[addictionStatePath]) this.savedState = structuredClone(data[addictionStatePath]);
       if (Array.isArray(data[modifierKeysPath])) this.modifierKeys = [...data[modifierKeysPath]];
+      if (data[morningPath] !== undefined) this.morning = structuredClone(data[morningPath]);
     },
     async delete() {
       this.deleted = true;

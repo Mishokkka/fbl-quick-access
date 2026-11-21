@@ -3,6 +3,7 @@ import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind } from "../condition-kind.js";
 import { createObjectOperationQueue } from "../../operation-queue.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
+import { createCodedError } from "../../document-writes.js";
 
 import { isFeatureEnabled } from "../settings.js";
 import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger } from "../utils.js";
@@ -259,6 +260,16 @@ export async function applyHeatFailure(actor, item, documentOptions = {}) {
   return enqueueHeatChange(item, () => applyHeatChange(actor, item, parseHeatValue(item) + 1, "failure", documentOptions));
 }
 
+export function needsHeatModifierSync(item, value = parseHeatValue(item)) {
+  const update = buildHeatModifierUpdate(value);
+  const current = item?.system?.rollModifiers ?? {};
+  return Object.entries(update).some(([path, modifier]) => {
+    const key = path.split(".").at(-1);
+    if (key.startsWith("-=")) return current[key.slice(2)] !== undefined;
+    return current[key]?.name !== modifier.name || String(current[key]?.value) !== modifier.value;
+  });
+}
+
 async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 
   const heat = getHeatDefinition();
@@ -272,16 +283,35 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 
   const pendingKey = "conditions.heatPendingChange";
   let pending = item.getFlag?.(MODULE_ID, pendingKey);
-  if (pending && pending.value !== value) {
-    throw new Error(localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again."));
+  if (pending && (pending.value !== value || reason !== "failure")) {
+    const message = localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again.");
+    const error = createCodedError("heat-pending-change", message);
+    error.fblqaUserMessage = message;
+    throw error;
   }
-  if (pending && reason !== "failure") {
-    throw new Error(localize("Heat.PendingChange", "Finish the pending Heat change before changing its level again."));
+  if (!pending && !overcap && previousValue === value
+    && item.getFlag?.(MODULE_ID, FLAGS.HEAT_VALUE) === value
+    && !String(item.system?.healingTime ?? "").trim()
+    && !needsHeatModifierSync(item, value)) {
+    return {
+      previousValue,
+      value,
+      heat,
+      level: getHeatLevel(value),
+      changed: false,
+      overcap: false,
+      actor,
+      reason,
+      appliedDamage: []
+    };
   }
   if (!pending && Object.keys(damage).length) {
     pending = { id: makeSocketRequestId(), previousValue, value, damage, overcap };
     // Keep the visible counter unchanged until the damage is committed.
     await item.update({ [flagUpdatePath(pendingKey)]: pending }, documentOptions);
+    if (item.getFlag?.(MODULE_ID, pendingKey)?.id !== pending.id) {
+      throw createCodedError("write-not-persisted", "Heat pending change was not persisted.");
+    }
   }
   let appliedDamage = [];
   if (pending) {
@@ -298,7 +328,9 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
     [flagUpdatePath(pendingKey)]: null,
     "system.healingTime": ""
   }, documentOptions);
-
+  if (parseHeatValue(item) !== value || item.getFlag?.(MODULE_ID, pendingKey) != null) {
+    throw createCodedError("write-not-persisted", "Heat update was not persisted.");
+  }
 
   return {
     previousValue,
@@ -320,15 +352,11 @@ export async function updateMorItem(item, newX, newY, documentOptions = {}) {
     [flagUpdatePath(FLAGS.MOR_STATE)]: state,
     "system.healingTime": ""
   }, documentOptions);
+  const persisted = getMorState(item);
+  if (persisted.current !== state.current || persisted.permanent !== state.permanent) {
+    throw createCodedError("write-not-persisted", "Mor update was not persisted.");
+  }
   return state;
-}
-
-export function needsSpecialCounterMigration(item) {
-  const healingTime = String(item?.system?.healingTime ?? "").trim();
-  if (!healingTime) return false;
-  if (isNamedSpecialCondition(item, getHeatDefinition()) && item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) === undefined) return true;
-  if (["мор", "mor"].includes(normalizeConditionName(item.name)) && item.getFlag(MODULE_ID, FLAGS.MOR_STATE) === undefined) return true;
-  return false;
 }
 
 export function buildSpecialCounterMigrationUpdate(item) {

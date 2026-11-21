@@ -201,12 +201,23 @@ function collectActorApps(actor) {
     for (const app of Object.values(actorApps)) add(app);
   }
 
-  const windows = globalThis.ui?.windows;
-  if (windows instanceof Map) {
-    for (const app of windows.values()) if (app?.actor?.id === actor.id) add(app);
-  } else if (windows && typeof windows === "object") {
-    for (const app of Object.values(windows)) if (app?.actor?.id === actor.id) add(app);
-  }
+  const matchesActor = (app) => {
+    const candidate = app?.actor ?? app?.document;
+    if (!candidate) return false;
+    if (actor.uuid && candidate.uuid) return candidate.uuid === actor.uuid;
+    return candidate.id === actor.id;
+  };
+
+  const scanCollection = (collection) => {
+    if (!collection) return;
+    if (collection instanceof Map) {
+      for (const app of collection.values()) if (matchesActor(app)) add(app);
+    } else if (typeof collection === "object") {
+      for (const app of Object.values(collection)) if (matchesActor(app)) add(app);
+    }
+  };
+  scanCollection(globalThis.ui?.windows);
+  scanCollection(globalThis.foundry?.applications?.instances);
 
   if (actor.sheet?.rendered) add(actor.sheet);
   return Array.from(result);

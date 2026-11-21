@@ -1,6 +1,7 @@
 import { MODULE_ID, SETTINGS } from "./constants.js";
 import { canModifyActor } from "../permissions.js";
 import { getActorAttributeState } from "../actor-data.js";
+import { createCodedError } from "../document-writes.js";
 import { escapeHtml } from "../utils.js";
 
 export function localize(key, fallbackOrData = undefined, data = undefined) {
@@ -8,9 +9,11 @@ export function localize(key, fallbackOrData = undefined, data = undefined) {
   const hasFallback = typeof fallbackOrData === "string";
   const fallback = hasFallback ? fallbackOrData : fullKey;
   const formatData = hasFallback ? data : fallbackOrData;
-  const localized = formatData ? game.i18n.format(fullKey, formatData) : game.i18n.localize(fullKey);
-  const value = localized && localized !== fullKey ? localized : fallback;
-  return interpolateText(value, formatData);
+  const localized = formatData
+    ? globalThis.game?.i18n?.format?.(fullKey, formatData)
+    : globalThis.game?.i18n?.localize?.(fullKey);
+  if (localized && localized !== fullKey) return localized;
+  return interpolateText(fallback, formatData);
 }
 
 function interpolateText(template, data = undefined) {
@@ -111,8 +114,28 @@ export async function applyActorAttributeDamage(actor, damages = {}, documentOpt
     applied.push({ attribute: attributeName, path, amount, previous, value });
   }
 
-  if (extraUpdate) Object.assign(update, typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate);
-  if (Object.keys(update).length) await actor.update(update, documentOptions);
+  const extra = extraUpdate ? (typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate) : null;
+  if (extra) Object.assign(update, extra);
+  if (Object.keys(update).length) {
+    await actor.update(update, documentOptions);
+    for (const entry of applied) {
+      const liveValue = Number(foundry.utils.getProperty(actor, entry.path));
+      if (liveValue !== entry.value) {
+        throw createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
+      }
+    }
+    if (extra) {
+      for (const [key, expected] of Object.entries(extra)) {
+        if (key.includes("-=")) continue;
+        const live = foundry.utils.getProperty(actor, key);
+        if (expected && typeof expected === "object" && expected.id !== undefined) {
+          if (live?.id !== expected.id) {
+            throw createCodedError("write-not-persisted", "Actor attribute damage receipt was not persisted.");
+          }
+        }
+      }
+    }
+  }
   return applied;
 }
 

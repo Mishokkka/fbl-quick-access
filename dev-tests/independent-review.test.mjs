@@ -20,26 +20,83 @@ function makeCurrencyActor(id, { owner = true, gold = 0, silver = 0, copper = 0 
 }
 
 test("read-only STAT rendering never persists normalized condition data", async () => {
-  const { persistNormalizedCustomConditions } = await import("../scripts/conditions/main.js");
-  let updates = 0;
-  const actor = {
-    async update() {
-      updates += 1;
-      throw new Error("read-only actor must not be updated");
-    }
+  const previous = {
+    game: globalThis.game,
+    foundry: globalThis.foundry,
+    jQuery: globalThis.jQuery,
+    $: globalThis.$,
+    renderTemplate: globalThis.renderTemplate,
+    window: globalThis.window,
+    HTMLElement: globalThis.HTMLElement
   };
+  let updates = 0;
+  try {
+    globalThis.HTMLElement = class FakeHTMLElement {};
+    globalThis.foundry = {
+      utils: {
+        deepClone: (value) => structuredClone(value),
+        randomID: () => "generated-id-1"
+      },
+      applications: {
+        handlebars: {
+          renderTemplate: async () => "<div></div>"
+        }
+      }
+    };
+    globalThis.game = {
+      user: { id: "player-1", isGM: false },
+      settings: { get: () => false },
+      i18n: { localize: (key) => key, format: (key) => key }
+    };
+    globalThis.window = { setTimeout: () => 0, clearTimeout: () => {} };
+    const fakeJq = () => {
+      const chain = {
+        jquery: true,
+        length: 0,
+        0: null,
+        first: () => chain,
+        find: () => chain,
+        off: () => chain,
+        on: () => chain,
+        append: () => chain,
+        replaceWith: () => chain,
+        addClass: () => chain,
+        toggleClass: () => chain,
+        attr: () => chain,
+        data: () => "",
+        each: () => chain
+      };
+      return chain;
+    };
+    globalThis.jQuery = class FakeJQuery {};
+    globalThis.$ = fakeJq;
 
-  assert.equal(await persistNormalizedCustomConditions(actor, [{ id: "condition" }], {
-    changed: true,
-    editable: false
-  }), false);
-  assert.equal(updates, 0);
-
-  assert.equal(await persistNormalizedCustomConditions(actor, [], {
-    changed: false,
-    editable: true
-  }), false);
-  assert.equal(updates, 0);
+    const actor = {
+      id: "readonly-actor",
+      type: "character",
+      isOwner: false,
+      items: [],
+      getFlag(_scope, key) {
+        if (key === "conditions.list") return [{ name: "Legacy entry missing id and order" }];
+        return undefined;
+      },
+      async update() {
+        updates += 1;
+        throw new Error("read-only render must not write to actor");
+      }
+    };
+    const { renderExpandedConditions } = await import(`../scripts/conditions/main.js?readonly=${Date.now()}`);
+    await renderExpandedConditions({ actor }, fakeJq());
+    assert.equal(updates, 0);
+  } finally {
+    globalThis.game = previous.game;
+    globalThis.foundry = previous.foundry;
+    globalThis.jQuery = previous.jQuery;
+    globalThis.$ = previous.$;
+    globalThis.renderTemplate = previous.renderTemplate;
+    globalThis.window = previous.window;
+    globalThis.HTMLElement = previous.HTMLElement;
+  }
 });
 
 test("world reference cleanup runs only on the deterministic active GM", async () => {
