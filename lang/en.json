@@ -197,7 +197,7 @@
     "Rest": {
       "ButtonTitle": "House-rule rest",
       "DialogUnavailable": "The rest dialog is unavailable in this environment.",
-      "Title": "Rest",
+      "Title": "Rest: {actor}",
       "Apply": "Apply rest",
       "CurrentConditions": "Current conditions",
       "BlockingNote": "Hungry, Thirsty, Sleepy, and Cold block recovery of their linked attributes during this rest.",
@@ -485,7 +485,7 @@
       "CompletedWithErrors": "Processed with {count} failed daily actions.",
       "GMSummaryHeading": "Player states",
       "GMSummaryHint": "Only characters assigned to non-GM users are included. Player results are kept out of chat.",
-      "GMSummaryTitle": "New day — player state summary",
+      "GMSummaryTitle": "New day — player state summary ({date})",
       "ModeConfirmApply": "Change mode",
       "ModeConfirmCalendaria": "State progression will be triggered by Calendaria. The current date becomes the starting point; earlier calendar days will not be processed.",
       "ModeConfirmHeading": "Use {mode}?",
@@ -706,27 +706,27 @@
     },
     "Settings": {
       "FeatureHeat": {
-        "Name": "FBLEC: Heat",
+        "Name": "STAT: Heat",
         "Hint": "Enables the special interface and counter for a critical injury named Heat. If disabled, it is shown as a normal injury."
       },
       "FeatureMor": {
-        "Name": "FBLEC: Mor",
+        "Name": "STAT: Mor",
         "Hint": "Enables the special interface and rolls for a critical injury named Mor. If disabled, it is shown as a normal injury."
       },
       "FeatureAddiction": {
-        "Name": "FBLEC: Addiction",
+        "Name": "STAT: Addiction",
         "Hint": "Enables the addiction interface for a critical injury whose name contains Addiction. If disabled, it is shown as a normal injury."
       },
       "FeatureWash": {
-        "Name": "FBLEC: Wash states",
+        "Name": "STAT: Wash states",
         "Hint": "Enables mutually exclusive wash-state progression."
       },
       "ChatMessages": {
-        "Name": "FBLEC: Chat messages",
+        "Name": "STAT: chat messages",
         "Hint": "If disabled, STAT buttons change data without creating chat messages."
       },
       "PlayersCanEdit": {
-        "Name": "FBLEC: Players can edit STAT",
+        "Name": "Players can edit STAT",
         "Hint": "If disabled, only the GM can edit conditions and use STAT controls."
       }
     },
@@ -792,12 +792,6 @@
         "VerbGain": "gains",
         "Change": "<b>{actor}</b> {verb} Heat: <b>{previous}/{max}</b> ➔ <b>{value}/{max}</b>.<br>",
         "AutomaticDamage": "<br><b>Automatic damage:</b> {damage}.",
-        "Status": "<b>{actor}</b>: Heat <b>{value}/{max}</b> — <b>{level}</b>.<br>",
-        "Check0": "The GM calls for Endurance. Record the final failure with Endurance: failure; success leaves the counter unchanged.",
-        "Check1": "The GM calls for Endurance. Record the final failure with Endurance: failure; success leaves the counter unchanged.",
-        "Check2": "Roll Endurance manually. Failure raises Heat to 3 and deals 1 Strength damage.",
-        "Check3": "Roll Endurance manually. Failure raises Heat to 4 and deals 1 damage each to Strength and Wits.",
-        "Check4": "Apply −1 to Endurance. Failure leaves Heat at 4/4 and deals 1 damage each to Strength, Wits and Agility.",
         "VerbCorrect": "corrects the level of"
       },
       "Mor": {

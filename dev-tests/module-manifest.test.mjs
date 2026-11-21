@@ -200,7 +200,6 @@ function collectExpandedConditionLocalizationKeys() {
     let match;
     while ((match = regex.exec(source))) keys.add(match[1]);
   }
-  for (let value = 0; value <= 4; value += 1) keys.add(`FBLEC.Chat.Heat.Check${value}`);
   return keys;
 }
 

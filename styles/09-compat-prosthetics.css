@@ -1,15 +1,4 @@
-/* FBL EC Prosthetics compatibility. Extension cards do not expose deletion,
-   because removing the embedded item directly would desync the body map. */
-.fblqa-gear-card-extension .fblqa-gear-card-bottom,
-.gear-tab .fblqa-gear-card-extension .fblqa-gear-card-bottom,
-.tab[data-tab="gear"] .fblqa-gear-card-extension .fblqa-gear-card-bottom {
-  grid-template-columns: repeat(3, minmax(0, 1fr)) 18px;
-}
-
-.fblqa-gear-card-extension .fblqa-gear-card-bottom::after {
-  content: "";
-}
-
+/* FBL EC Prosthetics compatibility. Keeps extension table rows aligned when Gear card view is active. */
 .fblecp-extensions-category > tbody > tr.fblecp-extension-item.fblqa-card-source-hidden,
 .fblecp-extensions-category > tbody > tr.fblecp-extension-item.fblqa-card-source-hidden > td {
   display: none !important;

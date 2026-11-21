@@ -507,4 +507,19 @@ From 1.7.34, firearm `description` and rich property tooltips share the same liv
 
 Optional active FL Firearms data includes reloadType/reloadValue/type, normalized MAG magazine {current, capacity}, armorPiercing {value, operator}, load/topOff eligibility and features in Item order. Non-MAG has no invented loaded flag; TopOff requires MAG, API support and the property. Absent/incompatible optional API falls back to native fields.
 
-This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.
+This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](docs/WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.
+
+## Calendaria processed-day manager helpers
+
+Active GMs can open the Calendaria day-management window or inspect/adjust `flags.fbl-quick-access.stateProgressionCalendaria` markers directly through the public API:
+
+```js
+await qa.openStateProgressionManager();
+await qa.resetActorCalendarMarkerToCurrent(actor);
+await qa.rewindActorCalendarMarker(actor, 3);
+await qa.resetAllCalendarMarkersToCurrent();
+await qa.rewindAllCalendarMarkers(3);
+```
+
+- `resetActorCalendarMarkerToCurrent` and `resetAllCalendarMarkersToCurrent` stamp the current Calendaria date as the processed-day marker (useful when calendar edits jumped a marker into the future). Character states are not altered.
+- `rewindActorCalendarMarker` and `rewindAllCalendarMarkers` move the processed-day marker backwards by `days` (anchored from the earlier of the existing marker or the current date) so those days become pending again. Already applied character-sheet changes are not reversed.

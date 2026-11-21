@@ -1,3 +1,4 @@
+/* House-rule Rest, New Day, and Calendaria State Progression dialogs. */
 .fblqa-rest-button {
   position: relative;
 }
@@ -7,13 +8,13 @@
   cursor: not-allowed;
 }
 
-.app.fblqa-rest-dialog,
-.fblqa-rest-dialog {
+.fblqa-rest-dialog,
+:is(.app, .application).fblqa-rest-dialog {
   font-family: "IM Fell Great Primer", var(--font-primary), serif;
 }
 
 .fblqa-rest-dialog .window-header,
-.app.fblqa-rest-dialog .window-header {
+:is(.app, .application).fblqa-rest-dialog .window-header {
   min-height: 34px;
   gap: 8px;
   align-items: center;
@@ -23,9 +24,30 @@
   font-family: "IM Fell Great Primer", var(--font-primary), serif;
 }
 
-.fblqa-rest-dialog .window-title,
-.app.fblqa-rest-dialog .window-title {
+/* Hide the default window title only in the compact Rest dialog where condition chips occupy the header. */
+.fblqa-rest-dialog:not(.fblqa-new-day-dialog):not(.fblqa-state-progression-summary):not(.fblqa-state-progression-result) .window-title,
+:is(.app, .application).fblqa-rest-dialog:not(.fblqa-new-day-dialog):not(.fblqa-state-progression-summary):not(.fblqa-state-progression-result) .window-title {
   display: none;
+}
+
+:is(.app, .application).fblqa-rest-dialog:is(.fblqa-new-day-dialog, .fblqa-state-progression-summary, .fblqa-state-progression-result) .window-title {
+  display: block;
+  color: var(--fblqa-rest-text);
+  font-size: 1rem;
+  font-weight: 900;
+}
+
+.application.fblqa-rest-dialog .window-header [data-action="close"],
+.application.fblqa-rest-dialog .window-header .close,
+.app.fblqa-rest-dialog .window-header .close {
+  color: #111;
+  opacity: 1;
+}
+
+.application.fblqa-rest-dialog .window-header [data-action="close"] i,
+.application.fblqa-rest-dialog .window-header .close i,
+.app.fblqa-rest-dialog .window-header .close i {
+  color: inherit;
 }
 
 .fblqa-rest-header-conditions {
@@ -39,22 +61,22 @@
 }
 
 .fblqa-rest-dialog .window-content,
-.app.fblqa-rest-dialog .window-content {
+:is(.app, .application).fblqa-rest-dialog .window-content {
   background: var(--fblqa-rest-bg);
   color: var(--fblqa-rest-text);
   padding: 12px;
   font-family: "IM Fell Great Primer", var(--font-primary), serif;
 }
 
-.fblqa-rest-dialog:not(.fblqa-new-day-dialog) .window-content,
-.app.fblqa-rest-dialog:not(.fblqa-new-day-dialog) .window-content {
+:is(.app, .application).fblqa-rest-dialog:not(.fblqa-new-day-dialog):not(.fblqa-state-progression-summary):not(.fblqa-state-progression-result) .window-content {
   height: auto !important;
   max-height: none !important;
   overflow-y: visible !important;
 }
 
 .fblqa-rest-dialog .dialog-buttons,
-.app.fblqa-rest-dialog .dialog-buttons,
+:is(.app, .application).fblqa-rest-dialog .dialog-buttons,
+:is(.app, .application).fblqa-rest-dialog .form-footer,
 .fblqa-rest-dialog .form-footer {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -63,10 +85,11 @@
 }
 
 .fblqa-rest-dialog .dialog-button,
-.app.fblqa-rest-dialog .dialog-button,
+:is(.app, .application).fblqa-rest-dialog .dialog-button,
+:is(.app, .application).fblqa-rest-dialog .form-footer button,
 .fblqa-rest-dialog .form-footer button {
   min-height: 34px;
-  border: 1px solid rgba(0, 0, 0, 0.22);
+  border: 1px solid var(--fblqa-rest-border);
   background: rgba(236, 232, 221, 0.96);
   color: var(--fblqa-rest-text);
   font-family: "IM Fell Great Primer", var(--font-primary), serif;
@@ -77,17 +100,24 @@
 }
 
 .fblqa-rest-dialog .dialog-button:hover,
-.app.fblqa-rest-dialog .dialog-button:hover,
+:is(.app, .application).fblqa-rest-dialog .dialog-button:hover,
+:is(.app, .application).fblqa-rest-dialog .form-footer button:hover,
 .fblqa-rest-dialog .form-footer button:hover {
-  border-color: rgba(0, 0, 0, 0.42);
-  background: rgba(245, 242, 234, 0.98);
+  border-color: var(--fblqa-border-medium);
+  background: var(--fblqa-rest-bg);
   box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) inset;
 }
 
+:is(.app, .application).fblqa-rest-dialog .dialog-button:focus-visible,
+:is(.app, .application).fblqa-rest-dialog .form-footer button:focus-visible {
+  outline: 2px solid var(--color-border-highlight, #ff6400);
+  outline-offset: 2px;
+}
+
 .fblqa-rest-dialog .dialog-button.apply,
-.app.fblqa-rest-dialog .dialog-button.apply,
-.fblqa-rest-dialog .form-footer button.apply,
-.fblqa-rest-dialog .form-footer button[data-action="apply"] {
+:is(.app, .application).fblqa-rest-dialog .dialog-button.apply,
+:is(.app, .application).fblqa-rest-dialog .form-footer button.apply,
+:is(.app, .application).fblqa-rest-dialog .form-footer button[data-action="apply"] {
   border-color: rgba(42, 92, 55, 0.42);
   background: rgba(214, 230, 211, 0.92);
 }
@@ -115,7 +145,7 @@
   gap: 5px;
   min-height: 22px;
   padding: 2px 8px;
-  border: 1px solid rgba(0, 0, 0, 0.16);
+  border: 1px solid var(--fblqa-border-soft);
   background: rgba(255, 255, 255, 0.50);
   color: var(--fblqa-rest-muted);
   font-size: 0.82rem;
@@ -125,14 +155,14 @@
 }
 
 .fblqa-rest-condition.is-active {
-  border-color: rgba(120, 40, 35, 0.34);
-  background: rgba(120, 40, 35, 0.12);
+  border-color: color-mix(in srgb, var(--fblqa-rest-bad) 40%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-bad) 14%, transparent);
   color: var(--fblqa-rest-text);
 }
 
 .fblqa-rest-condition.is-inactive {
-  border-color: rgba(66, 110, 75, 0.30);
-  background: rgba(66, 110, 75, 0.10);
+  border-color: color-mix(in srgb, var(--fblqa-rest-good) 36%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-good) 12%, transparent);
 }
 
 .fblqa-rest-type-switch {
@@ -142,6 +172,11 @@
   margin: 0 !important;
   padding: 0;
   border: 0;
+}
+
+/* System label margins must not create a band around the rest switch. */
+.fblqa-rest-type-switch > label {
+  margin: 0 !important;
 }
 
 .fblqa-rest-type-switch label {
@@ -284,28 +319,28 @@
 }
 
 .fblqa-rest-attribute-row.will-recover {
-  border-color: rgba(66, 110, 75, 0.36);
-  background: rgba(66, 110, 75, 0.12);
+  border-color: color-mix(in srgb, var(--fblqa-rest-good) 45%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-good) 15%, transparent);
 }
 
 .fblqa-rest-attribute-row.is-blocked {
-  border-color: rgba(120, 40, 35, 0.32);
-  background: rgba(120, 40, 35, 0.12);
+  border-color: color-mix(in srgb, var(--fblqa-rest-bad) 38%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-bad) 14%, transparent);
 }
 
 .fblqa-rest-short-status {
   margin-top: 8px;
   padding: 7px 9px;
-  border: 1px solid rgba(66, 110, 75, 0.36);
-  background: rgba(66, 110, 75, 0.12);
+  border: 1px solid color-mix(in srgb, var(--fblqa-rest-good) 45%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-good) 15%, transparent);
   color: var(--fblqa-rest-text);
   font-size: 0.9rem;
   font-weight: 800;
 }
 
 .fblqa-rest-short-status.is-used {
-  border-color: rgba(130, 99, 35, 0.36);
-  background: rgba(130, 99, 35, 0.12);
+  border-color: color-mix(in srgb, var(--fblqa-rest-warn) 50%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-warn) 16%, transparent);
 }
 
 .fblqa-rest-time-source {
@@ -332,7 +367,7 @@
 
 .fblqa-rest-new-day-check {
   padding: 7px 8px;
-  border: 1px solid rgba(164, 119, 24, 0.30);
+  border: 1px solid color-mix(in srgb, var(--fblqa-rest-warn) 45%, transparent);
   background: rgba(222, 202, 145, 0.16);
 }
 
@@ -353,14 +388,23 @@
   line-height: 1.25;
 }
 
-.fblqa-rest-dialog.fblqa-new-day-dialog .window-title,
-.app.fblqa-rest-dialog.fblqa-new-day-dialog .window-title {
-  display: block;
-  color: var(--fblqa-rest-text);
-  font-size: 1rem;
-  font-weight: 900;
+.fblqa-rest-dialog .fblqa-rest-progression-note {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 8px 0 10px;
+  padding: 8px 10px;
+  border: 1px solid rgba(0, 0, 0, 0.18);
+  background: rgba(255, 255, 255, 0.34);
+  line-height: 1.35;
 }
 
+.fblqa-rest-dialog .fblqa-rest-progression-note > i {
+  flex: 0 0 auto;
+  margin-top: 2px;
+}
+
+/* New Day dialog */
 .fblqa-new-day-form {
   display: grid;
   gap: 9px;
@@ -392,6 +436,12 @@
   justify-content: flex-end;
 }
 
+.fblqa-new-day-intro .fblqa-new-day-toolbar {
+  margin-top: 5px;
+  padding-top: 5px;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}
+
 .fblqa-new-day-toolbar button {
   width: auto;
   min-height: 28px;
@@ -408,7 +458,7 @@
 
 .fblqa-new-day-toolbar button:hover,
 .fblqa-new-day-toolbar button:focus {
-  border-color: rgba(0, 0, 0, 0.42);
+  border-color: var(--fblqa-border-medium);
   background: rgba(255, 255, 255, 0.98);
 }
 
@@ -461,7 +511,7 @@
 }
 
 .fblqa-new-day-action.is-warning {
-  background: rgba(155, 36, 32, 0.08);
+  background: color-mix(in srgb, var(--fblqa-rest-bad) 10%, transparent);
 }
 
 .fblqa-new-day-action input[type="checkbox"] {
@@ -480,7 +530,7 @@
 }
 
 .fblqa-new-day-action.is-warning .fblqa-new-day-icon {
-  color: #a01414;
+  color: var(--fblqa-rest-bad);
 }
 
 .fblqa-new-day-copy {
@@ -514,150 +564,112 @@
   margin: 2px 0;
 }
 
-/* v1.5.6: system label margins must not create a band around the rest switch. */
-.fblqa-rest-type-switch > label {
-  margin: 0 !important;
-}
-
-.fblqa-new-day-intro .fblqa-new-day-toolbar {
-  margin-top: 5px;
-  padding-top: 5px;
-  border-top: 1px solid rgba(0, 0, 0, 0.12);
-}
-
-/* DialogV2 uses .application and a form footer outside the legacy dialog-buttons wrapper. */
-.application.fblqa-rest-dialog {
-  font-family: "IM Fell Great Primer", var(--font-primary), serif;
-}
-
-.application.fblqa-rest-dialog .window-header {
-  min-height: 34px;
-  gap: 8px;
-  align-items: center;
-  border-bottom: 1px solid rgba(0, 0, 0, 0.34);
-  background: rgba(221, 217, 211, 0.98);
-  color: var(--fblqa-rest-text);
-  font-family: "IM Fell Great Primer", var(--font-primary), serif;
-}
-
-.application.fblqa-rest-dialog .window-header [data-action="close"],
-.application.fblqa-rest-dialog .window-header .close,
-.app.fblqa-rest-dialog .window-header .close {
-  color: #111;
-  opacity: 1;
-}
-
-.application.fblqa-rest-dialog .window-header [data-action="close"] i,
-.application.fblqa-rest-dialog .window-header .close i,
-.app.fblqa-rest-dialog .window-header .close i {
-  color: inherit;
-}
-
-.application.fblqa-rest-dialog .window-content {
-  padding: 12px;
-  background: var(--fblqa-rest-bg);
-  color: var(--fblqa-rest-text);
-  font-family: "IM Fell Great Primer", var(--font-primary), serif;
-}
-
-.application.fblqa-rest-dialog:not(.fblqa-new-day-dialog) .window-content {
-  height: auto;
-  max-height: none;
-  overflow-y: visible;
-}
-
-.application.fblqa-rest-dialog .form-footer {
-  display: grid;
-  grid-template-columns: 1fr 1fr;
-  gap: 8px;
-  margin-top: 10px;
-}
-
-.application.fblqa-rest-dialog .form-footer button {
-  min-height: 34px;
-  border: 1px solid rgba(0, 0, 0, 0.22);
-  background: rgba(236, 232, 221, 0.96);
-  color: var(--fblqa-rest-text);
-  font-family: "IM Fell Great Primer", var(--font-primary), serif;
-  font-size: 1rem;
-  font-weight: 800;
-  letter-spacing: 0.01em;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.18);
-}
-
-.application.fblqa-rest-dialog .form-footer button:hover {
-  border-color: rgba(0, 0, 0, 0.42);
-  background: rgba(245, 242, 234, 0.98);
-  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.10) inset;
-}
-
-.application.fblqa-rest-dialog .form-footer button:focus-visible {
-  outline: 2px solid var(--color-border-highlight, #ff6400);
-  outline-offset: 2px;
-}
-
-.application.fblqa-rest-dialog .form-footer button.apply,
-.application.fblqa-rest-dialog .form-footer button[data-action="apply"] {
-  border-color: rgba(42, 92, 55, 0.42);
-  background: rgba(214, 230, 211, 0.92);
-}
-
-.application.fblqa-rest-dialog.fblqa-new-day-dialog .window-title {
-  display: block;
-  color: var(--fblqa-rest-text);
-  font-size: 1rem;
-  font-weight: 900;
-}
-
-.application.fblqa-rest-dialog .fblqa-rest-progression-note {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  margin: 8px 0 10px;
-  padding: 8px 10px;
-  border: 1px solid rgba(0, 0, 0, 0.18);
-  background: rgba(255, 255, 255, 0.34);
-  line-height: 1.35;
-}
-
-.application.fblqa-rest-dialog .fblqa-rest-progression-note > i {
-  flex: 0 0 auto;
-  margin-top: 2px;
-}
-
-.application.fblqa-state-progression-summary .form-footer,
-.application.fblqa-state-progression-result .form-footer {
+/* Calendaria State Progression GM summary & player result dialogs */
+:is(.app, .application).fblqa-state-progression-summary .form-footer,
+:is(.app, .application).fblqa-state-progression-result .form-footer {
   display: none;
 }
 
-.application.fblqa-state-progression-summary .window-content,
-.application.fblqa-state-progression-result .window-content {
-  overflow: auto;
+:is(.app, .application).fblqa-state-progression-summary .window-content,
+:is(.app, .application).fblqa-state-progression-result .window-content {
+  max-height: min(76vh, 720px);
+  overflow-y: auto;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary,
-.application.fblqa-state-progression-result .fblqa-progression-result {
+:is(.app, .application).fblqa-state-progression-summary .fblqa-progression-summary,
+:is(.app, .application).fblqa-state-progression-result .fblqa-progression-result {
   display: grid;
   gap: 10px;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-intro,
-.application.fblqa-state-progression-result .fblqa-progression-result-intro {
+:is(.app, .application).fblqa-state-progression-summary .fblqa-progression-summary-intro,
+:is(.app, .application).fblqa-state-progression-result .fblqa-progression-result-intro {
   display: grid;
-  gap: 3px;
+  gap: 6px;
   padding: 8px 10px;
   border: 1px solid rgba(0, 0, 0, 0.18);
-  background: rgba(255, 255, 255, 0.32);
+  background: rgba(255, 255, 255, 0.34);
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-rows {
+.fblqa-progression-summary-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px 12px;
+}
+
+.fblqa-progression-summary-head > div {
+  display: grid;
+  gap: 2px;
+}
+
+.fblqa-progression-current-date {
+  padding: 2px 7px;
+  border: 1px solid var(--fblqa-rest-border);
+  border-radius: 3px;
+  background: var(--fblqa-rest-bg-soft);
+  color: var(--fblqa-rest-text);
+  font-size: 0.84rem;
+  font-weight: 800;
+  white-space: nowrap;
+}
+
+.fblqa-progression-summary-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+  padding-top: 6px;
+  border-top: 1px solid rgba(0, 0, 0, 0.12);
+}
+
+.fblqa-progression-summary-toolbar button,
+.fblqa-progression-summary-actions button {
+  width: auto;
+  min-height: 26px;
+  margin: 0;
+  padding: 2px 9px;
+  border: 1px solid var(--fblqa-rest-border);
+  border-radius: 3px;
+  background: rgba(239, 236, 228, 0.96);
+  color: var(--fblqa-rest-text);
+  font-family: "IM Fell Great Primer", var(--font-primary), serif;
+  font-size: 0.84rem;
+  font-weight: 800;
+  line-height: 1.15;
+  box-shadow: none;
+  cursor: pointer;
+}
+
+.fblqa-progression-summary-toolbar button:hover,
+.fblqa-progression-summary-actions button:hover {
+  border-color: var(--fblqa-border-medium);
+  background: rgba(255, 255, 255, 0.98);
+}
+
+.fblqa-progression-summary-toolbar button:focus-visible,
+.fblqa-progression-summary-actions button:focus-visible {
+  outline: 2px solid var(--color-border-highlight, #ff6400);
+  outline-offset: 2px;
+}
+
+.fblqa-progression-summary-rows {
   display: grid;
   gap: 6px;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-row {
+.fblqa-progression-empty {
+  margin: 0;
+  padding: 10px;
+  border: 1px dashed var(--fblqa-rest-border);
+  color: var(--fblqa-rest-muted);
+  text-align: center;
+}
+
+.fblqa-progression-summary-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.6fr) auto;
+  grid-template-columns: minmax(145px, 1.1fr) minmax(175px, 1.6fr) auto;
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -665,43 +677,97 @@
   background: rgba(255, 255, 255, 0.24);
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-row .fblqa-progression-summary-status {
+.fblqa-progression-summary-character {
+  display: grid;
+  gap: 1px;
+  min-width: 0;
+}
+
+.fblqa-progression-summary-character small,
+.fblqa-progression-marker-date {
+  color: var(--fblqa-rest-muted);
+  font-size: 0.8rem;
+  line-height: 1.2;
+}
+
+.fblqa-progression-summary-status {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
   font-weight: 700;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-row.is-error .fblqa-progression-status,
-.application.fblqa-state-progression-summary .fblqa-progression-summary-row.is-blocked .fblqa-progression-status {
+.fblqa-progression-summary-status > small {
+  color: var(--fblqa-rest-muted);
+  font-weight: 600;
+  line-height: 1.25;
+}
+
+.fblqa-progression-summary-row.is-error .fblqa-progression-summary-status > span,
+.fblqa-progression-summary-row.is-blocked .fblqa-progression-summary-status > span {
+  color: var(--fblqa-rest-bad);
   text-decoration: underline;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-actions {
+.fblqa-progression-summary-row.is-ahead {
+  border-color: color-mix(in srgb, var(--fblqa-rest-warn) 65%, transparent);
+  background: color-mix(in srgb, var(--fblqa-rest-warn) 14%, transparent);
+}
+
+.fblqa-progression-summary-row.is-ahead .fblqa-progression-summary-status > span {
+  color: var(--fblqa-rest-bad);
+}
+
+.fblqa-progression-summary-row.is-ahead .fblqa-progression-reset-current {
+  border-color: color-mix(in srgb, var(--fblqa-rest-warn) 72%, transparent);
+  background: rgba(246, 229, 188, 0.95);
+}
+
+.fblqa-progression-summary-row.is-absent {
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.fblqa-progression-summary-actions {
   display: flex;
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 5px;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-actions button {
-  width: auto;
-  min-width: 78px;
-  margin: 0;
-  padding-inline: 9px;
+.fblqa-progression-summary-actions button {
+  min-width: 74px;
 }
 
-.application.fblqa-state-progression-summary .fblqa-progression-summary-row.is-absent {
-  background: rgba(255, 255, 255, 0.38);
+.fblqa-progression-summary-details {
+  margin-top: 4px;
+  font-size: 0.9em;
 }
 
-.application.fblqa-state-progression-result .fblqa-progression-result-day {
+.fblqa-progression-summary-details > summary {
+  cursor: pointer;
+  width: fit-content;
+}
+
+.fblqa-progression-summary-details ul {
+  margin: 5px 0 0;
+  padding-left: 18px;
+}
+
+.fblqa-progression-summary-details li {
+  margin: 2px 0;
+  overflow-wrap: anywhere;
+}
+
+.fblqa-progression-result-day {
   display: grid;
   gap: 5px;
 }
 
-.application.fblqa-state-progression-result .fblqa-progression-result-day h3 {
+.fblqa-progression-result-day h3 {
   margin: 0;
 }
 
-.application.fblqa-state-progression-result .fblqa-progression-result-day ul {
+.fblqa-progression-result-day ul {
   display: grid;
   gap: 4px;
   margin: 0;
@@ -709,7 +775,7 @@
   list-style: none;
 }
 
-.application.fblqa-state-progression-result .fblqa-progression-result-day li {
+.fblqa-progression-result-day li {
   display: grid;
   grid-template-columns: minmax(120px, 0.7fr) minmax(0, 1.3fr);
   gap: 8px;
@@ -717,37 +783,52 @@
   border-bottom: 1px solid rgba(0, 0, 0, 0.12);
 }
 
-.application.fblqa-state-progression-result .fblqa-progression-result-day li.is-failed {
+.fblqa-progression-result-day li.is-failed {
+  color: var(--fblqa-rest-bad);
   font-weight: 700;
 }
 
+/* Rewind days confirmation form */
+.fblqa-progression-rewind-form {
+  display: grid;
+  gap: 8px;
+}
+
+.fblqa-progression-rewind-form p {
+  margin: 0;
+  line-height: 1.3;
+}
+
+.fblqa-progression-rewind-form label {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 96px;
+  align-items: center;
+  gap: 8px;
+  font-weight: 700;
+}
+
+.fblqa-progression-rewind-form input[type="number"] {
+  width: 100%;
+  min-height: 28px;
+  padding: 2px 6px;
+  border: 1px solid var(--fblqa-rest-border);
+  border-radius: 3px;
+  background: rgba(255, 255, 255, 0.8);
+  color: var(--fblqa-rest-text);
+  font-family: inherit;
+  font-size: 0.95rem;
+  font-weight: 700;
+  text-align: center;
+}
+
 @media (max-width: 620px) {
-  .application.fblqa-state-progression-summary .fblqa-progression-summary-row,
-  .application.fblqa-state-progression-result .fblqa-progression-result-day li {
+  .fblqa-progression-summary-row,
+  .fblqa-progression-result-day li {
     grid-template-columns: 1fr;
   }
 
-  .application.fblqa-state-progression-summary .fblqa-progression-summary-actions {
+  .fblqa-progression-summary-actions,
+  .fblqa-progression-summary-toolbar {
     justify-content: flex-start;
   }
-}
-
-.application.fblqa-state-progression-summary .fblqa-progression-summary-details {
-  margin-top: 4px;
-  font-size: 0.9em;
-}
-
-.application.fblqa-state-progression-summary .fblqa-progression-summary-details > summary {
-  cursor: pointer;
-  width: fit-content;
-}
-
-.application.fblqa-state-progression-summary .fblqa-progression-summary-details ul {
-  margin: 5px 0 0;
-  padding-left: 18px;
-}
-
-.application.fblqa-state-progression-summary .fblqa-progression-summary-details li {
-  margin: 2px 0;
-  overflow-wrap: anywhere;
 }
