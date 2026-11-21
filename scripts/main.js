@@ -25,7 +25,17 @@ import { closeReputationDialog, getReputationEntries, openReputationDialog, save
 import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
 import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
-import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
+import {
+  getStateProgressionMode,
+  handleStateProgressionActorDeleted,
+  initializeStateProgression,
+  openStateProgressionManager,
+  readyStateProgression,
+  resetActorCalendarMarkerToCurrent,
+  resetAllCalendarMarkersToCurrent,
+  rewindActorCalendarMarker,
+  rewindAllCalendarMarkers
+} from "./state-progression.js";
 import { EQUIPMENT_API_VERSION, getEquipmentState, getEquipmentReceipt, previewEquipmentAction, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
 import { getHeldItemPresentation } from "./integration/weapon-presentation.js";
 
@@ -83,6 +93,11 @@ Hooks.once("init", () => {
       buildNewDayPlan,
       buildNewDayPlanWithProviders,
       getStateProgressionMode,
+      openStateProgressionManager,
+      resetActorCalendarMarkerToCurrent,
+      rewindActorCalendarMarker,
+      resetAllCalendarMarkersToCurrent,
+      rewindAllCalendarMarkers,
       openMoneyTransferDialog,
       getReputationEntries,
       saveReputationEntries,
@@ -395,6 +410,7 @@ function handleDeletedActor(actor) {
   hideItemTooltip();
   closeWillpowerTalentPopover(actor);
   closeReputationDialog(actor);
+  handleStateProgressionActorDeleted(actor);
   handleStatProviderActorDeleted(actor);
   releaseBiographyState(actor);
 }

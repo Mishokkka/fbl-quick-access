@@ -115,14 +115,17 @@ export function getCalendariaQuarterInfo() {
     const year = Number(dateTime.year);
     const month = Number(dateTime.month);
     const day = Number(dateTime.day);
-    const hour = Number(dateTime.hour);
-    if (![year, month, day, hour].every(Number.isFinite)) return null;
+    if (![year, month, day].every(Number.isFinite)) return null;
 
     const calendar = api.getActiveCalendar?.();
     const calendarId = String(calendar?.metadata?.id ?? calendar?.id ?? "").trim();
-    const hoursPerDay = Number(calendar?.days?.hoursPerDay) || 24;
-    const quarterHours = Math.max(1, hoursPerDay / 4);
-    const quarterIndex = Math.max(0, Math.min(3, Math.floor(hour / quarterHours)));
+    const rawHours = Number(calendar?.days?.hoursPerDay);
+    const quarterHours = Number.isFinite(rawHours) && rawHours > 0 ? rawHours / 4 : 6;
+    const hour = Number.isFinite(Number(dateTime.hour)) ? Number(dateTime.hour) : 0;
+    const minute = Number.isFinite(Number(dateTime.minute)) ? Number(dateTime.minute) : 0;
+    const second = Number.isFinite(Number(dateTime.second)) ? Number(dateTime.second) : 0;
+    const timeOfDay = hour + (minute / 60) + (second / 3600);
+    const quarterIndex = Math.max(0, Math.min(3, Math.floor(timeOfDay / quarterHours)));
     const dayPrefix = calendarId
       ? `calendaria:${calendarId}:${year}:${month}:${day}`
       : `calendaria:${year}:${month}:${day}`;

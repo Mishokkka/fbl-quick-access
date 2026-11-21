@@ -281,6 +281,11 @@
         "Hint": "Choose whether daily injuries, conditions, wash states, addictions and connected new-day effects advance after Long Rest or when Calendaria registers a new day.",
         "ChoiceLongRest": "Long Rest",
         "ChoiceCalendaria": "Calendaria — new day"
+      },
+      "StateProgressionManager": {
+        "Name": "Calendaria processed days",
+        "Label": "Manage Calendaria days",
+        "Hint": "Inspect processed-day markers, reset markers to the current date (if the calendar jumped ahead), or rewind days to process them again."
       }
     },
     "NewDay": {
@@ -519,7 +524,8 @@
         "error": "Completed with errors",
         "baseline": "Baseline set",
         "blocked": "Needs manual resolution",
-        "absent": "Absent"
+        "absent": "Absent",
+        "ahead": "Marker ahead"
       },
       "GMChanges": "Changes: {count}",
       "GMChangesWithErrors": "Changes: {count}; errors: {failed}",
@@ -532,7 +538,35 @@
       "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent.",
       "AutomaticDaysLimited": "Processed {processed} calendar days; {remaining} days remain pending.",
       "AddictionPending": "Manual addiction Endurance is required. Record Success or Failure in STAT, then resume the remaining days from the GM summary.",
-      "OpenStat": "Open STAT"
+      "OpenStat": "Open STAT",
+      "CurrentDateLabel": "Current date: {date}",
+      "MarkerDate": "Marker: {date}",
+      "MarkerMissing": "Marker: not set",
+      "AheadDetail": "Marker ({marker}) is {days} days ahead of the current date. Reset it to the current date so daily progression can resume.",
+      "AheadDetectedWarning": "{count} player characters have a Calendaria marker ahead of the current date. Open “Manage Calendaria days” in module settings to reset them.",
+      "ResetCurrent": "Set to current date",
+      "ResetCurrentDone": "Marker reset to the current date ({date}).",
+      "ResetCurrentFailed": "Could not reset the marker to the current date.",
+      "ResetAllCurrent": "Reset all to current date",
+      "ResetAllConfirmTitle": "Reset all Calendaria markers?",
+      "ResetAllConfirmHeading": "Set the current date ({date}) for all player characters?",
+      "ResetAllConfirmMessage": "All assigned player characters will have their processed-day marker set to the current Calendaria date. Character sheet states will not be changed.",
+      "ResetAllConfirmWarning": "Pending past days will be marked caught up, and markers stuck in the future will be fixed.",
+      "ResetAllDone": "Calendaria markers reset to {date} for {count} characters.",
+      "Rewind": "Rewind days…",
+      "RewindAll": "Rewind all…",
+      "RewindTitle": "Rewind Calendaria processed days",
+      "RewindHeading": "Rewind Calendaria marker for {actor}",
+      "RewindAllHeading": "Rewind Calendaria marker for all player characters",
+      "RewindDaysLabel": "Days to rewind",
+      "RewindWarning": "Rewinding only moves the Calendaria processed-day marker backwards and does NOT reverse already applied injury, condition, or addiction changes. Those days will become pending again.",
+      "RewindApply": "Rewind",
+      "RewindDone": "Marker rewound by {days} day(s) (to {date}). Days are pending again.",
+      "RewindAllDone": "Markers rewound by {days} day(s) for {count} characters.",
+      "RewindFailed": "Could not rewind Calendaria processed days.",
+      "ManagerUnavailable": "Calendaria day management is unavailable: check that Calendaria is active and has an active calendar.",
+      "ManagerGmOnly": "Only the active GM can manage Calendaria processed days.",
+      "NoAssignedActors": "No characters assigned to non-GM players were found."
     }
   },
   "FBLEC": {

@@ -326,6 +326,8 @@ function makeItem(id, name, system, addictionState = null) {
     },
     async update(data) {
       this.updates.push(data);
+      if ("system.healingTime" in data) this.system.healingTime = data["system.healingTime"];
+      if ("system.limit" in data) this.system.limit = data["system.limit"];
     },
     async delete() {
       this.deleted = true;
@@ -376,6 +378,12 @@ test("New Day combines contiguous simple Item updates into one Foundry bulk writ
     items,
     async updateEmbeddedDocuments(type, updates, options) {
       calls.push({ type, updates, options });
+      for (const patch of updates) {
+        const target = items.get(patch._id);
+        if (!target) continue;
+        if ("system.healingTime" in patch) target.system.healingTime = patch["system.healingTime"];
+        if ("system.limit" in patch) target.system.limit = patch["system.limit"];
+      }
       return updates;
     }
   };

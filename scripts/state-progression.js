@@ -1,5 +1,6 @@
 import {
   FLAG_STATE_PROGRESSION_CALENDAR,
+  FLAG_STATE_PROGRESSION_FAILURES,
   MODULE_ID,
   SETTINGS
 } from "./constants.js";
@@ -14,6 +15,7 @@ import {
   confirmDangerAction,
   createFoundryDialog,
   extractDialogElement,
+  findDialogForm,
   hasFoundryDialogApi
 } from "./dialogs.js";
 import { escapeHtml } from "./utils.js";
@@ -34,6 +36,8 @@ import {
   normalizeSocketRequestId
 } from "./socket-utils.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
+import { setDocumentFlagVerified } from "./document-writes.js";
+import { markCalendariaReady } from "./integration/calendaria-adapter.js";
 import { addictionCalendarDayKey, getPendingAddictions } from "./conditions/services/addiction-service.js";
 
 export const STATE_PROGRESSION_MODES = Object.freeze({
@@ -58,10 +62,22 @@ let revertingMode = false;
 let calendariaUnavailableWarned = false;
 let calendariaReadyApi = null;
 let calendariaReadySeen = false;
+let lastAheadWarningKey = "";
 
 const activePlayerPrompts = new Set();
 const gmSummaryWindows = new Map();
 const enqueueStateProgressionOperation = createObjectOperationQueue();
+
+export function handleStateProgressionActorDeleted(actor) {
+  const actorId = String(actor?.id ?? "");
+  if (!actorId) return;
+  for (const state of gmSummaryWindows.values()) {
+    if (!state.entries.has(actorId)) continue;
+    state.entries.delete(actorId);
+    state.statuses.delete(actorId);
+    refreshGMSummaryDom(state);
+  }
+}
 
 export function initializeStateProgression() {
   if (initialized) return;
@@ -86,12 +102,24 @@ export function initializeStateProgression() {
     for (const state of gmSummaryWindows.values()) {
       if (!state.entries.has(actor.id)) continue;
       const old = state.statuses.get(actor.id);
-      if (!getPendingAddictions(actor).length && old?.pendingManual) {
-        const status = calculateActorCalendarStatus(getActorCalendarMarker(actor), state.context);
-        updateGMSummaryStatus(state, actor.id, { state: status.days > 0 ? "pending" : "done", days: status.days ?? 0,
-          pendingManual: 0, detail: "", result: null });
-      } else if (getPendingAddictions(actor).length) {
-        updateGMSummaryStatus(state, actor.id, { ...old, pendingManual: getPendingAddictions(actor).length });
+      const pendingCount = getPendingAddictions(actor).length;
+      if (!pendingCount && old?.pendingManual) {
+        const marker = getActorCalendarMarker(actor);
+        const status = calculateActorCalendarStatus(marker, state.context);
+        const nextState = old?.state === "error"
+          ? "error"
+          : status.status === "ahead"
+            ? "ahead"
+            : status.days > 0 ? "pending" : "done";
+        updateGMSummaryStatus(state, actor.id, {
+          state: nextState,
+          days: status.status === "ahead" ? Math.abs(status.days) : Math.max(0, status.days ?? 0),
+          pendingManual: 0,
+          detail: old?.state === "error" ? old.detail : (status.status === "ahead" ? aheadDetail(marker, status.days) : ""),
+          result: old?.state === "error" ? old.result : null
+        });
+      } else if (pendingCount) {
+        updateGMSummaryStatus(state, actor.id, { ...old, pendingManual: pendingCount });
       }
     }
   };
@@ -116,7 +144,10 @@ export async function readyStateProgression() {
     return;
   }
 
-  if (isActiveQuickAccessGM()) await ensureMissingPlayerBaselines(context);
+  if (isActiveQuickAccessGM()) {
+    await ensureMissingPlayerBaselines(context);
+    warnIfAnyMarkersAhead(context);
+  }
   if (!game.user?.isGM) await checkCurrentPlayerPending();
 }
 
@@ -132,10 +163,6 @@ export function getStateProgressionMode() {
 
 export function usesCalendariaStateProgression() {
   return getStateProgressionMode() === STATE_PROGRESSION_MODES.CALENDARIA;
-}
-
-export function usesLongRestStateProgression() {
-  return !usesCalendariaStateProgression();
 }
 
 /** Calendaria's dayChange payload uses internal 0-indexed month/day fields. */
@@ -210,7 +237,8 @@ export function calculateActorCalendarStatus(marker, context, api = getCalendari
     return { status: "unavailable", days: null };
   }
   if (!Number.isFinite(days)) return { status: "unavailable", days: null };
-  if (days <= 0) return { status: "current", days };
+  if (days < 0) return { status: "ahead", days };
+  if (days === 0) return { status: "current", days: 0 };
   if (days === 1) return { status: "pending", days: 1 };
   return { status: "pending-multiple", days };
 }
@@ -278,6 +306,7 @@ async function handleCalendariaReady(data = null) {
   // persisted active calendar and must not be treated as a user-initiated switch.
   calendariaReadySeen = true;
   calendariaReadyApi = data?.api ?? globalThis.CALENDARIA?.api ?? calendariaReadyApi;
+  markCalendariaReady(data);
   if (!usesCalendariaStateProgression()) return;
   calendariaUnavailableWarned = false;
   const context = getCalendariaContext();
@@ -288,7 +317,10 @@ async function handleCalendariaReady(data = null) {
     return;
   }
 
-  if (isActiveQuickAccessGM()) await ensureMissingPlayerBaselines(context);
+  if (isActiveQuickAccessGM()) {
+    await ensureMissingPlayerBaselines(context);
+    warnIfAnyMarkersAhead(context);
+  }
   if (!game.user?.isGM) await checkCurrentPlayerPending();
 }
 
@@ -342,7 +374,10 @@ async function handleCalendariaDayChange(data) {
     return;
   }
 
-  if (isActiveQuickAccessGM()) await prepareGMSummary(context, { reason: "day-change" });
+  if (isActiveQuickAccessGM()) {
+    await prepareGMSummary(context, { reason: "day-change" });
+    warnIfAnyMarkersAhead(context);
+  }
   if (!game.user?.isGM) await checkCurrentPlayerPending({ context });
 }
 
@@ -412,6 +447,12 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
       continue;
     }
 
+    const status = calculateActorCalendarStatus(marker, context);
+    if (status.status === "ahead") {
+      updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForAheadMarker(marker, status.days));
+      continue;
+    }
+
     const days = pendingDaysForActor(entry.actor, context);
     if (days <= 0) {
       updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForCurrentMarker(marker, context));
@@ -435,16 +476,25 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
     }
 
     updateGMSummaryStatus(summary, entry.actor.id, { state: "processing", days });
-    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
-      maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
-    });
-    updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
-      ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-      : result.limitedDays > 0
-        ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
-        : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
+    try {
+      const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
+        maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
+      });
+      updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
+        ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
+        : result.limitedDays > 0
+          ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
+          : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
 
-    if (entry.primaryUser?.active) await sendPlayerResult(entry.primaryUser, entry.actor, context, result);
+      await sendPlayerResults(entry, context, result);
+    } catch (error) {
+      console.error(`${MODULE_ID} | automatic Calendaria time skip failed for ${entry.actor?.name}`, error);
+      updateGMSummaryStatus(summary, entry.actor.id, {
+        state: "error",
+        days: pendingDaysForActor(entry.actor, context),
+        detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
+      });
+    }
   }
 }
 
@@ -507,12 +557,13 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
           await recordCalendarFailures(actor, context, nextDate, resetResult.failed);
         }
       }
+      const targetDate = normalizeCalendariaDate(api?.addDays?.(cursor, remaining)) ?? context.date;
       // Keep the marker as the final Actor mutation for this shortcut. Core
       // New Day writes keep their normal Foundry render behavior so any open
       // embedded Item sheets stay synchronized on every client.
-      await setActorCalendarMarker(actor, context);
+      await setActorCalendarMarker(actor, { ...context, date: targetDate });
       remaining = 0;
-      cursor = context.date;
+      cursor = targetDate;
       break;
     }
 
@@ -568,7 +619,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
 }
 
 async function recordCalendarFailures(actor, context, date, failures) {
-  const key = "stateProgressionFailures";
+  const key = FLAG_STATE_PROGRESSION_FAILURES;
   const previous = actor.getFlag?.(MODULE_ID, key);
   const entries = Array.isArray(previous) ? previous : [];
   // Store identifiers only. Provider actions/results can contain private data.
@@ -601,7 +652,7 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
   }
 
   const status = calculateActorCalendarStatus(marker, context);
-  if (status.status === "current") return null;
+  if (status.status === "current" || status.status === "ahead") return null;
   if (status.status === "pending-multiple") {
     try {
       await executeAsActiveGM(REPORT_OPERATION, { actorId: actor.id, targetDate: context.date, calendarId: context.calendarId });
@@ -627,11 +678,12 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
       allowDelegatedApply: true,
       targetDate: context.date,
       dayKey: addictionCalendarDayKey(context.calendarId, context.date),
-      applyHandler: async ({ selectedIds }) => executeAsActiveGM(APPLY_OPERATION, {
+      applyHandler: async ({ selectedIds, selectedPreconditions }) => executeAsActiveGM(APPLY_OPERATION, {
         actorId: actor.id,
         targetDate: context.date,
         calendarId: context.calendarId,
-        selectedIds
+        selectedIds,
+        selectedPreconditions
       })
     });
 
@@ -695,6 +747,10 @@ async function handleCalendariaApplyRequest(payload, context) {
     }
 
     const status = calculateActorCalendarStatus(marker, calendaria);
+    if (status.status === "ahead") {
+      updateCurrentGMSummary(actorEntry.actor.id, calendaria, summaryStatusForAheadMarker(marker, status.days));
+      throw progressionError("stale-calendar-day", "The character calendar marker is ahead of the current date");
+    }
     if (status.status === "current") {
       updateCurrentGMSummary(actorEntry.actor.id, calendaria, summaryStatusForCurrentMarker(marker, calendaria));
       return {
@@ -716,6 +772,17 @@ async function handleCalendariaApplyRequest(payload, context) {
     const knownIds = new Set(plan.actions.map((action) => action.id));
     const unknown = selectedIds.find((id) => !knownIds.has(id));
     if (unknown) throw progressionError("invalid-action", `Unknown new-day action: ${unknown}`);
+
+    if (payload?.selectedPreconditions && typeof payload.selectedPreconditions === "object") {
+      for (const id of selectedIds) {
+        if (!Object.hasOwn(payload.selectedPreconditions, id)) continue;
+        const expected = payload.selectedPreconditions[id];
+        const live = plan.preconditions?.[id];
+        if (expected !== undefined && live !== undefined && expected !== live) {
+          throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
+        }
+      }
+    }
 
     updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "processing", days: 1 });
     const applied = await applyNewDayPlan(actorEntry.actor, plan, selectedIds, calendarApplyOptions());
@@ -765,7 +832,9 @@ async function handleCalendariaPendingReport(payload, context) {
 
   const status = calculateActorCalendarStatus(marker, calendaria);
   const summary = await prepareGMSummary(calendaria, { reason: "player-report", skipBaselineMutation: true });
-  if (status.status === "current") {
+  if (status.status === "ahead") {
+    updateGMSummaryStatus(summary, actorEntry.actor.id, summaryStatusForAheadMarker(marker, status.days));
+  } else if (status.status === "current") {
     updateGMSummaryStatus(summary, actorEntry.actor.id, summaryStatusForCurrentMarker(marker, calendaria));
   } else {
     updateGMSummaryStatus(summary, actorEntry.actor.id, {
@@ -786,9 +855,17 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
   const summary = openOrRefreshGMSummary(context, entries, reason);
 
   for (const entry of entries) {
+    const existing = summary.statuses.get(entry.actor.id);
+    if (existing?.state === "processing") continue;
+
     let marker = getActorCalendarMarker(entry.actor);
     if ((!marker || marker.calendarId !== context.calendarId) && !skipBaselineMutation) {
-      await setActorCalendarMarker(entry.actor, context);
+      await enqueueStateProgressionOperation(entry.actor, async () => {
+        const liveMarker = getActorCalendarMarker(entry.actor);
+        if (!liveMarker || liveMarker.calendarId !== context.calendarId) {
+          await setActorCalendarMarker(entry.actor, context);
+        }
+      });
       marker = getActorCalendarMarker(entry.actor);
       updateGMSummaryStatus(summary, entry.actor.id, {
         state: "baseline",
@@ -799,10 +876,12 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
     }
 
     const status = calculateActorCalendarStatus(marker, context);
-    if (status.status === "current") {
+    if (status.status === "ahead") {
+      updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForAheadMarker(marker, status.days));
+    } else if (status.status === "current") {
       updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForCurrentMarker(marker, context));
     } else if (status.status === "baseline") {
-      updateGMSummaryStatus(summary, entry.actor.id, { state: "baseline", days: 0 });
+      updateGMSummaryStatus(summary, entry.actor.id, { state: "baseline", days: 0, detail: "" });
     } else {
       updateGMSummaryStatus(summary, entry.actor.id, {
         state: entry.primaryUser?.active ? "pending" : "offline",
@@ -849,7 +928,11 @@ function openOrRefreshGMSummary(context, entries, reason) {
     state.context = context;
   }
 
-  if (!hasFoundryDialogApi() || state.dialog) return state;
+  if (!hasFoundryDialogApi() || state.dialog) {
+    state.dialog?.bringToFront?.();
+    state.dialog?.bringToTop?.();
+    return state;
+  }
 
   state.dialog = createFoundryDialog({
     title: qaLocalize("StateProgression.GMSummaryTitle", "Player state progression — {date}", { date: formatCalendariaDate(context.date) }),
@@ -868,7 +951,7 @@ function openOrRefreshGMSummary(context, entries, reason) {
     }
   }, {
     classes: ["fblqa-rest-dialog", "fblqa-state-progression-summary"],
-    width: 650,
+    width: 720,
     resizable: true,
     buttonless: true
   });
@@ -877,23 +960,58 @@ function openOrRefreshGMSummary(context, entries, reason) {
 }
 
 function buildGMSummaryContent(state) {
+  const hasActors = state.entries.size > 0;
+  const rowsHtml = hasActors
+    ? Array.from(state.entries.values()).map((entry) => renderGMSummaryRow(state, entry)).join("")
+    : `<p class="fblqa-progression-empty">${escapeHtml(qaLocalize("StateProgression.NoAssignedActors", "No characters assigned to non-GM players were found."))}</p>`;
   return `
     <div class="fblqa-progression-summary" data-summary-key="${escapeHtml(state.key)}">
       <div class="fblqa-progression-summary-intro">
-        <strong>${escapeHtml(qaLocalize("StateProgression.GMSummaryHeading", "Player states"))}</strong>
-        <span>${escapeHtml(qaLocalize("StateProgression.GMSummaryHint", "Only characters assigned to non-GM users are included. Player results are kept out of chat."))}</span>
+        <div class="fblqa-progression-summary-head">
+          <div>
+            <strong>${escapeHtml(qaLocalize("StateProgression.GMSummaryHeading", "Player states"))}</strong>
+            <span>${escapeHtml(qaLocalize("StateProgression.GMSummaryHint", "Only characters assigned to non-GM users are included. Player results are kept out of chat."))}</span>
+          </div>
+          <span class="fblqa-progression-current-date">${escapeHtml(qaLocalize("StateProgression.CurrentDateLabel", "Current date: {date}", { date: formatCalendariaDate(state.context?.date) }))}</span>
+        </div>
+        ${hasActors ? `
+          <div class="fblqa-progression-summary-toolbar">
+            <button type="button" data-action="reset-all-current">
+              <i class="fas fa-calendar-check" aria-hidden="true"></i>
+              ${escapeHtml(qaLocalize("StateProgression.ResetAllCurrent", "Reset all to current date"))}
+            </button>
+            <button type="button" data-action="rewind-all">
+              <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
+              ${escapeHtml(qaLocalize("StateProgression.RewindAll", "Rewind all…"))}
+            </button>
+          </div>` : ""}
       </div>
-      <div class="fblqa-progression-summary-rows">${Array.from(state.entries.values()).map((entry) => renderGMSummaryRow(state, entry)).join("")}</div>
+      <div class="fblqa-progression-summary-rows">${rowsHtml}</div>
     </div>`;
 }
 
 function renderGMSummaryRow(state, entry) {
   const status = state.statuses.get(entry.actor.id) ?? { state: entry.primaryUser?.active ? "pending" : "offline", days: 0 };
+  const marker = getActorCalendarMarker(entry.actor);
+  const markerLabel = marker?.date
+    ? qaLocalize("StateProgression.MarkerDate", "Marker: {date}", { date: formatCalendariaDate(marker.date) })
+    : qaLocalize("StateProgression.MarkerMissing", "Marker: not set");
   const pendingManual = getPendingAddictions(entry.actor).length;
   const pendingDays = Math.max(0, Number(status.days) || 0);
+  const isProcessing = status.state === "processing";
   const canResolve = ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
   const canMarkAbsent = ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
   const canUndoAbsent = status.state === "absent" && Boolean(status.undoAvailable);
+  const canResetCurrent = !isProcessing && (
+    status.state === "ahead"
+    || status.state === "baseline"
+    || status.state === "absent"
+    || pendingDays > 0
+    || !marker?.date
+    || marker.calendarId !== state.context?.calendarId
+    || !sameCalendariaDay(marker.date, state.context?.date)
+  );
+  const canRewind = !isProcessing;
   const playerNames = entry.users.map((user) => user.name ?? user.id).filter(Boolean).join(", ") || "—";
   const detail = status.detail || progressionStatusDetail(status);
   const resultDetails = renderGMSummaryResult(status.result);
@@ -913,6 +1031,16 @@ function renderGMSummaryRow(state, entry) {
       <button type="button" class="fblqa-progression-undo" data-action="undo-absent">
         <i class="fas fa-rotate-left" aria-hidden="true"></i>
         ${escapeHtml(qaLocalize("StateProgression.UndoAbsent", "Undo"))}
+      </button>` : "",
+    canResetCurrent ? `
+      <button type="button" class="fblqa-progression-reset-current" data-action="reset-current">
+        <i class="fas fa-calendar-check" aria-hidden="true"></i>
+        ${escapeHtml(qaLocalize("StateProgression.ResetCurrent", "Set to current date"))}
+      </button>` : "",
+    canRewind ? `
+      <button type="button" class="fblqa-progression-rewind" data-action="rewind">
+        <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
+        ${escapeHtml(qaLocalize("StateProgression.Rewind", "Rewind days…"))}
       </button>` : ""
   ].filter(Boolean).join("");
 
@@ -921,6 +1049,7 @@ function renderGMSummaryRow(state, entry) {
       <div class="fblqa-progression-summary-character">
         <strong>${escapeHtml(entry.actor.name ?? "")}</strong>
         <small>${escapeHtml(playerNames)}</small>
+        <small class="fblqa-progression-marker-date">${escapeHtml(markerLabel)}</small>
       </div>
       <div class="fblqa-progression-summary-status">
         <span>${escapeHtml(progressionStatusLabel(status.state))}</span>
@@ -970,29 +1099,44 @@ function updateCurrentGMSummary(actorId, context, status) {
 function refreshGMSummaryDom(state) {
   const container = state.root?.querySelector?.(".fblqa-progression-summary-rows");
   if (!container) return;
-  container.innerHTML = Array.from(state.entries.values()).map((entry) => renderGMSummaryRow(state, entry)).join("");
-  bindGMSummaryActions(state);
+  container.innerHTML = state.entries.size
+    ? Array.from(state.entries.values()).map((entry) => renderGMSummaryRow(state, entry)).join("")
+    : `<p class="fblqa-progression-empty">${escapeHtml(qaLocalize("StateProgression.NoAssignedActors", "No characters assigned to non-GM players were found."))}</p>`;
 }
 
 function bindGMSummaryActions(state) {
   const root = state.root;
-  if (!root) return;
-  for (const button of root.querySelectorAll?.("[data-action]") ?? []) {
-    if (button.dataset.fblqaBound === "true") continue;
-    button.dataset.fblqaBound = "true";
-    button.addEventListener("click", () => {
-      const actorId = button.closest?.("[data-actor-id]")?.dataset?.actorId;
-      if (!actorId) return;
-      const action = String(button.dataset.action ?? "");
-      if (action === "resolve") void resolveActorFromGMSummary(state, actorId);
-      else if (action === "open-stat") {
-        const sheet = state.entries.get(actorId)?.actor?.sheet;
-        if (sheet) { sheet._customActiveTab = "conditions"; sheet.render(true); }
+  if (!root || root.dataset?.fblqaSummaryBound === "true") return;
+  if (root.dataset) root.dataset.fblqaSummaryBound = "true";
+
+  root.addEventListener("click", (event) => {
+    const button = event.target?.closest?.("button[data-action]");
+    if (!button || !root.contains(button)) return;
+    event.preventDefault();
+    const action = String(button.dataset.action ?? "");
+    if (action === "reset-all-current") {
+      void resetAllFromGMSummary(state);
+      return;
+    }
+    if (action === "rewind-all") {
+      void rewindAllFromGMSummary(state);
+      return;
+    }
+
+    const actorId = button.closest?.("[data-actor-id]")?.dataset?.actorId;
+    if (!actorId) return;
+    if (action === "resolve") void resolveActorFromGMSummary(state, actorId);
+    else if (action === "open-stat") {
+      const sheet = state.entries.get(actorId)?.actor?.sheet;
+      if (sheet) {
+        sheet._customActiveTab = "conditions";
+        sheet.render?.(true);
       }
-      else if (action === "absent") void markActorAbsentFromGMSummary(state, actorId);
-      else if (action === "undo-absent") void undoActorAbsentFromGMSummary(state, actorId);
-    });
-  }
+    } else if (action === "absent") void markActorAbsentFromGMSummary(state, actorId);
+    else if (action === "undo-absent") void undoActorAbsentFromGMSummary(state, actorId);
+    else if (action === "reset-current") void resetActorFromGMSummary(state, actorId);
+    else if (action === "rewind") void rewindActorFromGMSummary(state, actorId);
+  });
 }
 
 async function markActorAbsentFromGMSummary(state, actorId) {
@@ -1052,6 +1196,7 @@ async function undoActorAbsentFromGMSummary(state, actorId) {
 }
 
 async function resolveActorFromGMSummary(state, actorId) {
+  if (!isActiveQuickAccessGM()) return;
   const entry = state.entries.get(actorId);
   if (!entry) return;
   const context = getCalendariaContext();
@@ -1061,8 +1206,14 @@ async function resolveActorFromGMSummary(state, actorId) {
   const days = Math.max(0, Number(status.days) || 0);
   if (getPendingAddictions(entry.actor).length) {
     ui.notifications?.warn?.(manualEnduranceDetail());
-    entry.actor.sheet._customActiveTab = "conditions";
-    entry.actor.sheet.render(true);
+    if (entry.actor.sheet) {
+      entry.actor.sheet._customActiveTab = "conditions";
+      entry.actor.sheet.render?.(true);
+    }
+    return;
+  }
+  if (status.status === "ahead") {
+    updateGMSummaryStatus(state, actorId, summaryStatusForAheadMarker(marker, status.days));
     return;
   }
   if (!days) {
@@ -1090,16 +1241,38 @@ async function resolveActorFromGMSummary(state, actorId) {
     });
     if (!confirmed) return;
 
-    updateGMSummaryStatus(state, actorId, { state: "processing", days });
-    const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
-      maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
-    });
-    updateGMSummaryStatus(state, actorId, result.failedActions
-      ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-      : result.limitedDays > 0
-        ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
-        : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
-    if (entry.primaryUser?.active) await sendPlayerResult(entry.primaryUser, entry.actor, context, result);
+    const liveContext = getCalendariaContext();
+    if (!liveContext || liveContext.calendarId !== state.context.calendarId) return;
+    const liveMarker = getActorCalendarMarker(entry.actor);
+    const liveStatus = calculateActorCalendarStatus(liveMarker, liveContext);
+    const liveDays = Math.max(0, Number(liveStatus.days) || 0);
+    if (!liveDays) {
+      updateGMSummaryStatus(state, actorId, liveStatus.status === "ahead"
+        ? summaryStatusForAheadMarker(liveMarker, liveStatus.days)
+        : summaryStatusForCurrentMarker(liveMarker, liveContext));
+      return;
+    }
+
+    updateGMSummaryStatus(state, actorId, { state: "processing", days: liveDays });
+    try {
+      const result = await processActorAutomaticDays(entry.actor, liveMarker.date, liveContext, liveDays, {
+        maxDays: liveDays > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? liveDays : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
+      });
+      updateGMSummaryStatus(state, actorId, result.failedActions
+        ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
+        : result.limitedDays > 0
+          ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
+          : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
+      await sendPlayerResults(entry, liveContext, result);
+    } catch (error) {
+      console.error(`${MODULE_ID} | GM multi-day resolve failed`, error);
+      ui.notifications?.error?.(qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression."));
+      updateGMSummaryStatus(state, actorId, {
+        state: "error",
+        days: pendingDaysForActor(entry.actor, liveContext),
+        detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
+      });
+    }
     return;
   }
 
@@ -1107,11 +1280,12 @@ async function resolveActorFromGMSummary(state, actorId) {
     source: "calendaria-gm",
     targetDate: context.date,
     dayKey: addictionCalendarDayKey(context.calendarId, context.date),
-    applyHandler: async ({ selectedIds }) => handleCalendariaApplyRequest({
+    applyHandler: async ({ selectedIds, selectedPreconditions }) => handleCalendariaApplyRequest({
       actorId: entry.actor.id,
       targetDate: context.date,
       calendarId: context.calendarId,
-      selectedIds
+      selectedIds,
+      selectedPreconditions
     }, {
       requestUser: game.user,
       requesterId: game.user.id,
@@ -1119,17 +1293,303 @@ async function resolveActorFromGMSummary(state, actorId) {
       isRemote: false
     })
   });
-  if (result?.calendarResult && entry.primaryUser?.active) await sendPlayerResult(entry.primaryUser, entry.actor, context, result.calendarResult);
+  if (result?.calendarResult) await sendPlayerResults(entry, context, result.calendarResult);
+}
+
+async function resetActorFromGMSummary(state, actorId) {
+  if (!isActiveQuickAccessGM()) return;
+  const entry = state.entries.get(actorId);
+  if (!entry) return;
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+    return;
+  }
+  try {
+    await resetActorCalendarMarkerToCurrent(entry.actor, context);
+    updateGMSummaryStatus(state, actorId, {
+      state: "done",
+      days: 0,
+      skippedDays: 0,
+      undoAvailable: false,
+      result: null,
+      detail: qaLocalize("StateProgression.ResetCurrentDone", "Marker reset to the current date ({date}).", {
+        date: formatCalendariaDate(context.date)
+      })
+    });
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not reset Calendaria marker`, error);
+    ui.notifications?.error?.(qaLocalize("StateProgression.ResetCurrentFailed", "Could not reset the marker to the current date."));
+  }
+}
+
+async function rewindActorFromGMSummary(state, actorId) {
+  if (!isActiveQuickAccessGM()) return;
+  const entry = state.entries.get(actorId);
+  if (!entry) return;
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+    return;
+  }
+  const days = await promptRewindDays({ actorName: entry.actor.name ?? "" });
+  if (!days) return;
+  try {
+    const rewound = await rewindActorCalendarMarker(entry.actor, days, context);
+    const pending = calculateActorCalendarStatus(getActorCalendarMarker(entry.actor), context);
+    updateGMSummaryStatus(state, actorId, {
+      state: entry.primaryUser?.active ? "pending" : "offline",
+      days: Math.max(0, Number(pending.days) || 0),
+      skippedDays: 0,
+      undoAvailable: false,
+      result: null,
+      detail: qaLocalize("StateProgression.RewindDone", "Marker rewound by {days} day(s) (to {date}). Days are pending again.", {
+        days: rewound.days,
+        date: formatCalendariaDate(rewound.marker?.date)
+      })
+    });
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not rewind Calendaria marker`, error);
+    ui.notifications?.error?.(qaLocalize("StateProgression.RewindFailed", "Could not rewind Calendaria processed days."));
+  }
+}
+
+async function resetAllFromGMSummary(state) {
+  if (!isActiveQuickAccessGM()) return;
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+    return;
+  }
+  const dateLabel = formatCalendariaDate(context.date);
+  const confirmed = await confirmDangerAction({
+    title: qaLocalize("StateProgression.ResetAllConfirmTitle", "Reset all Calendaria markers?"),
+    heading: qaLocalize("StateProgression.ResetAllConfirmHeading", "Set the current date ({date}) for all player characters?", { date: dateLabel }),
+    message: qaLocalize("StateProgression.ResetAllConfirmMessage", "All assigned player characters will have their processed-day marker set to the current Calendaria date. Character sheet states will not be changed."),
+    warning: qaLocalize("StateProgression.ResetAllConfirmWarning", "Pending past days will be marked caught up, and markers stuck in the future will be fixed."),
+    confirmLabel: qaLocalize("StateProgression.ResetAllCurrent", "Reset all to current date"),
+    cancelLabel: qaLocalize("Common.Cancel", "Cancel"),
+    icon: "fas fa-calendar-check",
+    width: 480
+  });
+  if (!confirmed) return;
+
+  try {
+    const { count } = await resetAllCalendarMarkersToCurrent(context);
+    for (const actorId of state.entries.keys()) {
+      updateGMSummaryStatus(state, actorId, {
+        state: "done",
+        days: 0,
+        skippedDays: 0,
+        undoAvailable: false,
+        result: null,
+        detail: qaLocalize("StateProgression.ResetCurrentDone", "Marker reset to the current date ({date}).", { date: dateLabel })
+      });
+    }
+    ui.notifications?.info?.(qaLocalize("StateProgression.ResetAllDone", "Calendaria markers reset to {date} for {count} characters.", {
+      date: dateLabel,
+      count
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not reset all Calendaria markers`, error);
+    ui.notifications?.error?.(qaLocalize("StateProgression.ResetCurrentFailed", "Could not reset the marker to the current date."));
+  }
+}
+
+async function rewindAllFromGMSummary(state) {
+  if (!isActiveQuickAccessGM()) return;
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+    return;
+  }
+  const days = await promptRewindDays({ actorName: null });
+  if (!days) return;
+
+  try {
+    const { count } = await rewindAllCalendarMarkers(days, context);
+    for (const [actorId, entry] of state.entries.entries()) {
+      const marker = getActorCalendarMarker(entry.actor);
+      const pending = calculateActorCalendarStatus(marker, context);
+      updateGMSummaryStatus(state, actorId, {
+        state: entry.primaryUser?.active ? "pending" : "offline",
+        days: Math.max(0, Number(pending.days) || 0),
+        skippedDays: 0,
+        undoAvailable: false,
+        result: null,
+        detail: qaLocalize("StateProgression.RewindDone", "Marker rewound by {days} day(s) (to {date}). Days are pending again.", {
+          days,
+          date: formatCalendariaDate(marker?.date)
+        })
+      });
+    }
+    ui.notifications?.info?.(qaLocalize("StateProgression.RewindAllDone", "Markers rewound by {days} day(s) for {count} characters.", {
+      days,
+      count
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not rewind all Calendaria markers`, error);
+    ui.notifications?.error?.(qaLocalize("StateProgression.RewindFailed", "Could not rewind Calendaria processed days."));
+  }
+}
+
+function promptRewindDays({ actorName = null, defaultDays = 1 } = {}) {
+  if (!hasFoundryDialogApi()) return Promise.resolve(null);
+  const heading = actorName
+    ? qaLocalize("StateProgression.RewindHeading", "Rewind Calendaria marker for {actor}", { actor: actorName })
+    : qaLocalize("StateProgression.RewindAllHeading", "Rewind Calendaria marker for all player characters");
+  const content = `
+    <form class="fblqa-progression-rewind-form">
+      <p><strong>${escapeHtml(heading)}</strong></p>
+      <label class="fblqa-rest-field">
+        <span>${escapeHtml(qaLocalize("StateProgression.RewindDaysLabel", "Days to rewind"))}</span>
+        <input type="number" name="rewindDays" min="1" max="${MAX_AUTOMATIC_CALENDAR_DAYS}" step="1" value="${Math.max(1, Math.floor(Number(defaultDays) || 1))}">
+      </label>
+      <p class="fblqa-rest-note">${escapeHtml(qaLocalize("StateProgression.RewindWarning", "Rewinding only moves the Calendaria processed-day marker backwards and does NOT reverse already applied injury, condition, or addiction changes. Those days will become pending again."))}</p>
+    </form>`;
+
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const dialog = createFoundryDialog({
+      title: qaLocalize("StateProgression.RewindTitle", "Rewind Calendaria processed days"),
+      content,
+      buttons: {
+        rewind: {
+          icon: '<i class="fas fa-clock-rotate-left"></i>',
+          label: qaLocalize("StateProgression.RewindApply", "Rewind"),
+          callback: (html, _event, button, renderedDialog) => {
+            const form = findDialogForm(button?.form ?? renderedDialog ?? html, "form");
+            const raw = Number(form?.querySelector?.('input[name="rewindDays"]')?.value);
+            const safeDays = Number.isFinite(raw) ? Math.max(1, Math.min(MAX_AUTOMATIC_CALENDAR_DAYS, Math.floor(raw))) : 1;
+            finish(safeDays);
+          }
+        },
+        cancel: {
+          icon: '<i class="fas fa-times"></i>',
+          label: qaLocalize("Common.Cancel", "Cancel"),
+          callback: () => finish(null)
+        }
+      },
+      default: "rewind",
+      close: () => finish(null)
+    }, {
+      classes: ["fblqa-condition-dialog", "fblqa-progression-rewind-dialog"],
+      width: 440
+    });
+    if (!dialog) {
+      finish(null);
+      return;
+    }
+    dialog.render(true);
+  });
+}
+
+export async function openStateProgressionManager() {
+  if (!isActiveQuickAccessGM()) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerGmOnly", "Only the active GM can manage Calendaria processed days."));
+    return null;
+  }
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+    return null;
+  }
+  return prepareGMSummary(context, { reason: "manager", skipBaselineMutation: true });
+}
+
+export async function resetActorCalendarMarkerToCurrent(actor, context = getCalendariaContext()) {
+  if (!actor || !context?.calendarId || !context?.date) {
+    throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
+  }
+  return enqueueStateProgressionOperation(actor, async () => {
+    const previousMarker = getActorCalendarMarker(actor);
+    const nextContext = { calendarId: context.calendarId, date: normalizeCalendariaDate(context.date) };
+    await setActorCalendarMarker(actor, nextContext);
+    return {
+      changed: true,
+      previousMarker,
+      marker: getActorCalendarMarker(actor) ?? nextContext
+    };
+  });
+}
+
+export async function rewindActorCalendarMarker(actor, days = 1, context = getCalendariaContext(), api = context?.api ?? getCalendariaApi()) {
+  if (!actor || !context?.calendarId || !context?.date || !api?.addDays) {
+    throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
+  }
+  const safeDays = Math.floor(Number(days));
+  if (!Number.isInteger(safeDays) || safeDays < 1 || safeDays > MAX_AUTOMATIC_CALENDAR_DAYS) {
+    throw new RangeError(`Rewind days must be an integer between 1 and ${MAX_AUTOMATIC_CALENDAR_DAYS}`);
+  }
+
+  return enqueueStateProgressionOperation(actor, async () => {
+    const previousMarker = getActorCalendarMarker(actor);
+    const status = calculateActorCalendarStatus(previousMarker, context, api);
+    // If the marker is missing, from another calendar, or stuck in the future,
+    // rewind from the current Calendaria date rather than from the broken date.
+    const baseDate = previousMarker?.date
+      && previousMarker.calendarId === context.calendarId
+      && status.status !== "ahead"
+      && status.status !== "unavailable"
+      ? previousMarker.date
+      : context.date;
+    const rewoundDate = normalizeCalendariaDate(api.addDays(baseDate, -safeDays));
+    if (!rewoundDate) {
+      throw progressionError("invalid-rewind-date", "Could not compute rewound Calendaria date");
+    }
+    const target = { calendarId: context.calendarId, date: rewoundDate };
+    await setActorCalendarMarker(actor, target);
+    return {
+      changed: true,
+      days: safeDays,
+      previousMarker,
+      marker: getActorCalendarMarker(actor) ?? target
+    };
+  });
+}
+
+export async function resetAllCalendarMarkersToCurrent(context = getCalendariaContext()) {
+  if (!context?.calendarId || !context?.date) {
+    throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
+  }
+  const entries = getAssignedPlayerActors();
+  let count = 0;
+  for (const { actor } of entries) {
+    await resetActorCalendarMarkerToCurrent(actor, context);
+    count += 1;
+  }
+  return { count, date: context.date };
+}
+
+export async function rewindAllCalendarMarkers(days = 1, context = getCalendariaContext(), api = context?.api ?? getCalendariaApi()) {
+  if (!context?.calendarId || !context?.date || !api?.addDays) {
+    throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
+  }
+  const entries = getAssignedPlayerActors();
+  let count = 0;
+  for (const { actor } of entries) {
+    await rewindActorCalendarMarker(actor, days, context, api);
+    count += 1;
+  }
+  return { count, days: Math.floor(Number(days)) };
 }
 
 async function baselinePlayerActors(context, { force = false } = {}) {
   if (!isActiveQuickAccessGM()) return 0;
   let count = 0;
   for (const { actor } of getAssignedPlayerActors()) {
-    const marker = getActorCalendarMarker(actor);
-    if (!force && marker?.calendarId === context.calendarId && marker?.date) continue;
-    await setActorCalendarMarker(actor, context);
-    count += 1;
+    const updated = await enqueueStateProgressionOperation(actor, async () => {
+      const marker = getActorCalendarMarker(actor);
+      if (!force && marker?.calendarId === context.calendarId && marker?.date) return false;
+      await setActorCalendarMarker(actor, context);
+      return true;
+    });
+    if (updated) count += 1;
   }
   return count;
 }
@@ -1180,12 +1640,7 @@ export async function setActorCalendarMarker(actor, context, metadata = {}, docu
     if (previousDate) marker.previousDate = previousDate;
   }
 
-  if (Object.keys(documentOptions ?? {}).length && typeof actor.update === "function") {
-    await actor.update({ [`flags.${MODULE_ID}.${FLAG_STATE_PROGRESSION_CALENDAR}`]: marker }, documentOptions);
-  } else {
-    await actor.setFlag(MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR, marker);
-  }
-  return true;
+  return setDocumentFlagVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR, marker, documentOptions);
 }
 
 export async function markActorCalendariaAbsent(actor, context, api = context?.api ?? getCalendariaApi()) {
@@ -1227,6 +1682,44 @@ function isAbsentMarkerForContext(marker, context) {
     && marker?.calendarId === context?.calendarId
     && sameCalendariaDay(marker?.date, context?.date)
   );
+}
+
+function summaryStatusForAheadMarker(marker, days) {
+  return {
+    state: "ahead",
+    days: 0,
+    skippedDays: 0,
+    undoAvailable: false,
+    detail: aheadDetail(marker, days)
+  };
+}
+
+function aheadDetail(marker, days) {
+  return qaLocalize(
+    "StateProgression.AheadDetail",
+    "Marker ({marker}) is {days} days ahead of the current date. Reset it to the current date so daily progression can resume.",
+    {
+      marker: formatCalendariaDate(marker?.date),
+      days: Math.abs(Math.floor(Number(days) || 0))
+    }
+  );
+}
+
+function warnIfAnyMarkersAhead(context) {
+  if (!isActiveQuickAccessGM() || !context?.calendarId || !context?.date) return 0;
+  const aheadActors = getAssignedPlayerActors().filter(({ actor }) =>
+    calculateActorCalendarStatus(getActorCalendarMarker(actor), context).status === "ahead"
+  );
+  if (!aheadActors.length) return 0;
+  const warningKey = `${summaryKey(context)}:${aheadActors.length}`;
+  if (lastAheadWarningKey === warningKey) return aheadActors.length;
+  lastAheadWarningKey = warningKey;
+  ui.notifications?.warn?.(qaLocalize(
+    "StateProgression.AheadDetectedWarning",
+    "{count} player characters have a Calendaria marker ahead of the current date. Open “Manage Calendaria days” in module settings to reset them.",
+    { count: aheadActors.length }
+  ));
+  return aheadActors.length;
 }
 
 function summaryStatusForCurrentMarker(marker, context) {
@@ -1280,6 +1773,14 @@ function registerResultSocket() {
   });
   resultSocketRegistered = true;
   return true;
+}
+
+async function sendPlayerResults(entry, context, result) {
+  const activeUsers = (entry?.users ?? []).filter((user) => user?.active);
+  if (!activeUsers.length && entry?.primaryUser?.active) activeUsers.push(entry.primaryUser);
+  for (const user of activeUsers) {
+    await sendPlayerResult(user, entry.actor, context, result);
+  }
 }
 
 async function sendPlayerResult(user, actor, context, result) {
@@ -1492,7 +1993,8 @@ function progressionStatusLabel(state) {
     error: "Completed with errors",
     baseline: "Baseline set",
     blocked: "Needs manual resolution",
-    absent: "Absent"
+    absent: "Absent",
+    ahead: "Marker ahead"
   }[state] ?? state);
 }
 
