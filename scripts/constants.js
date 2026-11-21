@@ -9,6 +9,10 @@ export const FLAG_REPUTATION_ENTRIES = "reputationEntries";
 export const FLAG_BIOGRAPHY_PROFILE = "biographyProfile";
 export const FLAG_PILGRIM_CARD_PROFILE = "pilgrimCardProfile";
 export const FLAG_STATE_PROGRESSION_CALENDAR = "stateProgressionCalendaria";
+export const FLAG_STATE_PROGRESSION_FAILURES = "stateProgressionFailures";
+export const FLAG_WILLPOWER_TALENTS = "willpowerTalents";
+export const FLAG_EQUIPMENT_HANDS = "equipmentHands";
+export const FLAG_EQUIPMENT_RECEIPTS = "equipmentReceipts";
 export const SYSTEM_ID = "forbidden-lands";
 
 export const SETTINGS = Object.freeze({
