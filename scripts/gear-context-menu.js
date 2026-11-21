@@ -1,12 +1,11 @@
 import { MODULE_ID } from "./constants.js";
-import { collectItemRows, resolveItemFromRow } from "./dom-items.js";
+import { ITEM_ROW_SELECTOR, collectItemRows, resolveItemFromRow } from "./dom-items.js";
 import { qaLocalize } from "./i18n.js";
 import { findPrimaryGearContainer } from "./sheet-adapter/forbidden-lands-v1.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { confirmDangerAction } from "./dialogs.js";
 
 const MENU_CLASS = "fblqa-gear-context-menu";
-const MENU_ITEM_SELECTOR = ".fblqa-gear-card, [data-item-id], [data-itemid], [data-id], .item";
 const CHAT_ACTION_SELECTORS = Object.freeze([
   ".item-chat",
   ".item-message",
@@ -63,7 +62,7 @@ function markContextMenuRows(actor, gears) {
 function findContextMenuRow(target, gears) {
   if (!(target instanceof Element)) return null;
 
-  const row = target.closest(MENU_ITEM_SELECTOR);
+  const row = target.closest(ITEM_ROW_SELECTOR);
   if (!(row instanceof HTMLElement)) return null;
   if (!gears.contains(row)) return null;
   if (row.closest(".fblqa-panel")) return null;
@@ -71,6 +70,14 @@ function findContextMenuRow(target, gears) {
   if (row.classList.contains("fblqa-gear-card-grid") || row.classList.contains("fblqa-gear-card-grid-wrap")) return null;
 
   return row;
+}
+
+function isProstheticsExtensionRow(row) {
+  return Boolean(
+    row?.dataset?.fblecpExtension === "1"
+    || row?.classList?.contains("fblqa-gear-card-extension")
+    || row?.closest?.(".fblecp-extensions-category")
+  );
 }
 
 function openGearContextMenu({ app, actor, item, row, gears, x, y }) {
@@ -81,11 +88,14 @@ function openGearContextMenu({ app, actor, item, row, gears, x, y }) {
   menu.setAttribute("role", "menu");
   menu.dataset.itemId = item.id ?? "";
 
+  const isExtension = isProstheticsExtensionRow(row);
+  const canModify = canModifyActor(actor);
+
   menu.append(
     buildMenuButton({
       icon: "fa-edit",
       label: qaLocalize("GearMenu.Edit", "Редактировать"),
-      action: () => editGearItem(item, row)
+      action: () => editGearItem(actor, item, row)
     }),
     buildMenuButton({
       icon: "fa-comment",
@@ -95,20 +105,20 @@ function openGearContextMenu({ app, actor, item, row, gears, x, y }) {
     buildMenuButton({
       icon: "fa-copy",
       label: qaLocalize("GearMenu.Duplicate", "Дублировать"),
-      disabled: !canModifyActor(actor),
+      disabled: !canModify || isExtension,
       action: () => duplicateGearItem(app, actor, item)
     }),
     buildMenuButton({
       icon: "fa-trash",
       label: qaLocalize("GearMenu.Delete", "Удалить"),
       danger: true,
-      disabled: !canModifyActor(actor),
+      disabled: !canModify || isExtension,
       action: () => deleteGearItem(app, actor, item, row)
     }),
     buildMenuButton({
       icon: "fa-exchange-alt",
       label: qaLocalize("GearMenu.Transfer", "Передать"),
-      disabled: !canModifyActor(actor),
+      disabled: !canModify || isExtension,
       action: () => transferGearItem(actor, item)
     })
   );
@@ -162,7 +172,11 @@ function buildMenuButton({ icon, label, action, danger = false, disabled = false
     event.stopPropagation();
     closeGearContextMenu();
     if (disabled) return;
-    await action();
+    try {
+      await action();
+    } catch (error) {
+      console.error(`${MODULE_ID} | gear context menu action failed`, error);
+    }
   });
 
   return button;
@@ -199,13 +213,15 @@ function findNativeChatControl(row) {
 }
 
 function postGearItemToChat(actor, item, row, gears) {
+  const liveItem = actor?.items?.get?.(item?.id) ?? item;
+  if (!liveItem) return;
   let control = findNativeChatControl(row);
 
   if (!control && gears) {
     const sourceRow = collectItemRows(gears, {
       includeCards: false,
       allowHiddenExternalRows: true
-    }).find((candidate) => resolveItemFromRow(actor, candidate, { allowNameFallback: false })?.id === item.id);
+    }).find((candidate) => resolveItemFromRow(actor, candidate, { allowNameFallback: false })?.id === liveItem.id);
     if (sourceRow) control = findNativeChatControl(sourceRow);
   }
 
@@ -217,7 +233,9 @@ function postGearItemToChat(actor, item, row, gears) {
   ui.notifications?.warn?.(qaLocalize("GearMenu.PostToChatUnavailable", "Не удалось найти системную кнопку публикации предмета в чат."));
 }
 
-function editGearItem(item, row) {
+function editGearItem(actor, item, row) {
+  const liveItem = actor?.items?.get?.(item?.id);
+  if (!liveItem) return;
   const editControl = findNativeActionControl(row, [
     ".item-edit",
     "[data-action='edit']",
@@ -232,7 +250,7 @@ function editGearItem(item, row) {
     return;
   }
 
-  item.sheet?.render(true);
+  liveItem.sheet?.render(true);
 }
 
 async function duplicateGearItem(app, actor, item) {
@@ -241,10 +259,13 @@ async function duplicateGearItem(app, actor, item) {
     return;
   }
 
+  const liveItem = actor.items?.get?.(item?.id);
+  if (!liveItem) return;
+
   try {
-    const source = item.toObject();
+    const source = liveItem.toObject();
     delete source._id;
-    source.name = qaLocalize("GearMenu.DuplicateName", "{name} (копия)", { name: item.name });
+    source.name = qaLocalize("GearMenu.DuplicateName", "{name} (копия)", { name: liveItem.name });
     await actor.createEmbeddedDocuments("Item", [source]);
   } catch (error) {
     console.error(`${MODULE_ID} | could not duplicate item`, error);
@@ -258,33 +279,14 @@ async function deleteGearItem(app, actor, item, row) {
     return;
   }
 
-  const confirmed = await confirmDeleteGearItem(item);
+  const initialItem = actor.items?.get?.(item?.id);
+  if (!initialItem || isProstheticsExtensionRow(row)) return;
+
+  const confirmed = await confirmDeleteGearItem(initialItem);
   if (!confirmed) return;
 
-  const liveItem = actor.items?.get?.(item.id);
+  const liveItem = actor.items?.get?.(initialItem.id);
   if (!liveItem) return;
-
-  const appRoot = extractElement(app?.element);
-  const liveRow = resolveLiveItemRow(
-    actor,
-    liveItem,
-    row,
-    collectItemRows(appRoot ?? document)
-  );
-
-  const deleteControl = findNativeActionControl(liveRow, [
-    ".item-delete",
-    "[data-action='delete']",
-    "[data-action='itemDelete']",
-    "a[title*='Delete']",
-    "button[title*='Delete']",
-    "a[title*='Удал']",
-    "button[title*='Удал']"
-  ]);
-  if (deleteControl) {
-    deleteControl.click();
-    return;
-  }
 
   try {
     await liveItem.delete();
@@ -334,6 +336,9 @@ async function transferGearItem(actor, item) {
     return;
   }
 
+  const liveItem = actor.items?.get?.(item?.id);
+  if (!liveItem) return;
+
   const api = getItemPilesApi();
   if (!api) {
     ui.notifications?.warn(qaLocalize("GearMenu.ItemPilesMissing", "Модуль Item Piles не активен."));
@@ -342,7 +347,7 @@ async function transferGearItem(actor, item) {
 
   if (typeof api.giveItem === "function") {
     try {
-      await api.giveItem(item);
+      await api.giveItem(liveItem);
     } catch (error) {
       console.error(`${MODULE_ID} | Item Piles giveItem failed`, error);
       ui.notifications?.error(qaLocalize("GearMenu.TransferFailed", "Не удалось передать предмет через Item Piles."));
@@ -372,11 +377,4 @@ function getItemPilesApi() {
     ?? game.itempiles?.api
     ?? itemPilesModule?.api
     ?? null;
-}
-
-function extractElement(value) {
-  if (value instanceof HTMLElement) return value;
-  if (value?.[0] instanceof HTMLElement) return value[0];
-  if (value?.element instanceof HTMLElement) return value.element;
-  return null;
 }

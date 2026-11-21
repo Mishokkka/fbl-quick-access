@@ -1,5 +1,6 @@
 import { FLAG_GEAR_ORDER, FLAG_SLOTS, MODULE_ID } from "./constants.js";
 import { getActiveGM } from "./integration/socket-api.js";
+import { canModifyActor } from "./permissions.js";
 
 export function pruneQuickAccessReferences(slots, existingIds) {
   const ids = existingIds instanceof Set ? existingIds : new Set(existingIds || []);
@@ -18,6 +19,11 @@ export function pruneGearOrderReferences(order, existingIds) {
 
 export async function pruneActorReferences(actor) {
   if (!actor?.items || typeof actor.getFlag !== "function") {
+    return { changed: false, slotsChanged: false, orderChanged: false };
+  }
+  const deniedExplicitly = actor.isOwner === false && !globalThis.game?.user?.isGM;
+  const deniedByUser = Boolean(globalThis.game?.user) && !canModifyActor(actor) && !globalThis.game.user.isGM;
+  if (deniedExplicitly || deniedByUser) {
     return { changed: false, slotsChanged: false, orderChanged: false };
   }
 
@@ -44,8 +50,10 @@ export async function pruneActorReferences(actor) {
 }
 
 async function persistPrunedActorReferences(actor, slots, order, nextSlots, nextOrder) {
-  const slotsChanged = JSON.stringify(Array.isArray(slots) ? slots : []) !== JSON.stringify(nextSlots);
-  const orderChanged = JSON.stringify(Array.isArray(order) ? order : []) !== JSON.stringify(nextOrder);
+  const slotsMalformed = slots !== undefined && slots !== null && !Array.isArray(slots);
+  const orderMalformed = order !== undefined && order !== null && !Array.isArray(order);
+  const slotsChanged = slotsMalformed || JSON.stringify(Array.isArray(slots) ? slots : []) !== JSON.stringify(nextSlots);
+  const orderChanged = orderMalformed || JSON.stringify(Array.isArray(order) ? order : []) !== JSON.stringify(nextOrder);
 
   if (slotsChanged || orderChanged) {
     if (typeof actor.update === "function") {
@@ -77,8 +85,12 @@ export async function pruneWorldActorReferences() {
   for (const actor of game.actors ?? []) {
     if (actor?.type !== "character") continue;
     actorsChecked += 1;
-    const result = await pruneActorReferences(actor);
-    if (result.changed) actorsChanged += 1;
+    try {
+      const result = await pruneActorReferences(actor);
+      if (result.changed) actorsChanged += 1;
+    } catch (error) {
+      console.error(`${MODULE_ID} | failed pruning references for actor ${actor.id}`, error);
+    }
   }
   return { actorsChecked, actorsChanged };
 }
@@ -87,5 +99,9 @@ export async function handleDeletedActorItem(item, options, userId) {
   if (userId && game.user?.id !== userId) return;
   const actor = item?.parent;
   if (actor?.documentName !== "Actor" || actor.type !== "character") return;
-  await pruneActorReferences(actor);
+  try {
+    await pruneActorReferences(actor);
+  } catch (error) {
+    console.error(`${MODULE_ID} | failed pruning references after item deletion`, error);
+  }
 }

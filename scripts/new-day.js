@@ -5,7 +5,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { FLAGS as CONDITION_FLAGS } from "./conditions/constants.js";
-import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
+import { isPermanentTime } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
 import {
   getAddictionState,
@@ -20,6 +20,14 @@ import {
   getNewDayProviderIcon,
   getNewDayProviders
 } from "./integration/new-day-providers.js";
+import { createObjectOperationQueue } from "./operation-queue.js";
+import {
+  clearDocumentFlagNullVerified,
+  createCodedError,
+  setDocumentFlagVerified
+} from "./document-writes.js";
+
+const enqueueNewDayOperation = createObjectOperationQueue();
 
 const CORE_CATEGORIES = Object.freeze([
   { id: "injuries", order: 100 },
@@ -68,6 +76,14 @@ function normalizeDayUnit(text, value) {
     normalized = normalized.replace(/(?:день|дня|дней)(?=\s|$)/iu, unit);
   }
 
+  if (/(?:^|\s)(?:сутки|суток)(?=\s|$)/iu.test(normalized)) {
+    const absolute = Math.abs(Number(value) || 0);
+    const mod100 = absolute % 100;
+    const mod10 = absolute % 10;
+    const unit = mod10 === 1 && mod100 !== 11 ? "сутки" : "суток";
+    normalized = normalized.replace(/(?:сутки|суток)(?=\s|$)/iu, unit);
+  }
+
   return normalized;
 }
 
@@ -76,7 +92,7 @@ export function isDailyLethalLimit(value) {
   if (!text || !/\d/.test(text)) return false;
   if (/\b\d*d\d+\b|\bd\d+\b/i.test(text)) return false;
   if (/hour|minute|turn|round|quarter|час|минут|ход|раунд|четверт/i.test(text)) return false;
-  return /^\d+$/.test(text) || /day|days|день|дня|дней|сутк/i.test(text);
+  return /^\d+$/.test(text) || /day|days|день|дня|дней|сутк|суток/i.test(text);
 }
 
 export function buildNewDayPlan(actor, options = {}) {
@@ -144,7 +160,7 @@ export function buildNewDayPlan(actor, options = {}) {
       continue;
     }
 
-    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.afterNumber === 0);
+    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.beforeNumber > 0 && healing.afterNumber === 0);
     if (injuryExpires) {
       actions.push({
         id: `injury:${item.id}:expire`,
@@ -191,10 +207,9 @@ export function buildNewDayPlan(actor, options = {}) {
   for (const condition of customConditions) {
     if (isArcName(condition?.name)) continue;
     const timer = decrementFirstInteger(condition?.time, 1);
-    if (!timer || isPermanentTime(condition?.time)) continue;
+    if (!timer || isPermanentTime(condition?.time) || timer.beforeNumber <= 0) continue;
 
     const expires = timer.afterNumber === 0;
-    if (!expires && timer.beforeNumber <= 0) continue;
 
     actions.push({
       id: `custom:${condition.id}:${expires ? "expire" : "timer"}`,
@@ -256,7 +271,7 @@ function assertActionCurrent(actor, plan, action) {
 export async function buildNewDayPlanWithProviders(actor, options = {}) {
   const plan = buildNewDayPlan(actor, options);
   if (plan.blockedByAddiction) return plan;
-  const providerResult = await buildNewDayProviderActions(actor);
+  const providerResult = await buildNewDayProviderActions(actor, options);
   plan.actions.push(...providerResult.actions);
   plan.providerErrors = providerResult.errors;
   plan.categories = buildPlanCategories(plan.actions);
@@ -265,6 +280,11 @@ export async function buildNewDayPlanWithProviders(actor, options = {}) {
 }
 
 export async function applyNewDayPlan(actor, plan, selectedActionIds, options = {}) {
+  if (!actor) return { changed: false, selected: 0, succeeded: [], failed: [], pending: [] };
+  return enqueueNewDayOperation(actor, () => applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options));
+}
+
+async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options = {}) {
   const selected = new Set(selectedActionIds ?? []);
   const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
@@ -293,7 +313,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
         if (timer.afterNumber === 0) return [];
         return [{ ...condition, time: timer.afterText }];
       });
-      await setActorFlagWithOptions(actor, CONDITION_FLAGS.LIST, nextConditions, documentOptions);
+      await setDocumentFlagVerified(actor, MODULE_ID, CONDITION_FLAGS.LIST, nextConditions, documentOptions);
       for (const action of customActions) results.push(successResult(action));
     } catch (error) {
       console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
@@ -315,8 +335,8 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       try { assertActionCurrent(actor, plan, action); return true; }
       catch (error) { results.push(failureResult(action, error)); return false; }
     });
-    if (kind === "update") await applyItemUpdateBatch(actor, current, results, documentOptions);
-    else if (kind === "delete") await applyItemDeleteBatch(actor, current, results, documentOptions);
+    if (kind === "update") await applyItemUpdateBatch(actor, plan, current, results, documentOptions);
+    else if (kind === "delete") await applyItemDeleteBatch(actor, plan, current, results, documentOptions);
   };
 
   for (const action of actions) {
@@ -341,7 +361,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       }
 
       if (action.kind === "short-rest-reset") {
-        await clearActorFlagWithOptions(actor, FLAG_SHORT_REST_RECOVERY, documentOptions);
+        await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_SHORT_REST_RECOVERY, documentOptions);
         results.push(successResult(action));
         continue;
       }
@@ -412,7 +432,24 @@ function getSimpleItemUpdate(action) {
   return null;
 }
 
-async function applyItemUpdateBatch(actor, actions, results, documentOptions) {
+function isSimpleItemUpdatePersisted(item, action) {
+  if (!item) return false;
+  if (action.kind === "injury-healing" || action.kind === "wash-timer") {
+    return String(item.system?.healingTime ?? "") === String(action.afterText ?? "");
+  }
+  if (action.kind === "lethal-limit") {
+    return String(item.system?.limit ?? "") === String(action.afterText ?? "");
+  }
+  return false;
+}
+
+function isItemDeletedOnActor(actor, itemId, itemRef = null) {
+  const live = getActorItem(actor, itemId);
+  if (!live) return true;
+  return Boolean(live.deleted === true || itemRef?.deleted === true);
+}
+
+async function applyItemUpdateBatch(actor, plan, actions, results, documentOptions) {
   const valid = [];
   for (const action of actions) {
     const item = getActorItem(actor, action.itemId);
@@ -438,30 +475,46 @@ async function applyItemUpdateBatch(actor, actions, results, documentOptions) {
 
     try {
       await actor.updateEmbeddedDocuments("Item", [...updatesById.values()], documentOptions);
-      for (const { action } of valid) results.push(successResult(action));
-      return;
+      const unpersisted = valid.filter(({ action }) => !isSimpleItemUpdatePersisted(getActorItem(actor, action.itemId), action));
+      if (!unpersisted.length) {
+        for (const { action } of valid) results.push(successResult(action));
+        return;
+      }
+      throw createCodedError("write-not-persisted", `New Day bulk item update did not persist ${unpersisted.length} change(s).`);
     } catch (error) {
       // A bulk write can fail because one embedded Item is stale or rejected by
       // another module. Fall back to the original per-action path so one bad
-      // update does not change the previous partial-success semantics. The
-      // updates below are absolute values, so retrying an Item that the bulk
-      // request happened to apply before failing is idempotent.
+      // update does not change the previous partial-success semantics.
       console.error(`${MODULE_ID} | new-day item update batch failed; retrying individually`, error);
     }
 
-    await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
+    await applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions, { acceptPersisted: true });
     return;
   }
 
   // Compatibility fallback for test doubles and wrappers without the bulk API.
-  await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
+  await applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions);
 }
 
-async function applyItemUpdatesIndividually(actor, valid, results, documentOptions) {
-  for (const { action, item: originalItem } of valid) {
-    const item = getActorItem(actor, action.itemId) ?? originalItem;
+async function applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions, { acceptPersisted = false } = {}) {
+  for (const { action } of valid) {
+    const item = getActorItem(actor, action.itemId);
+    if (!item) {
+      const error = new Error(`Missing item ${action.itemId}`);
+      console.error(`${MODULE_ID} | new-day action failed`, action, error);
+      results.push(failureResult(action, error));
+      continue;
+    }
+    if (acceptPersisted && isSimpleItemUpdatePersisted(item, action)) {
+      results.push(successResult(action));
+      continue;
+    }
     try {
+      assertActionCurrent(actor, plan, action);
       await item.update(getSimpleItemUpdate(action), documentOptions);
+      if (!isSimpleItemUpdatePersisted(getActorItem(actor, action.itemId), action)) {
+        throw createCodedError("write-not-persisted", `New Day update for item ${action.itemId} was not persisted.`);
+      }
       results.push(successResult(action));
     } catch (error) {
       console.error(`${MODULE_ID} | new-day action failed`, action, error);
@@ -470,7 +523,7 @@ async function applyItemUpdatesIndividually(actor, valid, results, documentOptio
   }
 }
 
-async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
+async function applyItemDeleteBatch(actor, plan, actions, results, documentOptions) {
   const valid = [];
   for (const action of actions) {
     const item = getActorItem(actor, action.itemId);
@@ -487,8 +540,12 @@ async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
   if (typeof actor.deleteEmbeddedDocuments === "function") {
     try {
       await actor.deleteEmbeddedDocuments("Item", valid.map(({ action }) => action.itemId), documentOptions);
-      for (const { action } of valid) results.push(successResult(action));
-      return;
+      const remaining = valid.filter(({ action, item }) => !isItemDeletedOnActor(actor, action.itemId, item));
+      if (!remaining.length) {
+        for (const { action } of valid) results.push(successResult(action));
+        return;
+      }
+      throw createCodedError("write-not-persisted", `New Day bulk item delete did not remove ${remaining.length} item(s).`);
     } catch (error) {
       // Preserve the old per-Item failure isolation if a bulk delete is rejected.
       // Re-check the Actor first because a partially-applied bulk request may
@@ -496,56 +553,39 @@ async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
       console.error(`${MODULE_ID} | new-day item delete batch failed; retrying individually`, error);
     }
 
-    await applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess: true });
+    await applyItemDeletesIndividually(actor, plan, valid, results, documentOptions, { missingMeansSuccess: true });
     return;
   }
 
-  await applyItemDeletesIndividually(actor, valid, results, documentOptions);
+  await applyItemDeletesIndividually(actor, plan, valid, results, documentOptions);
 }
 
-async function applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess = false } = {}) {
+async function applyItemDeletesIndividually(actor, plan, valid, results, documentOptions, { missingMeansSuccess = false } = {}) {
   for (const { action, item: originalItem } of valid) {
     const liveItem = getActorItem(actor, action.itemId);
-    if (!liveItem && missingMeansSuccess) {
-      results.push(successResult(action));
+    if (!liveItem || liveItem.deleted === true) {
+      if (missingMeansSuccess || originalItem?.deleted === true) {
+        results.push(successResult(action));
+      } else {
+        const error = new Error(`Missing item ${action.itemId}`);
+        console.error(`${MODULE_ID} | new-day action failed`, action, error);
+        results.push(failureResult(action, error));
+      }
       continue;
     }
 
-    const item = liveItem ?? originalItem;
     try {
-      await item.delete(documentOptions);
+      assertActionCurrent(actor, plan, action);
+      await liveItem.delete(documentOptions);
+      if (!isItemDeletedOnActor(actor, action.itemId, liveItem)) {
+        throw createCodedError("write-not-persisted", `New Day deletion for item ${action.itemId} was not persisted.`);
+      }
       results.push(successResult(action));
     } catch (error) {
       console.error(`${MODULE_ID} | new-day action failed`, action, error);
       results.push(failureResult(action, error));
     }
   }
-}
-
-async function setActorFlagWithOptions(actor, key, value, documentOptions) {
-  if (hasDocumentOptions(documentOptions) && typeof actor.update === "function") {
-    return actor.update({ [`flags.${MODULE_ID}.${key}`]: value }, documentOptions);
-  }
-  return actor.setFlag(MODULE_ID, key, value);
-}
-
-async function clearActorFlagWithOptions(actor, key, documentOptions) {
-  // Forbidden Lands v13 can reject a Foundry deletion-path update such as
-  // `flags.<scope>.-=<key>` during Actor._preUpdate. Short Rest only treats an
-  // object value as an active recovery marker, so a null value is semantically
-  // equivalent to an absent flag and avoids that system-level failure.
-  const current = actor?.getFlag?.(MODULE_ID, key) ?? actor?.flags?.[MODULE_ID]?.[key] ?? null;
-  if (current == null) return false;
-
-  const update = { [`flags.${MODULE_ID}.${key}`]: null };
-  if (typeof actor?.update === "function") {
-    return actor.update(update, hasDocumentOptions(documentOptions) ? documentOptions : {});
-  }
-  return actor?.setFlag?.(MODULE_ID, key, null);
-}
-
-function hasDocumentOptions(options) {
-  return Boolean(options && Object.keys(options).length);
 }
 
 export function serializeNewDayResult(result) {
@@ -622,20 +662,34 @@ export async function openNewDayDialog(app, actor, options = {}) {
 
   return new Promise((resolve) => {
     let resolved = false;
+    let applying = false;
+    let dialog = null;
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
       resolve(value);
     };
+    const closeDialog = async (renderedDialog = null) => {
+      const target = renderedDialog ?? dialog;
+      try {
+        await target?.close?.();
+      } catch (error) {
+        console.warn(`${MODULE_ID} | could not close new-day dialog cleanly`, error);
+      }
+    };
 
-    createFoundryDialog({
+    dialog = createFoundryDialog({
       title: qaLocalize("NewDay.Title", "Новый день: {actor}", { actor: actor?.name ?? "" }),
       content,
+      closeOnSubmit: false,
       buttons: {
         apply: {
           icon: '<i class="fas fa-sun"></i>',
           label: qaLocalize("NewDay.Apply", "Провести новый день"),
           callback: async (html, _event, _button, renderedDialog) => {
+            if (applying) return false;
+            applying = true;
+
             // DialogV2 exposes the submitted native form most reliably through
             // the rendered button. Reading only from the dialog can produce an
             // empty selection in Foundry v13, making every checked daily action
@@ -649,14 +703,27 @@ export async function openNewDayDialog(app, actor, options = {}) {
             if (!form) {
               console.error(`${MODULE_ID} | new-day form was not available in the rendered dialog`);
               ui.notifications?.error?.(qaLocalize("NewDay.FormUnavailable", "Не удалось прочитать выбранные изменения нового дня."));
+              applying = false;
               return false;
             }
             const selectedIds = [...(form?.querySelectorAll('input[name="newDayAction"]:checked') ?? [])]
               .map((input) => input.value);
+            const selectedPreconditions = Object.fromEntries(
+              selectedIds
+                .filter((id) => plan?.preconditions && Object.hasOwn(plan.preconditions, id))
+                .map((id) => [id, plan.preconditions[id]])
+            );
             let result;
             try {
               result = typeof options.applyHandler === "function"
-                ? await options.applyHandler({ actor, plan, selectedIds, source: options.source ?? "manual", targetDate: options.targetDate ?? null })
+                ? await options.applyHandler({
+                    actor,
+                    plan,
+                    selectedIds,
+                    selectedPreconditions,
+                    source: options.source ?? "manual",
+                    targetDate: options.targetDate ?? null
+                  })
                 : await applyNewDayPlan(actor, plan, selectedIds, {
                     postChat: options.postChat !== false,
                     suppressNotifications: Boolean(options.suppressNotifications),
@@ -664,11 +731,16 @@ export async function openNewDayDialog(app, actor, options = {}) {
                   });
             } catch (error) {
               console.error(`${MODULE_ID} | new-day delegated apply failed`, error);
-              const stale = ["stale-calendar-day", "multi-day-pending"].includes(String(error?.code ?? ""));
-              const message = stale
-                ? qaLocalize("NewDay.DelegatedStale", "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.")
-                : qaLocalize("NewDay.DelegatedFailed", "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.");
-              (stale ? ui.notifications?.warn : ui.notifications?.error)?.call?.(ui.notifications, message);
+              const code = String(error?.code ?? "");
+              const staleCalendar = ["stale-calendar-day", "multi-day-pending"].includes(code);
+              const stalePlan = code === "stale-plan";
+              const message = stalePlan
+                ? qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр.")
+                : staleCalendar
+                  ? qaLocalize("NewDay.DelegatedStale", "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.")
+                  : qaLocalize("NewDay.DelegatedFailed", "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.");
+              ((staleCalendar || stalePlan) ? ui.notifications?.warn : ui.notifications?.error)?.call?.(ui.notifications, message);
+              applying = false;
               return false;
             }
 
@@ -699,12 +771,18 @@ export async function openNewDayDialog(app, actor, options = {}) {
             // manual operations, where no Actor/Item mutation is guaranteed.
             if (app && !calendarMode && !selectedCoreAction) rerenderSheet(app);
             finish(result);
+            await closeDialog(renderedDialog);
+            return false;
           }
         },
         cancel: {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Отмена"),
-          callback: () => finish(null)
+          callback: async (_html, _event, _button, renderedDialog) => {
+            finish(null);
+            await closeDialog(renderedDialog);
+            return false;
+          }
         }
       },
       default: "apply",
@@ -718,7 +796,9 @@ export async function openNewDayDialog(app, actor, options = {}) {
       classes: ["fblqa-rest-dialog", "fblqa-new-day-dialog"],
       width: 640,
       resizable: true
-    }).render(true);
+    });
+
+    dialog.render(true);
   });
 }
 
@@ -894,7 +974,8 @@ function coreCategoryLabel(category) {
 function setupNewDayDialogInteractivity(dialogOrElement) {
   const form = findDialogForm(dialogOrElement, "form.fblqa-new-day-form")
     ?? findDialogForm(dialogOrElement, "form");
-  if (!form) return;
+  if (!form || form.dataset.fblqaNewDayBound === "true") return;
+  form.dataset.fblqaNewDayBound = "true";
 
   form.querySelector('[data-action="select-all"]')?.addEventListener("click", () => {
     for (const input of form.querySelectorAll('input[name="newDayAction"]')) input.checked = true;
@@ -906,6 +987,7 @@ function setupNewDayDialogInteractivity(dialogOrElement) {
 
 async function postNewDaySummary(actor, succeeded, failed) {
   if (!succeeded.length && !failed.length) return null;
+  if (typeof globalThis.ChatMessage?.create !== "function") return null;
 
   const successList = succeeded.length
     ? `<ul>${succeeded.map((entry) => `<li>${escapeHtml(entry.action.itemName)}: ${escapeHtml(entry.summary || actionDetail(entry.action))}</li>`).join("")}</ul>`
@@ -922,7 +1004,7 @@ async function postNewDaySummary(actor, succeeded, failed) {
       ${failedList ? `<p><strong>${escapeHtml(qaLocalize("NewDay.ChatFailed", "Не выполнено"))}:</strong></p>${failedList}` : ""}
     </div>`;
 
-  return createChatMessage({
+  return globalThis.ChatMessage.create({
     speaker: globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined,
     content
   });

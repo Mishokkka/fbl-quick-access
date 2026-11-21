@@ -4,7 +4,7 @@ import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import {
   clearSocketProof,
   consumeSocketProof,
@@ -13,6 +13,7 @@ import {
   verifySocketProofWithRetry
 } from "./socket-auth.js";
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
+import { getActiveGM } from "./integration/socket-api.js";
 import { enqueueCurrencyOperation } from "./operation-queue.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
@@ -78,31 +79,39 @@ export async function openMoneyTransferDialog(app, sourceActor) {
         send: {
           icon: '<i class="fas fa-paper-plane"></i>',
           label: qaLocalize("Wallet.Transfer.Send", "Передать"),
-          callback: async (html) => {
+          callback: (html, _event, renderedButton, renderedDialog) => {
             if (submitted) return;
             submitted = true;
-            const form = extractDialogElement(html)?.querySelector("form.fblqa-money-transfer-form");
+            const form = findDialogForm(renderedButton?.form ?? renderedDialog ?? html, "form.fblqa-money-transfer-form")
+              ?? extractDialogElement(html)?.querySelector?.("form.fblqa-money-transfer-form");
             const targetActorId = String(form?.querySelector('[name="targetActor"]')?.value ?? "");
             const amounts = Object.fromEntries(CURRENCIES.map((currency) => [
               currency.key,
               Math.max(0, Math.floor(Number(form?.querySelector(`[name="amount-${currency.key}"]`)?.value) || 0))
             ]));
 
-            const resultPromise = requestMoneyTransfer(sourceActor.id, targetActorId, amounts);
-            ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
-            const result = await resultPromise;
+            // Run the async request outside the DialogV2 submit callback so the
+            // sender dialog closes immediately instead of freezing up to 95s while
+            // waiting for the recipient's decision.
+            void (async () => {
+              const result = await requestMoneyTransfer(sourceActor.id, targetActorId, amounts, {
+                onSent: () => {
+                  ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
+                }
+              });
 
-            if (result.ok) {
-              ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
-                target: result.targetName,
-                amount: formatTransferAmounts(result.amounts)
-              }));
-            } else if (result.error === "declined") {
-              ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
-            } else {
-              ui.notifications?.error?.(localizeTransferError(result.error));
-            }
-            finish(result);
+              if (result.ok) {
+                ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
+                  target: result.targetName,
+                  amount: formatTransferAmounts(result.amounts)
+                }));
+              } else if (result.error === "declined") {
+                ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
+              } else {
+                ui.notifications?.error?.(localizeTransferError(result.error));
+              }
+              finish(result);
+            })();
           }
         },
         cancel: {
@@ -114,7 +123,7 @@ export async function openMoneyTransferDialog(app, sourceActor) {
       default: "send",
       render: (html) => {
         const element = extractDialogElement(html);
-        element?.closest?.(".app")?.classList.add("fblqa-money-transfer-dialog");
+        element?.closest?.(".app, .application")?.classList.add("fblqa-money-transfer-dialog");
         setupMoneyTransferDialog(element, sourceActor);
       },
       close: () => {
@@ -149,6 +158,7 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
   const sourceAfter = {};
   const targetAfter = {};
 
+  let targetTotalCopper = 0n;
   for (const currency of CURRENCIES) {
     const sourceValue = getCurrencyValue(sourceActor, currency.key);
     const targetValue = getCurrencyValue(targetActor, currency.key);
@@ -157,11 +167,23 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
     if (amount > sourceValue) {
       return { ok: false, error: "insufficient-denomination", currency: currency.key };
     }
+    if (!Number.isSafeInteger(sourceValue) || !Number.isSafeInteger(targetValue)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
+
+    const nextTarget = targetValue + amount;
+    if (!Number.isSafeInteger(nextTarget)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
+    targetTotalCopper += BigInt(nextTarget) * BigInt(currency.unit);
+    if (targetTotalCopper > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
 
     sourceBefore[currency.key] = sourceValue;
     targetBefore[currency.key] = targetValue;
     sourceAfter[currency.key] = sourceValue - amount;
-    targetAfter[currency.key] = targetValue + amount;
+    targetAfter[currency.key] = nextTarget;
   }
 
   return {
@@ -178,12 +200,12 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
   };
 }
 
-export function selectMoneyTransferRecipient(users, targetActor, requesterId = null) {
+export function selectMoneyTransferRecipient(users, targetActor, requesterId = null, actors = globalThis.game?.actors) {
   const candidates = Array.from(users ?? [])
     .filter((user) => user && !user.isGM && user.active && user.id !== requesterId && userOwnsActor(user, targetActor))
     .sort((a, b) => {
-      const aAssigned = resolveUserCharacterFromCollection(a, null)?.id === targetActor?.id ? 1 : 0;
-      const bAssigned = resolveUserCharacterFromCollection(b, null)?.id === targetActor?.id ? 1 : 0;
+      const aAssigned = resolveUserCharacterFromCollection(a, actors)?.id === targetActor?.id ? 1 : 0;
+      const bAssigned = resolveUserCharacterFromCollection(b, actors)?.id === targetActor?.id ? 1 : 0;
       if (aAssigned !== bAssigned) return bAssigned - aAssigned;
       return String(a.id).localeCompare(String(b.id));
     });
@@ -209,7 +231,7 @@ export function buildTransferWhisperModel(offer, result) {
   };
 }
 
-export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts) {
+export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts, { onSent = null } = {}) {
   const sourceActor = game.actors?.get?.(sourceActorId);
   const targetActor = game.actors?.get?.(targetActorId);
   const amounts = normalizeTransferAmounts(rawAmounts);
@@ -223,7 +245,7 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
   const recipient = selectMoneyTransferRecipient(game.users, targetActor, game.user?.id);
   if (!recipient) return { ok: false, error: "recipient-offline" };
 
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!primaryGm) return { ok: false, error: "no-gm" };
   if (!game.socket?.emit) return { ok: false, error: "socket-unavailable" };
 
@@ -258,6 +280,7 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
 
   try {
     await sendSocketMessage(offer);
+    onSent?.();
   } catch (error) {
     const pending = pendingRequests.get(requestId);
     pendingRequests.delete(requestId);
@@ -291,7 +314,7 @@ async function handleSocketMessage(message) {
 
 async function handleTransferOffer(message) {
   if (!isValidOfferMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   const isPrimaryGm = Boolean(game.user?.isGM && primaryGm?.id === game.user.id && message.primaryGmId === game.user.id);
   const isRecipient = message.recipientUserId === game.user?.id;
   if (!isPrimaryGm && !isRecipient) return;
@@ -315,13 +338,15 @@ async function handleTransferOffer(message) {
       if (!stored) return;
       void finalizeTransferOffer(stored.offer, { ok: false, error: "recipient-timeout" });
     }, REQUEST_TIMEOUT_MS);
+    timeout?.unref?.();
 
     gmOffers.set(message.requestId, { offer: { ...message }, timeout });
 
-    const earlyDecision = earlyDecisions.get(message.requestId);
+    const earlyKey = `${message.requestId}:${message.recipientUserId}`;
+    const earlyDecision = earlyDecisions.get(earlyKey);
     if (earlyDecision) {
       globalThis.clearTimeout(earlyDecision.timeout);
-      earlyDecisions.delete(message.requestId);
+      earlyDecisions.delete(earlyKey);
       await processTransferDecision(message, earlyDecision.message);
     }
   }
@@ -344,7 +369,7 @@ async function handleTransferOffer(message) {
 
 async function handleTransferDecision(message) {
   if (!isValidDecisionMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!game.user?.isGM || primaryGm?.id !== game.user.id || message.primaryGmId !== game.user.id) return;
 
   const recipientUser = findGameUser(message.recipientUserId);
@@ -355,9 +380,10 @@ async function handleTransferDecision(message) {
 
   const stored = gmOffers.get(message.requestId);
   if (!stored) {
-    if (!earlyDecisions.has(message.requestId)) {
-      const timeout = globalThis.setTimeout(() => earlyDecisions.delete(message.requestId), RESULT_GRACE_MS);
-      earlyDecisions.set(message.requestId, { message: { ...message }, timeout, authenticated: true });
+    const earlyKey = `${message.requestId}:${message.recipientUserId}`;
+    if (!earlyDecisions.has(earlyKey)) {
+      const timeout = globalThis.setTimeout(() => earlyDecisions.delete(earlyKey), RESULT_GRACE_MS);
+      earlyDecisions.set(earlyKey, { message: { ...message }, timeout, authenticated: true });
     }
     return;
   }
@@ -366,11 +392,20 @@ async function handleTransferDecision(message) {
 }
 
 async function processTransferDecision(offer, message) {
+  // Ignore decisions from third-party users instead of cancelling the live offer.
   if (message.recipientUserId !== offer.recipientUserId
     || message.requesterId !== offer.requesterId
     || message.primaryGmId !== offer.primaryGmId) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-request" });
+    console.warn(`${MODULE_ID} | ignored mismatched money transfer decision`, offer.requestId, message.recipientUserId);
     return;
+  }
+
+  // Claim and cancel the GM timeout synchronously before any async queue wait
+  // so a timeout cannot race execution and finalize the offer twice.
+  const stored = gmOffers.get(offer.requestId);
+  if (stored) {
+    globalThis.clearTimeout(stored.timeout);
+    gmOffers.delete(offer.requestId);
   }
 
   if (!message.accepted) {
@@ -393,7 +428,7 @@ async function processTransferDecision(offer, message) {
     const currentTargetActor = game.actors?.get?.(offer.targetActorId);
     const requester = findGameUser(offer.requesterId);
     const currentRecipient = findGameUser(offer.recipientUserId);
-    const activeGM = getPrimaryActiveGm();
+    const activeGM = getActiveGM();
     if (!requester?.active || !userOwnsActor(requester, sourceActor)) return { ok: false, error: "invalid-request" };
     if (!currentRecipient?.active || !userOwnsActor(currentRecipient, currentTargetActor)) return { ok: false, error: "invalid-recipient" };
     if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id) return { ok: false, error: "invalid-request" };
@@ -411,7 +446,7 @@ async function handleTransferResult(message) {
 
   const primaryGm = findGameUser(message.primaryGmId);
   if (!primaryGm?.isGM) return;
-  const currentPrimaryGm = getPrimaryActiveGm();
+  const currentPrimaryGm = getActiveGM();
   if (currentPrimaryGm?.id !== primaryGm.id) return;
 
   const proof = await verifyTransferProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message));
@@ -513,7 +548,7 @@ function openIncomingMoneyTransferDialog(offer) {
     default: "accept",
     render: (html) => {
       const element = extractDialogElement(html);
-      element?.closest?.(".app")?.classList.add("fblqa-money-transfer-dialog", "fblqa-money-transfer-offer-dialog");
+      element?.closest?.(".app, .application")?.classList.add("fblqa-money-transfer-dialog", "fblqa-money-transfer-offer-dialog");
     },
     close: () => {
       if (!state.decided) void decide(false, "declined");
@@ -531,7 +566,7 @@ function openIncomingMoneyTransferDialog(offer) {
 }
 
 function buildIncomingMoneyTransferDialogContent(offer) {
-  const requester = game.users?.get?.(offer.requesterId);
+  const requester = findGameUser(offer.requesterId);
   const sourceActor = game.actors?.get?.(offer.sourceActorId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   const amount = formatTransferAmounts(offer.amounts);
@@ -609,6 +644,10 @@ async function finalizeTransferOffer(offer, result) {
   await postTransferWhisper(offer, completeResult);
 }
 
+function walletMatchesExpected(actor, expected) {
+  return CURRENCIES.every((currency) => getCurrencyValue(actor, currency.key) === expected[currency.key]);
+}
+
 async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
   const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
   if (!plan.ok) return plan;
@@ -623,6 +662,27 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
       { _id: sourceActor.id, ...plan.sourceUpdate },
       { _id: targetActor.id, ...plan.targetUpdate }
     ]);
+
+    const sourceUpdated = walletMatchesExpected(sourceActor, plan.sourceAfter);
+    const targetUpdated = walletMatchesExpected(targetActor, plan.targetAfter);
+
+    if (!sourceUpdated || !targetUpdated) {
+      const sourceUnchanged = walletMatchesExpected(sourceActor, plan.sourceBefore);
+      const targetUnchanged = walletMatchesExpected(targetActor, plan.targetBefore);
+      if (sourceUnchanged && targetUnchanged) {
+        return { ok: false, error: "update-failed" };
+      }
+      // One side persisted while the other was vetoed or altered. Report an
+      // explicit partial-transfer error so the GM can reconcile balances rather
+      // than silently reporting completion or risking an unsafe rollback.
+      console.error(`${MODULE_ID} | money transfer partially persisted`, {
+        sourceActorId: sourceActor.id,
+        targetActorId: targetActor.id,
+        sourceUpdated,
+        targetUpdated
+      });
+      return { ok: false, error: "update-incomplete" };
+    }
 
     Hooks.callAll?.("fblQuickAccess.walletTransferred", {
       sourceActor,
@@ -640,6 +700,9 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
     };
   } catch (error) {
     console.error(`${MODULE_ID} | money transfer failed`, error);
+    const sourceUnchanged = walletMatchesExpected(sourceActor, plan.sourceBefore);
+    const targetUnchanged = walletMatchesExpected(targetActor, plan.targetBefore);
+    if (!sourceUnchanged || !targetUnchanged) return { ok: false, error: "update-incomplete" };
     return { ok: false, error: "update-failed" };
   }
 }
@@ -648,12 +711,12 @@ async function postTransferWhisper(offer, result) {
   if (!globalThis.ChatMessage?.create) return null;
 
   const model = buildTransferWhisperModel(offer, result);
-  const requester = game.users?.get?.(offer.requesterId);
-  const recipient = game.users?.get?.(offer.recipientUserId);
+  const requester = findGameUser(offer.requesterId);
+  const recipient = findGameUser(offer.recipientUserId);
   const sourceActor = game.actors?.get?.(offer.sourceActorId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   const status = localizeWhisperStatus(model.status, result?.error);
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   const recipients = [...new Set([offer.requesterId, offer.recipientUserId, primaryGm?.id].filter(Boolean))];
 
   const content = `
@@ -734,6 +797,9 @@ function setupMoneyTransferDialog(element, sourceActor) {
   for (const currency of CURRENCIES) {
     const input = form.querySelector(`[name="amount-${currency.key}"]`);
     input?.addEventListener("input", () => {
+      updatePreview();
+    });
+    input?.addEventListener("change", () => {
       const max = getCurrencyValue(sourceActor, currency.key);
       input.value = String(Math.min(max, Math.max(0, Math.floor(Number(input.value) || 0))));
       updatePreview();
@@ -818,12 +884,6 @@ function isValidResultMessage(message) {
     && Number.isFinite(Number(message.createdAt));
 }
 
-function getPrimaryActiveGm() {
-  return Array.from(game.users ?? [])
-    .filter((user) => user.isGM && user.active)
-    .sort((a, b) => String(a.id).localeCompare(String(b.id)))[0] ?? null;
-}
-
 function formatTransferAmounts(amounts) {
   return CURRENCIES
     .map((currency) => ({ currency, value: Math.max(0, Math.floor(Number(amounts?.[currency.key]) || 0)) }))
@@ -837,6 +897,7 @@ function localizeTransferError(code) {
     "missing-actor": "MissingActor",
     "same-actor": "SameActor",
     "empty-amount": "EmptyAmount",
+    "amount-overflow": "AmountOverflow",
     "insufficient-denomination": "InsufficientDenomination",
     "source-permission": "NoSourcePermission",
     "invalid-recipient": "InvalidRecipient",
@@ -849,6 +910,7 @@ function localizeTransferError(code) {
     "socket-unavailable": "SocketUnavailable",
     "identity-proof-failed": "IdentityProofFailed",
     "timeout": "Timeout",
+    "update-incomplete": "UpdateIncomplete",
     "rollback-failed": "RollbackFailed",
     "update-failed": "UpdateFailed"
   }[code] ?? "UnknownError";
@@ -908,10 +970,4 @@ function rememberPacket(packetId) {
     seenPackets.delete(oldest);
   }
   return true;
-}
-
-function extractDialogElement(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
-  return null;
 }

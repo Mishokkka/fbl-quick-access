@@ -155,7 +155,10 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
       },
       effects: [],
       getFlag: () => null,
-      async update(update) { updates.push(update); },
+      async update(update) {
+        updates.push(update);
+        if ("system.attribute.strength.value" in update) this.system.attribute.strength.value = update["system.attribute.strength.value"];
+      },
       async deleteEmbeddedDocuments() {},
       async setFlag() {},
       async unsetFlag() {}
@@ -415,7 +418,10 @@ test("New Day Apply consumes DialogV2 button.form and advances a selected injury
     system: { healingTime: "2 days", lethal: "no", limit: "0" },
     updates: [],
     getFlag() { return undefined; },
-    async update(data) { this.updates.push(data); }
+    async update(data) {
+      this.updates.push(data);
+      if ("system.healingTime" in data) this.system.healingTime = data["system.healingTime"];
+    }
   };
   const actor = {
     id: "new-day-dialog-actor",

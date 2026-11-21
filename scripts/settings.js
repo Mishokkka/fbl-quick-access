@@ -18,6 +18,17 @@ export function registerCoreSettings() {
     onChange: (mode) => globalThis.Hooks?.callAll?.("fblQuickAccess.stateProgressionModeChanged", mode)
   });
 
+  if (typeof game.settings.registerMenu === "function") {
+    game.settings.registerMenu(MODULE_ID, "stateProgressionManager", {
+      name: qaLocalize("Settings.StateProgressionManager.Name", "Calendaria processed days"),
+      label: qaLocalize("Settings.StateProgressionManager.Label", "Manage Calendaria days"),
+      hint: qaLocalize("Settings.StateProgressionManager.Hint", "Inspect processed-day markers, reset markers to the current date, or rewind days to process them again."),
+      icon: "fas fa-calendar-check",
+      type: createStateProgressionMenuLauncher(),
+      restricted: true
+    });
+  }
+
   game.settings.register(MODULE_ID, SETTINGS.PLAYERS_CAN_RESET_SHORT_REST, {
     name: qaLocalize("Settings.PlayersCanResetShortRest.Name", "Players can reset the Short Rest limit"),
     hint: qaLocalize("Settings.PlayersCanResetShortRest.Hint", "Allow character owners to manually clear the once-per-Quarter-Day Short Rest recovery limit. GMs can always reset it."),
@@ -250,6 +261,18 @@ function cleanFontFamily(value) {
 function quoteFontFamily(value) {
   const safe = cleanFontFamily(value).replace(/["\\]/g, "");
   return `"${safe}"`;
+}
+
+function createStateProgressionMenuLauncher() {
+  const Base = globalThis.foundry?.applications?.api?.ApplicationV2 ?? globalThis.FormApplication ?? class {};
+  return class StateProgressionManagerMenu extends Base {
+    render() {
+      void import("./state-progression.js")
+        .then((module) => module.openStateProgressionManager?.())
+        .catch((error) => console.error(`${MODULE_ID} | failed to open Calendaria state progression manager`, error));
+      return this;
+    }
+  };
 }
 
 function cssFontStack(font) {

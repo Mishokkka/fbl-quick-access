@@ -1,4 +1,6 @@
 :root {
+  --fblqa-text: #222020;
+  --fblqa-text-muted: rgba(34, 32, 30, 0.68);
   --fblqa-border-soft: rgba(0, 0, 0, 0.16);
   --fblqa-border-medium: rgba(0, 0, 0, 0.42);
   --fblqa-border-strong: rgba(0, 0, 0, 0.58);

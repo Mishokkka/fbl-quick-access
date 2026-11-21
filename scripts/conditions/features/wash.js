@@ -1,8 +1,17 @@
-import { MODULE_ID, SETTINGS } from "../constants.js";
+import { FLAGS, MODULE_ID, SETTINGS } from "../constants.js";
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind, getWashStage } from "../condition-kind.js";
 import { isFeatureEnabled } from "../settings.js";
-import { escapeHTML, localize, namesIncludeCondition, normalizeConditionName } from "../utils.js";
+import { localize, namesIncludeCondition, normalizeConditionName } from "../utils.js";
+import { createObjectOperationQueue } from "../../operation-queue.js";
+
+const enqueueWashOperation = createObjectOperationQueue();
+
+function hasActorItem(actor, itemId) {
+  if (!actor?.items || !itemId) return false;
+  if (typeof actor.items.get === "function") return Boolean(actor.items.get(itemId));
+  return Array.from(actor.items).some((item) => item?.id === itemId);
+}
 
 export function getWashDefinition() {
   return CONDITION_DEFINITIONS.wash || {
@@ -69,17 +78,28 @@ export async function findWashConditionSource(name) {
 export async function removeOtherWashStates(actor, activeItem) {
   if (!actor || !activeItem || activeItem.type !== "criticalInjury" || !isWashCondition(activeItem)) return;
 
-  const idsToDelete = actor.items
-    .filter(item => item.type === "criticalInjury" && item.id !== activeItem.id && isWashCondition(item))
-    .map(item => item.id);
+  return enqueueWashOperation(actor, async () => {
+    if (!hasActorItem(actor, activeItem.id)) return;
+    const idsToDelete = Array.from(actor.items ?? [])
+      .filter(item => item.type === "criticalInjury" && item.id !== activeItem.id && isWashCondition(item))
+      .map(item => item.id);
 
-  if (!idsToDelete.length) return;
+    if (!idsToDelete.length) return;
 
-  await actor.deleteEmbeddedDocuments("Item", idsToDelete);
-  ui.notifications.info(localize("Notifications.WashExclusive", "Wash state updated: “{name}” kept and older states removed.", { name: escapeHTML(activeItem.name) }));
+    await actor.deleteEmbeddedDocuments("Item", idsToDelete);
+    const removedAny = idsToDelete.some((id) => !hasActorItem(actor, id));
+    if (removedAny) {
+      ui.notifications?.info?.(localize("Notifications.WashExclusive", "Wash state updated: “{name}” kept and older states removed.", { name: activeItem.name }));
+    }
+  });
 }
 
 export async function transitionWashLevel(actor, currentName, documentOptions = {}) {
+  if (!actor) return { changed: false, reason: "missing-actor" };
+  return enqueueWashOperation(actor, () => runWashTransition(actor, currentName, documentOptions));
+}
+
+async function runWashTransition(actor, currentName, documentOptions = {}) {
   const suppressNotifications = Boolean(documentOptions?.fblqaSuppressNotifications);
   const safeDocumentOptions = { ...(documentOptions ?? {}) };
   delete safeDocumentOptions.fblqaSuppressNotifications;
@@ -88,21 +108,30 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
   const nextName = getNextWashName(currentName);
   if (!nextName) return { changed: false, reason: "no-next-state" };
 
-  const existing = actor.items.find(item => item.type === "criticalInjury" && getConditionKind(item) === "wash" && getWashStage(item) === nextName);
+  const actorItems = Array.from(actor.items ?? []);
+  const existing = actorItems.find(item => item.type === "criticalInjury" && getConditionKind(item) === "wash" && getWashStage(item) === nextName);
   let createdItems = existing ? [existing] : null;
   // A retry only needs to finish cleanup if the replacement already exists.
   if (!existing) {
     const newItemSource = await findWashConditionSource(nextName);
     if (!newItemSource) {
-      if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: escapeHTML(nextName) }));
+      if (!suppressNotifications) ui.notifications?.warn?.(localize("Notifications.WashMissing", "Could not find wash state “{name}”. Check world items, compendiums, or the hidden washStateUuids setting.", { name: nextName }));
       return { changed: false, reason: "source-missing", previousName: getWashDisplayName(currentName), nextName };
     }
+
+    const previousItem = actorItems.find(item => item.type === "criticalInjury" && isWashCondition(item) && getWashStage(item) !== nextName);
+    const previousOrder = previousItem?.getFlag?.(MODULE_ID, FLAGS.ORDER);
 
     const itemData = newItemSource.toObject();
     delete itemData._id;
     itemData.flags ??= {};
     itemData.flags[MODULE_ID] ??= {};
-    itemData.flags[MODULE_ID].conditions = { ...(itemData.flags[MODULE_ID].conditions ?? {}), kind: "wash", washStage: nextName };
+    itemData.flags[MODULE_ID].conditions = {
+      ...(itemData.flags[MODULE_ID].conditions ?? {}),
+      kind: "wash",
+      washStage: nextName,
+      ...(previousOrder !== undefined ? { order: previousOrder } : {})
+    };
 
     try {
       createdItems = await actor.createEmbeddedDocuments("Item", [itemData], {
@@ -115,13 +144,22 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
       });
     } catch (error) {
       console.error(`${MODULE_ID} | could not create replacement wash state`, error);
-      if (!suppressNotifications) ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
+      if (!suppressNotifications) ui.notifications?.error?.(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: nextName }));
       return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
     }
+
+    const persistedCreated = Array.isArray(createdItems)
+      ? createdItems.filter((item) => item?.id && hasActorItem(actor, item.id))
+      : [];
+    if (!persistedCreated.length) {
+      if (!suppressNotifications) ui.notifications?.error?.(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: nextName }));
+      return { changed: false, reason: "create-failed", previousName: getWashDisplayName(currentName), nextName };
+    }
+    createdItems = persistedCreated;
   }
 
   const createdIds = new Set((createdItems ?? []).map((item) => item.id));
-  const staleIds = actor.items
+  const staleIds = Array.from(actor.items ?? [])
     .filter((item) => item.type === "criticalInjury" && isWashCondition(item) && !createdIds.has(item.id))
     .map((item) => item.id);
 
@@ -130,7 +168,18 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
       await actor.deleteEmbeddedDocuments("Item", staleIds, safeDocumentOptions);
     } catch (error) {
       console.error(`${MODULE_ID} | could not remove stale wash states`, error);
-      if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
+      if (!suppressNotifications) ui.notifications?.warn?.(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
+      return {
+        changed: false,
+        reason: "cleanup-failed",
+        previousName: getWashDisplayName(currentName),
+        nextName
+      };
+    }
+
+    const remainingStale = staleIds.filter((id) => hasActorItem(actor, id));
+    if (remainingStale.length) {
+      if (!suppressNotifications) ui.notifications?.warn?.(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
       return {
         changed: false,
         reason: "cleanup-failed",
@@ -140,6 +189,6 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
     }
   }
 
-  if (!suppressNotifications) ui.notifications.info(localize("Notifications.WashChanged", "Wash state changed: {previous} ➔ {next}.", { previous: escapeHTML(getWashDisplayName(currentName)), next: escapeHTML(nextName) }));
+  if (!suppressNotifications) ui.notifications?.info?.(localize("Notifications.WashChanged", "Wash state changed: {previous} ➔ {next}.", { previous: getWashDisplayName(currentName), next: nextName }));
   return { changed: true, previousName: getWashDisplayName(currentName), nextName };
 }

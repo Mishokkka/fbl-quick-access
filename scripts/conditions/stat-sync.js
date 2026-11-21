@@ -1,11 +1,40 @@
+import { MODULE_ID } from "./constants.js";
 import { renderExpandedConditions } from "./main.js";
 
 const scheduled = new WeakMap();
 
+export function isRelevantStatActorUpdate(changes) {
+  if (!changes || typeof changes !== "object") return true;
+  if (changes.flags?.[MODULE_ID]?.conditions !== undefined) return true;
+  for (const key of Object.keys(changes)) {
+    if (key === `flags.${MODULE_ID}.conditions` || key.startsWith(`flags.${MODULE_ID}.conditions.`)) return true;
+  }
+  return false;
+}
+
+function collectApps(actor) {
+  const apps = new Set();
+  const addCollection = (collection) => {
+    if (!collection) return;
+    if (collection instanceof Map) {
+      for (const app of collection.values()) if (app) apps.add(app);
+    } else if (Array.isArray(collection)) {
+      for (const app of collection) if (app) apps.add(app);
+    } else if (typeof collection === "object") {
+      for (const app of Object.values(collection)) if (app) apps.add(app);
+    }
+  };
+  addCollection(actor?.apps);
+  addCollection(globalThis.ui?.windows);
+  addCollection(globalThis.foundry?.applications?.instances);
+  return apps;
+}
+
 /** Sync other views after a deliberately render-suppressed Document write. */
-export function scheduleStatSync(actor, options = {}, userId = null, renderer = renderExpandedConditions) {
+export function scheduleStatSync(actor, options = {}, userId = null, renderer = renderExpandedConditions, changes = null) {
   if (options.render !== false || actor?.type !== "character") return;
-  const apps = new Set([...Object.values(actor.apps ?? {}), ...Object.values(globalThis.ui?.windows ?? {})]);
+  if (changes !== null && !isRelevantStatActorUpdate(changes)) return;
+  const apps = collectApps(actor);
   for (const app of apps) {
     if ((app.actor ?? app.document)?.uuid !== actor.uuid || app.rendered === false) continue;
     const root = app.element?.[0] ?? app.element;
@@ -19,7 +48,7 @@ export function scheduleStatSync(actor, options = {}, userId = null, renderer = 
 function scheduleView(app, root, renderer) {
   if (scheduled.has(app)) return;
   const active = globalThis.document?.activeElement;
-  if (active?.matches?.("input, textarea, select, [contenteditable='true']") && root.contains?.(active)) {
+  if (active?.isConnected !== false && active?.matches?.("input, textarea, select, [contenteditable='true']") && root.contains?.(active)) {
     const cleanup = () => { active.removeEventListener("blur", resume); scheduled.delete(app); };
     const resume = () => { cleanup(); scheduleView(app, root, renderer); };
     scheduled.set(app, cleanup);

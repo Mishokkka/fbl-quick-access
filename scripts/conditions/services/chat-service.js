@@ -93,18 +93,6 @@ export function buildHeatChangeMessage(actorName, result, mode = "gain") {
   return content;
 }
 
-export function buildHeatCheckMessage(actorName, value, heat, level) {
-  let content = localize("Chat.Heat.Status", "<b>{actor}</b>: Heat <b>{value}/{max}</b> — <b>{level}</b>.<br>", {
-    actor: escapeHTML(actorName),
-    value,
-    max: heat.max,
-    level: escapeHTML(level.label)
-  });
-  content += `${escapeHTML(level.summary)}<br><i>${escapeHTML(level.consequence)}</i>`;
-  content += `<br><br>${localize(`Chat.Heat.Check${Math.max(0, Math.min(4, Number(value) || 0))}`, "Make an Endurance roll as required by the current Heat level.")}`;
-  return content;
-}
-
 export function buildMorGainMessage(actorName, state, diceCount, ones, appliedDamage = []) {
   let content = localize("Chat.Mor.Gain", "<b>{actor}</b> gains 1 current Mor point. Mor: <b>{current}/{permanent}</b>.<br>", {
     actor: escapeHTML(actorName),

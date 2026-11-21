@@ -18,8 +18,8 @@
 
 .fblqa-sheet-head-compact::before,
 .fblqa-sheet-head-compact::after,
-.fblqa-sheet-head-compact *::before,
-.fblqa-sheet-head-compact *::after,
+.fblqa-sheet-head-compact :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-sheet-head-compact :not([class*="fblqa-"]):not([class*="fblec-"])::after,
 .fblqa-sheet-head-compact .border,
 .fblqa-sheet-head-compact [class~="border"] {
   border: 0 !important;
@@ -52,10 +52,10 @@
 .fblqa-borderless-sheet .border::after,
 .fblqa-borderless-sheet [class~="border"]::before,
 .fblqa-borderless-sheet [class~="border"]::after,
-.fblqa-borderless-sheet .border *::before,
-.fblqa-borderless-sheet .border *::after,
-.fblqa-borderless-sheet [class~="border"] *::before,
-.fblqa-borderless-sheet [class~="border"] *::after {
+.fblqa-borderless-sheet .border :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-borderless-sheet .border :not([class*="fblqa-"]):not([class*="fblec-"])::after,
+.fblqa-borderless-sheet [class~="border"] :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-borderless-sheet [class~="border"] :not([class*="fblqa-"]):not([class*="fblec-"])::after {
   border: 0 !important;
   border-image: none !important;
   border-image-source: none !important;
@@ -193,14 +193,14 @@
 .fblqa-item-no-borders .border::after,
 .fblqa-item-no-borders [class~="border"]::before,
 .fblqa-item-no-borders [class~="border"]::after,
-.fblqa-item-no-borders .border *::before,
-.fblqa-item-no-borders .border *::after,
-.fblqa-item-no-borders [class~="border"] *::before,
-.fblqa-item-no-borders [class~="border"] *::after,
+.fblqa-item-no-borders .border :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-item-no-borders .border :not([class*="fblqa-"]):not([class*="fblec-"])::after,
+.fblqa-item-no-borders [class~="border"] :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-item-no-borders [class~="border"] :not([class*="fblqa-"]):not([class*="fblec-"])::after,
 .fblqa-item-borderless::before,
 .fblqa-item-borderless::after,
-.fblqa-item-borderless *::before,
-.fblqa-item-borderless *::after {
+.fblqa-item-borderless :not([class*="fblqa-"]):not([class*="fblec-"])::before,
+.fblqa-item-borderless :not([class*="fblqa-"]):not([class*="fblec-"])::after {
   border: 0 !important;
   border-image: none !important;
   border-image-source: none !important;

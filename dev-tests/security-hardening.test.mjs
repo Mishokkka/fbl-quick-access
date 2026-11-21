@@ -290,6 +290,7 @@ test("biography rich text is sanitized before rendering and persistence", async 
     let update = null;
     const actor = {
       name: "Actor",
+      isOwner: true,
       async update(value) { update = value; },
       getFlag() { return null; },
       system: { bio: {} }
@@ -475,6 +476,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
 
   let dialogData = null;
   let infoCount = 0;
+  let errorCount = 0;
 
   class FakeHTMLElement {
     querySelector(selector) {
@@ -516,7 +518,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
     notifications: {
       info() { infoCount += 1; },
       warn() {},
-      error() {}
+      error() { errorCount += 1; }
     }
   };
   globalThis.game = {
@@ -540,7 +542,8 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
     await first;
     await second;
     assert.equal(result?.error, "empty-amount", "Dialog close must not replace the submitted result with null");
-    assert.equal(infoCount, 1, "rapid duplicate submit must start only one transfer attempt");
+    assert.equal(infoCount, 0, "invalid empty transfer must not show an OfferSent notification");
+    assert.equal(errorCount, 1, "rapid duplicate submit must start only one transfer attempt");
   } finally {
     globalThis.game = previousGame;
     globalThis.Dialog = previousDialog;
