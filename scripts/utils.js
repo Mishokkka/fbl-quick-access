@@ -131,9 +131,11 @@ export function stripHtml(text) {
     }
   }
 
-  return raw
-    .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
-    .replace(/<[^>]+>/g, "");
+  return decodeHtmlEntities(
+    raw
+      .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+      .replace(/<[^>]+>/g, "")
+  );
 }
 
 export function compactPlainText(value) {

@@ -338,6 +338,7 @@ async function handleTransferOffer(message) {
       if (!stored) return;
       void finalizeTransferOffer(stored.offer, { ok: false, error: "recipient-timeout" });
     }, REQUEST_TIMEOUT_MS);
+    timeout?.unref?.();
 
     gmOffers.set(message.requestId, { offer: { ...message }, timeout });
 

@@ -378,7 +378,8 @@ function readTalentRank(item, fallback = DEFAULT_TALENT_RANK) {
 }
 
 function readNumber(value, fallback = 0) {
-  return readNumericValue(value, fallback);
+  const numeric = readNumericValue(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 }
 
 function clamp(value, min, max) {
