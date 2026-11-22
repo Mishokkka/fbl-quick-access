@@ -1,8 +1,9 @@
 import { MODULE_ID } from "../constants.js";
 import { escapeHtml, humanizeKey } from "../utils.js";
-import { executeAsActiveGM, registerSocketHandler } from "./socket-api.js";
+import { executeAsActiveGM, getActiveGM, registerSocketHandler } from "./socket-api.js";
 import { createObjectOperationQueue } from "../operation-queue.js";
 import { canonicalJson } from "../document-writes.js";
+import { findGameUser } from "../socket-utils.js";
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
 const FA_NON_ICON_CLASSES = new Set([
@@ -213,12 +214,13 @@ async function handleApplyProviderAction(payload, context) {
   assertRequesterCanManageActor(actor, context.requestUser);
 
   return enqueueProviderApply(actor, async () => {
+    const requestUser = await requireLiveApplyAuthority(actor, context);
     // Private provider summaries are GM-visible audit output. A remote player
     // must not be able to suppress them merely by forging a socket payload.
-    const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM) && !context.isRemote;
+    const suppressChat = Boolean(payload?.suppressChat) && requestUser.isGM && !context.isRemote;
     const providerContext = Object.freeze({
       requesterId: context.requesterId,
-      requestUser: context.requestUser,
+      requestUser,
       activeGM: context.activeGM,
       isRemote: context.isRemote,
       suppressChat
@@ -246,7 +248,9 @@ async function handleApplyProviderAction(payload, context) {
     if (!action || canonicalJson(action) !== canonicalJson(payload.action)) {
       throw Object.assign(new Error("Provider action changed. Refresh the preview."), { code: "stale-provider-action" });
     }
-    const result = await provider.applyAction(actor, action, providerContext) ?? {};
+    const liveUser = await requireLiveApplyAuthority(actor, context);
+    const liveContext = Object.freeze({ ...providerContext, requestUser: liveUser, suppressChat: suppressChat && liveUser.isGM });
+    const result = await provider.applyAction(actor, action, liveContext) ?? {};
 
     const normalized = {
       changed: Boolean(result.changed),
@@ -254,12 +258,24 @@ async function handleApplyProviderAction(payload, context) {
     };
 
     if (result.privateSummary) {
-      if (!suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
-      if (context.requestUser?.isGM && !context.isRemote) normalized.privateSummary = String(result.privateSummary);
+      if (!liveContext.suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
+      if (liveUser.isGM && !context.isRemote) normalized.privateSummary = String(result.privateSummary);
     }
 
     return normalized;
   });
+}
+
+async function requireLiveApplyAuthority(actor, context) {
+  if (await resolveActor({ actorId: actor.id, actorUuid: actor.uuid }) !== actor) {
+    throw Object.assign(new Error("New-day provider actor changed"), { code: "missing-actor" });
+  }
+  if (getActiveGM()?.id !== globalThis.game?.user?.id) {
+    throw Object.assign(new Error("Active GM changed"), { code: "active-gm-only" });
+  }
+  const user = findGameUser(context.requesterId);
+  assertRequesterCanManageActor(actor, user);
+  return user;
 }
 
 function requireProvider(id) {
@@ -340,7 +356,7 @@ function normalizeIcon(value) {
   const icon = String(value ?? "")
     .trim()
     .split(/\s+/)
-    .find((part) => part.startsWith("fa-") && !FA_NON_ICON_CLASSES.has(part));
+    .find((part) => /^fa-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(part) && !FA_NON_ICON_CLASSES.has(part));
   return icon || "fa-check";
 }
 

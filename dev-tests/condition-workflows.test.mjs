@@ -274,7 +274,7 @@ async function calendarWorker({ fresh = false } = {}) {
   const url = new URL("../scripts/state-progression.js", import.meta.url);
   let source = await readFile(url, "utf8");
   source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
-  source += "\nexport { processActorAutomaticDays, handleCalendariaApplyRequest, handleCalendariaPendingReport };\n";
+  source += "\nexport { processActorAutomaticDays, handleCalendariaApplyRequest, handleCalendariaPendingReport, resolveCalendarOperationFromSummary };\n";
   const worker = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${++id}`);
   if (!fresh) progression = worker;
   return worker;
@@ -308,6 +308,7 @@ for (const mode of ["interactive", "automatic"]) {
       setup();
       const start = { year: 1, month: 1, day: 1 };
       const date = { ...start, day: 2 };
+      let currentDate = date;
       const calendarId = "test";
       const operationKey = "stateProgressionOperation";
       const markerKey = "stateProgressionCalendaria";
@@ -316,7 +317,7 @@ for (const mode of ["interactive", "automatic"]) {
       const api = {
         daysBetween: (from, to) => to.day - from.day,
         addDays: (from, days) => ({ ...from, day: from.day + days }),
-        getCurrentDateTime: () => date,
+        getCurrentDateTime: () => currentDate,
         getActiveCalendar: () => ({ id: calendarId })
       };
       const context = { calendarId, date, api };
@@ -367,6 +368,19 @@ for (const mode of ["interactive", "automatic"]) {
         assert.deepEqual((await worker.resetAllCalendarMarkersToCurrent(context)).skippedActorIds, [reloaded.owner.id]);
         assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, start);
         assert.equal(reloaded.owner.getFlag(scope, operationKey).phase, "applying");
+        currentDate = { ...date, day: 3 };
+        const previousWindow = globalThis.window;
+        globalThis.window = { confirm: () => true };
+        try {
+          await worker.resolveCalendarOperationFromSummary(null, reloaded.owner, { ...context, date: currentDate });
+        } finally {
+          globalThis.window = previousWindow;
+        }
+        assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, date);
+        assert.equal(reloaded.owner.getFlag(scope, operationKey), null);
+        assert.equal(reloaded.wound.system.healingTime, "4 days");
+        const remaining = await worker.handleCalendariaPendingReport({ actorId: reloaded.owner.id }, { requestUser: player });
+        assert.equal(remaining.days, 1);
       } else {
         await processDay(worker, reloaded.owner);
         assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, date);

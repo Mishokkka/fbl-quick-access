@@ -16,6 +16,7 @@ import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./soc
 import { getActiveGM } from "./integration/socket-api.js";
 import { enqueueCurrencyOperation } from "./operation-queue.js";
 import { migrateLegacyReconciliations, readReconciliationRecords, writeReconciliationRecords } from "./transfer-reconciliation-store.js";
+import { readDocumentFlag } from "./document-writes.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
@@ -28,6 +29,7 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const RESULT_GRACE_MS = 5_000;
 const PROOF_GRACE_MS = 60_000;
 const SEEN_PACKET_LIMIT = 200;
+const RECEIPTS_FLAG = "walletTransferReceipts";
 
 let socketRegistered = false;
 const pendingRequests = new Map();
@@ -292,7 +294,6 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
 
   try {
     await sendSocketMessage(offer);
-    onSent?.();
   } catch (error) {
     const pending = pendingRequests.get(requestId);
     pendingRequests.delete(requestId);
@@ -301,7 +302,9 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
     console.error(`${MODULE_ID} | money transfer offer could not be sent`, error);
     return { ok: false, error: "socket-unavailable" };
   }
-
+  if (onSent) void Promise.resolve().then(() => onSent()).catch(error => {
+    console.error(`${MODULE_ID} | money transfer sent callback failed`, error);
+  });
   return response;
 }
 
@@ -711,6 +714,7 @@ export async function resolveMoneyTransferReconciliation(requestId, { applyRemai
         appliedRemaining: Boolean(applyRemaining)
       };
       saveReconciliationRecord(resolved);
+      await clearTransferReceipts(record);
       return { ok: true, record: resolved };
     } catch (error) {
       notifyReconciliationWriteFailure(error);
@@ -720,31 +724,37 @@ export async function resolveMoneyTransferReconciliation(requestId, { applyRemai
 }
 
 async function applyRemainingTransfer(record) {
-  if (record.requiresReview) return { ok: false, error: "manual-reconciliation-required", record };
+  if (record.requiresReview || !isValidSocketRequestId(record.receiptId)) {
+    return { ok: false, error: "manual-reconciliation-required", record };
+  }
   const sourceActor = game.actors?.get?.(record.sourceActorId);
   const targetActor = game.actors?.get?.(record.targetActorId);
   if (!sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
 
   const pairs = [[sourceActor, record.source], [targetActor, record.target]];
-  const remaining = pairs.filter(([actor, wallet]) => !walletMatchesExpected(actor, wallet.expected));
+  const remaining = pairs.filter(([actor]) => !hasTransferReceipt(actor, record));
+  const interveningUpdate = () => ({ ok: false, error: "intervening-update",
+    liveSource: readWalletSnapshot(sourceActor), liveTarget: readWalletSnapshot(targetActor), record });
+  if (pairs.some(([actor, wallet]) => hasTransferReceipt(actor, record) && !walletMatchesExpected(actor, wallet.expected))) {
+    return interveningUpdate();
+  }
   if (!remaining.length) return { ok: true };
   if (record.status !== "pending") return { ok: false, error: "manual-reconciliation-required", record };
   if (remaining.some(([actor, wallet]) => !walletMatchesExpected(actor, wallet.observed))) {
-    return { ok: false, error: "intervening-update", liveSource: readWalletSnapshot(sourceActor), liveTarget: readWalletSnapshot(targetActor), record };
+    return interveningUpdate();
   }
-  if (remaining.some(([actor, wallet]) => !walletMatchesExpected(actor, wallet.before))) {
+  if (remaining.some(([actor, wallet]) => wallet.updated || !walletMatchesExpected(actor, wallet.before))) {
     return { ok: false, error: "manual-reconciliation-required", record };
   }
 
   try {
     const ActorClass = sourceActor.constructor.implementation ?? sourceActor.constructor;
-    await ActorClass.updateDocuments(remaining.map(([actor, wallet]) => ({
-      _id: actor.id, ...buildActorCurrencyUpdate(actor, wallet.expected)
-    })));
+    await ActorClass.updateDocuments(remaining.map(([actor, wallet]) =>
+      buildTransferUpdate(actor, buildActorCurrencyUpdate(actor, wallet.expected), record)));
   } catch (error) {
     console.error(`${MODULE_ID} | could not complete money transfer reconciliation`, error);
   }
-  return pairs.every(([actor, wallet]) => walletMatchesExpected(actor, wallet.expected))
+  return pairs.every(([actor, wallet]) => hasTransferReceipt(actor, record) && walletMatchesExpected(actor, wallet.expected))
     ? { ok: true }
     : { ok: false, error: "update-incomplete" };
 }
@@ -753,9 +763,35 @@ function walletMatchesExpected(actor, expected) {
   return CURRENCIES.every(currency => getCurrencyValue(actor, currency.key) === expected[currency.key]);
 }
 
+function transferReceiptKey(record) {
+  return `${RECEIPTS_FLAG}.${record.receiptId}`;
+}
+
+function hasTransferReceipt(actor, record) {
+  return readDocumentFlag(actor, MODULE_ID, transferReceiptKey(record)) === true;
+}
+
+function buildTransferUpdate(actor, currencyUpdate, record) {
+  return { _id: actor.id, ...currencyUpdate, [`flags.${MODULE_ID}.${transferReceiptKey(record)}`]: true };
+}
+
+async function clearTransferReceipts(record) {
+  if (!isValidSocketRequestId(record.receiptId)) return;
+  for (const id of [record.sourceActorId, record.targetActorId]) {
+    const actor = game.actors?.get?.(id);
+    if (!hasTransferReceipt(actor, record)) continue;
+    try {
+      await actor.unsetFlag?.(MODULE_ID, transferReceiptKey(record));
+    } catch (error) {
+      console.error(`${MODULE_ID} | money transfer receipt cleanup failed`, error);
+    }
+  }
+}
+
 function buildReconciliationRecord(sourceActor, targetActor, plan, metadata = {}) {
   return {
     requestId: String(metadata.requestId || makeSocketRequestId()),
+    receiptId: makeSocketRequestId(),
     status: "applying",
     createdAt: Date.now(),
     requesterId: metadata.requesterId ?? null,
@@ -795,20 +831,23 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, metada
 
   try {
     await ActorClass.updateDocuments([
-      { _id: sourceActor.id, ...plan.sourceUpdate },
-      { _id: targetActor.id, ...plan.targetUpdate }
+      buildTransferUpdate(sourceActor, plan.sourceUpdate, record),
+      buildTransferUpdate(targetActor, plan.targetUpdate, record)
     ]);
   } catch (error) {
     console.error(`${MODULE_ID} | money transfer update failed`, error);
   }
 
-  const sourceUpdated = walletMatchesExpected(sourceActor, plan.sourceAfter);
-  const targetUpdated = walletMatchesExpected(targetActor, plan.targetAfter);
-  const completed = sourceUpdated && targetUpdated;
-  const unchanged = walletMatchesExpected(sourceActor, plan.sourceBefore) && walletMatchesExpected(targetActor, plan.targetBefore);
+  const sourceUpdated = hasTransferReceipt(sourceActor, record);
+  const targetUpdated = hasTransferReceipt(targetActor, record);
+  const completed = sourceUpdated && targetUpdated
+    && walletMatchesExpected(sourceActor, plan.sourceAfter) && walletMatchesExpected(targetActor, plan.targetAfter);
+  const unchanged = !sourceUpdated && !targetUpdated
+    && walletMatchesExpected(sourceActor, plan.sourceBefore) && walletMatchesExpected(targetActor, plan.targetBefore);
   try {
     if (completed || unchanged) {
       removeReconciliationRecord(record.requestId);
+      if (completed) await clearTransferReceipts(record);
     } else {
       saveReconciliationRecord({
         ...record,

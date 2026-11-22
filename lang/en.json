@@ -486,7 +486,7 @@
       "ApplyFailed": "Could not apply Calendaria state progression.",
       "BaselineFailed": "Could not save the Calendaria baseline marker.",
       "Baselined": "Baseline set to the current Calendaria date.",
-      "PendingChanged": "Pending calendar days changed while confirming; please confirm again.",
+      "PendingChanged": "The calendar date or pending days changed while confirming; please confirm again.",
       "RewindAllPartial": "Markers rewound for {succeeded} characters; {failed} failed. Retry the failed characters individually.",
       "CalendarChanged": "Calendaria changed its active calendar. Player state progression was re-baselined to the current date; no states were advanced.",
       "CalendariaUnavailable": "Calendaria progression is selected, but Calendaria is unavailable. Daily state progression is paused until Calendaria is available or the mode is changed.",
@@ -552,7 +552,11 @@
       "CurrentDateLabel": "Current date: {date}",
       "MarkerDate": "Marker: {date}",
       "MarkerMissing": "Marker: not set",
-      "InterruptedDay": "Day processing stopped on {date}. Check the character’s states, then use Set to current date. Nothing was reapplied automatically.",
+      "InterruptedDay": "Day processing stopped on {date}. Check the character’s states, then close the interrupted day in the GM summary. Daily actions are not reapplied automatically.",
+      "AcknowledgeDayTitle": "Close interrupted calendar day?",
+      "AcknowledgeDayWarning": "Check and correct the character’s states first. No daily actions will be repeated or undone; later days remain pending.",
+      "ResetAllPartial": "Markers reset to {date}: {count}; skipped: {skipped}; failed: {failed}. Review the affected characters before retrying.",
+      "CalendarChangedPartial": "The calendar changed during the operation. Some characters may have been updated; review the results.",
       "FinishMarker": "Actions for {date} are already applied. Resolve saves the marker without repeating them.",
       "DayAwaitingGM": "The GM needs to review an unfinished calendar day for this character.",
       "ReviewUnfinishedDays": "Some calendar days are unfinished. Open Manage Calendaria days to review them.",
@@ -657,7 +661,8 @@
       "PermanentTitle": "Permanent Mor points (Y)",
       "CurrentShort": "Cur",
       "PermanentShort": "Perm",
-      "Delete": "Delete Mor"
+      "Delete": "Delete Mor",
+      "PendingGain": "Finish the pending Mor gain with + before changing Mor again."
     },
     "Addiction": {
       "Severity": "Severity",

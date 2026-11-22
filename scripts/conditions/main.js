@@ -4,7 +4,6 @@ import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
 import {
-  applyActorAttributeDamage,
   canUserEditActor,
   createChatMessage,
   escapeHTML,
@@ -18,6 +17,8 @@ import { getNextWashName, removeOtherWashStates, transitionWashLevel, isWashCond
 import {
   getAddictionState,
   applyHeatFailure,
+  applyMorGain,
+  assertMorChangeAvailable,
   buildHeatModifierUpdate,
   getMorState,
   normalizeAddictionSeverityChange,
@@ -45,6 +46,7 @@ import { activateStatProviderListeners, renderStatProviderSections } from "../in
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
 import { setDocumentFlagVerified } from "../document-writes.js";
 import { decrementFirstInteger } from "../new-day.js";
+import { enqueueCustomConditionOperation } from "../operation-queue.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
@@ -264,46 +266,55 @@ export async function renderExpandedConditions(app, html) {
     return normalizeCustomConditionList(foundry.utils.deepClone(app.actor.getFlag(MODULE_ID, FLAGS.LIST) || [])).list;
   }
 
-  async function saveCustom() {
-    if (!editable) return;
+  async function mutateCustomConditions(mutate, afterSave) {
+    if (!editable) return false;
+    try {
+      return await enqueueCustomConditionOperation(app.actor, async () => {
+        if (!canUserEditActor(app.actor)) return false;
+        const list = getLiveCustomConditions();
+        const changed = mutate(list);
+        if (changed) {
+          list.sort((left, right) => left.order - right.order);
+          await setDocumentFlagVerified(app.actor, MODULE_ID, FLAGS.LIST, list, { render: false });
+        }
+        customConditions = list;
+        if (afterSave) await afterSave();
+        return Boolean(changed);
+      });
+    } catch (error) {
+      console.error(`${MODULE_ID} | custom condition save failed`, error);
+      ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+      return false;
+    }
+  }
 
-    const liveList = getLiveCustomConditions();
-    const liveById = new Map(liveList.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
-
-    html.find(".conditions-rows > .condition-row[data-condition-id]").each((i, el) => {
-      const row = $(el);
-      const id = String(row.data("condition-id") || "");
-      const previous = liveById.get(id);
-      if (!previous) return;
-      const order = Number(row.data("order") ?? previous.order ?? i * 10);
-
-      if (row.hasClass("arc-row")) {
-        previous.desc = row.find(".condition-desc-input").val() ?? previous.desc ?? "";
-        previous.order = Number.isFinite(order) ? order : previous.order;
-        liveById.set(id, makeCustomCondition(previous));
-        return;
-      }
-
-      liveById.set(id, makeCustomCondition({
-        id,
-        order: Number.isFinite(order) ? order : previous.order,
-        name: row.find(".condition-name").val() ?? previous.name ?? "",
-        time: row.find(".condition-time").val() ?? previous.time ?? "0",
-        notes: row.find(".condition-notes").val() ?? previous.notes ?? "",
-        desc: row.find(".condition-desc-input").val() ?? previous.desc ?? ""
-      }));
+  function editCustomField(input, field, edit, updateInput = false) {
+    const id = String(input.closest(".condition-row").data("condition-id") || "");
+    let value;
+    return mutateCustomConditions(list => {
+      const entry = list.find(condition => condition.id === id);
+      if (!entry) return false;
+      value = edit(entry[field]);
+      if (value === entry[field]) return false;
+      entry[field] = value;
+      return true;
+    }, () => {
+      if (updateInput && value !== undefined) input.val(value);
     });
+  }
 
-    const updated = Array.from(liveById.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    customConditions = updated;
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: updated }, { render: false });
+  function saveCustom(event) {
+    const input = $(event.currentTarget);
+    const field = input.hasClass("condition-name") ? "name" : input.hasClass("condition-time") ? "time"
+      : input.hasClass("condition-notes") ? "notes" : "desc";
+    const value = String(input.val() ?? "");
+    return editCustomField(input, field, () => value);
   }
 
   async function persistRowOrder() {
     if (!editable) return;
 
-    const liveList = getLiveCustomConditions();
-    const customMap = new Map(liveList.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
+    const customOrders = new Map();
     const itemUpdates = [];
 
     html.find(".conditions-rows > [data-row-kind]").each((i, el) => {
@@ -314,17 +325,25 @@ export async function renderExpandedConditions(app, html) {
       const kind = String(row.data("row-kind") || "");
       if (kind === "custom") {
         const id = String(row.data("condition-id") || "");
-        const condition = customMap.get(id);
-        if (condition) condition.order = order;
+        if (id) customOrders.set(id, order);
       } else if (kind === "item") {
         const itemId = String(row.data("item-id") || "");
         if (itemId) itemUpdates.push({ _id: itemId, [flagUpdatePath(FLAGS.ORDER)]: order });
       }
     });
 
-    customConditions = Array.from(customMap.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    await mutateCustomConditions(list => {
+      let changed = false;
+      for (const condition of list) {
+        const order = customOrders.get(condition.id);
+        if (order === undefined || condition.order === order) continue;
+        condition.order = order;
+        changed = true;
+      }
+      return changed;
+    }, async () => {
+      if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    });
   }
 
 
@@ -678,15 +697,8 @@ export async function renderExpandedConditions(app, html) {
   // Mor.
   html.find(".conditions-tab").off("click", ".mor-item-x-plus").on("click", ".mor-item-x-plus", async (ev) => {
     await runSpecialItemAction(ev, async item => {
-      const mor = getMorState(item);
-      const x = mor.current + 1;
-      const y = mor.permanent;
-      const diceCount = x + y;
-      const roll = await new Roll(`${diceCount}d6`).evaluate();
-      const ones = roll.terms[0].results.filter(r => r.result === 1).length;
-      const appliedDamage = ones > 0 ? await applyActorAttributeDamage(app.actor, { strength: ones }, { render: false }) : [];
+      const { roll, state, diceCount, ones, appliedDamage } = await applyMorGain(app.actor, item, { render: false });
       syncAttributeDamageInputs(appliedDamage);
-      const state = await updateMorItem(item, x, y, { render: false });
       const flavor = buildMorGainMessage(app.actor.name, state, diceCount, ones, appliedDamage);
       try {
         await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
@@ -699,6 +711,7 @@ export async function renderExpandedConditions(app, html) {
 
   html.find(".conditions-tab").off("click", ".mor-item-x-minus").on("click", ".mor-item-x-minus", async (ev) => {
     await runSpecialItemAction(ev, async item => {
+      assertMorChangeAvailable(item);
       const mor = getMorState(item);
       if (mor.current <= 0) {
         ui.notifications?.warn?.(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
@@ -734,24 +747,17 @@ export async function renderExpandedConditions(app, html) {
     if (!requireEditable()) return;
     const btn = $(ev.currentTarget);
     const input = btn.siblings(".condition-time");
-    const timeStr = String(input.val() || "0");
-    if (!canStepDurationText(timeStr)) return;
-    const match = timeStr.match(/(\d+)/);
-    if (!match) return;
-
-    const num = parseInt(match[0], 10) + (btn.hasClass("time-plus") ? 1 : -1);
-    const newStr = timeStr.replace(/(\d+)/, Math.max(0, num));
-    input.val(newStr);
-    await saveCustom();
+    const delta = btn.hasClass("time-plus") ? 1 : -1;
+    await editCustomField(input, "time", time => canStepDurationText(time)
+      ? time.replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time, true);
   });
 
   html.find(".add-condition").off("click").on("click", async () => {
     if (!requireEditable()) return;
-    const liveList = getLiveCustomConditions();
-    liveList.push(makeCustomCondition({}, (liveList.length + app.actor.items.size + 1) * 10));
-    customConditions = liveList;
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: liveList }, { render: false });
-    await refreshRows();
+    if (await mutateCustomConditions(list => {
+      list.push(makeCustomCondition({}, (list.length + app.actor.items.size + 1) * 10));
+      return true;
+    })) await refreshRows();
   });
 
   html.find(".layout-toggle").off("click").on("click", async (ev) => {
@@ -777,20 +783,12 @@ export async function renderExpandedConditions(app, html) {
     const liveList = getLiveCustomConditions();
     const conditionName = liveList.find(condition => condition.id === id)?.name || row.find(".condition-name").val() || row.find(".condition-name-static").text() || localize("Delete.ConditionFallback", "condition");
     if (!(await confirmStatDelete(conditionName, "condition"))) return;
-    const currentList = getLiveCustomConditions();
-    const updated = currentList.filter(condition => condition.id !== id);
-    if (updated.length === currentList.length) {
-      customConditions = currentList;
-      row.remove();
-      return;
-    }
-    try {
-      await setDocumentFlagVerified(app.actor, MODULE_ID, FLAGS.LIST, updated, { render: false });
-      customConditions = updated;
-      row.remove();
-    } catch (error) {
-      console.error(`${MODULE_ID} | failed to delete custom condition`, error);
-    }
+    await mutateCustomConditions(list => {
+      const index = list.findIndex(condition => condition.id === id);
+      if (index < 0) return false;
+      list.splice(index, 1);
+      return true;
+    }, () => row.remove());
   });
 
   html.find(".conditions-tab").off("change", ".condition-name, .condition-time, .condition-notes, .condition-desc-input")

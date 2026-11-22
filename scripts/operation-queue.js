@@ -20,6 +20,8 @@ export function createObjectOperationQueue() {
   };
 }
 
+export const enqueueCustomConditionOperation = createObjectOperationQueue();
+
 // Wallet edits and accepted transfers share the same authority-side queue.
 // A global queue is sufficient for infrequent monetary writes and avoids a
 // two-Actor lock ordering deadlock during opposite-direction transfers.

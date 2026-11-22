@@ -9,11 +9,11 @@ import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.
 import { openNewDayDialog } from "./new-day.js";
 import { usesCalendariaStateProgression } from "./state-progression.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
-import { createCodedError } from "./document-writes.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 import { getCalendariaApi, getCalendariaQuarterInfo as readCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
 const enqueueRestOperation = createObjectOperationQueue();
-const PENDING_EFFECT_CLEANUPS = new WeakMap();
+const FLAG_PENDING_REST_CLEANUP = "pendingRestCleanup";
 
 export const REST_ATTRIBUTES = {
   strength: {
@@ -534,49 +534,8 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     return null;
   }
 
-  const pendingCleanup = PENDING_EFFECT_CLEANUPS.get(actor);
-  if (pendingCleanup && pendingCleanup.type === options.type) {
-    const currentEffects = actor?.effects ? [...actor.effects] : [];
-    const currentIds = new Set(currentEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
-    const remainingIds = pendingCleanup.effectIds.filter((id) => currentIds.has(id));
-    if (!remainingIds.length) {
-      PENDING_EFFECT_CLEANUPS.delete(actor);
-    } else {
-      const savedResult = pendingCleanup.result;
-      try {
-        await actor.deleteEmbeddedDocuments("ActiveEffect", remainingIds);
-        const afterEffects = actor?.effects ? [...actor.effects] : [];
-        const afterIds = new Set(afterEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
-        const stillRemaining = remainingIds.filter((id) => afterIds.has(id));
-        if (stillRemaining.length) {
-          PENDING_EFFECT_CLEANUPS.set(actor, { ...pendingCleanup, effectIds: stillRemaining });
-          throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
-        }
-        PENDING_EFFECT_CLEANUPS.delete(actor);
-        if (savedResult.changed) {
-          ui.notifications?.info?.(savedResult.notification);
-        } else {
-          ui.notifications?.info?.(qaLocalize("Rest.NoChanges", "Отдых завершён без изменений на листе."));
-        }
-        if (savedResult.changed || shouldPostNoChangeRestCards()) {
-          try {
-            await postRestChatMessage(actor, savedResult, options);
-          } catch (error) {
-            savedResult.notificationError = String(error?.message ?? error);
-            console.error(`${MODULE_ID} | rest applied but chat failed`, error);
-            ui.notifications?.warn?.(qaLocalize("Rest.ChatFailed", "Отдых применен, но сообщение в чат не отправлено."));
-          }
-        }
-        return savedResult;
-      } catch (error) {
-        console.error(`${MODULE_ID} | rest cleanup retry failed`, error);
-        ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
-        return { ...savedResult, failed: true, error };
-      }
-    }
-  }
-
-  const result = options.type === "short"
+  const pendingCleanup = options.type === "long" ? readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP) : null;
+  const result = pendingCleanup ? clonePlainJson(pendingCleanup.result) : options.type === "short"
     ? calculateShortRestChanges(actor, options, context)
     : calculateLongRestChanges(actor, options, context);
 
@@ -586,13 +545,13 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
   }
 
   try {
-    const effectIds = result.effectsToDelete
+    const effectIds = pendingCleanup?.effectIds ?? result.effectsToDelete
       .map((effect) => effect?.id ?? effect?._id)
       .filter(Boolean);
 
     // Actor data and the short-rest flag are one logical mutation. Keep them in
     // one Actor.update so a rest does not emit multiple updateActor/render cycles.
-    const actorUpdate = { ...result.updates };
+    const actorUpdate = pendingCleanup ? {} : { ...result.updates };
     if (result.flagValue !== undefined) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = result.flagValue;
     }
@@ -604,11 +563,20 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = null;
     }
 
+    if (effectIds.length && !pendingCleanup) {
+      actorUpdate[`flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`] = clonePlainJson({
+        effectIds, result: { ...result, effectsToDelete: [] }
+      });
+    }
     const hasActorUpdate = Object.keys(actorUpdate).length > 0;
     if (hasActorUpdate) {
       await actor.update(actorUpdate);
+      if (effectIds.length && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP),
+        actorUpdate[`flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`])) {
+        throw createCodedError("write-not-persisted", "Rest cleanup was not recorded.");
+      }
       for (const [path, expected] of Object.entries(result.updates)) {
-        if (getProperty(actor, path) !== expected) {
+        if (getProperty(actor._source ?? actor, path) !== expected) {
           throw createCodedError("write-not-persisted", `Rest update for ${path} was not persisted.`);
         }
       }
@@ -624,23 +592,15 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       }
     }
     if (effectIds.length) {
-      // Remember that the actor update already persisted so a retry after a
-      // vetoed ActiveEffect deletion finishes only the unfinished cleanup and
-      // never applies attribute recovery a second time.
-      if (hasActorUpdate) {
-        PENDING_EFFECT_CLEANUPS.set(actor, { type: options.type, effectIds: [...effectIds], result });
-      }
-      await actor.deleteEmbeddedDocuments("ActiveEffect", effectIds);
-      const remainingEffects = actor?.effects ? [...actor.effects] : [];
-      const remainingIds = new Set(remainingEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
-      const stillRemaining = effectIds.filter((id) => remainingIds.has(id));
-      if (stillRemaining.length) {
-        if (hasActorUpdate) {
-          PENDING_EFFECT_CLEANUPS.set(actor, { type: options.type, effectIds: stillRemaining, result });
-        }
+      const liveEffectIds = () => new Set(Array.from(actor.effects ?? [], effect => effect?.id ?? effect?._id));
+      const currentIds = liveEffectIds();
+      const remaining = effectIds.filter(id => currentIds.has(id));
+      if (remaining.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remaining);
+      const afterIds = liveEffectIds();
+      if (effectIds.some(id => afterIds.has(id))) {
         throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
       }
-      PENDING_EFFECT_CLEANUPS.delete(actor);
+      await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP);
     }
 
     if (result.changed) {

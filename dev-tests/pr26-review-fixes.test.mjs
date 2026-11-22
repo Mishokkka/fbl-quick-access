@@ -473,7 +473,8 @@ test("PR26: Rest ignores inactive condition ActiveEffects, honors legacy Calenda
     const finalResult = await dialogPromise;
     assert.equal(retryActor.system.attribute.strength.value, 2, "retry must not apply Strength recovery a second time");
     assert.equal(retryActor.effects.length, 0, "retry must finish deleting Sleepy ActiveEffect");
-    assert.equal(Boolean(finalResult?.failed), false);
+    assert.ok(finalResult?.changed);
+    assert.equal(finalResult.failed, undefined);
   } finally {
     restore();
   }
@@ -732,6 +733,7 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
         this.name = name;
         this.type = "character";
         this.documentName = "Actor";
+        this.flags = {};
         this.system = { currency: { gold: { value: gold }, silver: { value: 0 }, copper: { value: 0 } } };
       }
       testUserPermission(u) {
@@ -743,9 +745,7 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
         for (const u of updates) {
           if (u._id === "target" && FakeActor.vetoTarget) continue;
           const a = globalThis.game.actors.get(u._id);
-          if ("system.currency.gold.value" in u) a.system.currency.gold.value = u["system.currency.gold.value"];
-          if ("system.currency.silver.value" in u) a.system.currency.silver.value = u["system.currency.silver.value"];
-          if ("system.currency.copper.value" in u) a.system.currency.copper.value = u["system.currency.copper.value"];
+          for (const [path, value] of Object.entries(u)) if (path !== "_id") setFoundryPath(a, path, value);
         }
       }
     }
@@ -1023,8 +1023,8 @@ test("PR26: static guards confirm tooltips pinned/catch guards, STAT live-merge,
 
   assert.match(tooltipsSrc, /if\s*\(itemTooltipPinned\)\s*return;\s*\r?\n\s*itemTooltipPointer\s*=/);
   assert.match(tooltipsSrc, /if\s*\(request === itemTooltipRequest && itemTooltipAnchor === anchor\)\s*hideItemTooltip\(\);/);
-  assert.match(condMainSrc, /const liveById = new Map\(liveList\.map/);
-  assert.match(condMainSrc, /const previous = liveById\.get\(id\);\s*\r?\n\s*if\s*\(!previous\)\s*return;/);
+  assert.match(condMainSrc, /enqueueCustomConditionOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
+  assert.match(condMainSrc, /if \(!entry\) return false;\s*value = edit\(entry\[field\]\)/);
   assert.match(spSrc, /sameCalendariaDay\(liveContext\.date, approvedContext\.date\) && liveDays === approvedDays/);
   assert.match(spSrc, /if\s*\(!liveContext \|\| liveContext\.calendarId !== context\.calendarId\)\s*return;/);
 });

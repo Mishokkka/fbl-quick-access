@@ -4,9 +4,10 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
 import { findApplicationRoot, findBiographyTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { actorKey, decodeHtmlEntities, escapeHtml, stripHtml } from "./utils.js";
-import { clonePlainJson, createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 
 const PROFILE_VERSION = 1;
+const BIOGRAPHY_REPLACE_PATH = flagReplaceUpdatePath(MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
 const QUESTION_FIELDS = Object.freeze([
   ["bestFriend", "Bio.Questions.BestFriend", "Лучший друг или самый близкий человек"],
   ["favoriteFood", "Bio.Questions.FavoriteFood", "Любимое блюдо и причина"],
@@ -26,6 +27,7 @@ const DRAWERS = new Map();
 const SAVE_TIMERS = new Map();
 const SAVE_CHAINS = new Map();
 const SAVE_PENDING = new Map();
+const SAVE_RUNNING = new Map();
 const UNSAFE_PATH_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const COLLAPSED_SECTIONS = new Map();
 const FLOATING_ACTIONS = new WeakMap();
@@ -38,6 +40,7 @@ const LANGUAGE_LAYOUT_OBSERVERS = new WeakMap();
 const PILGRIM_SAVE_TIMERS = new Map();
 const PILGRIM_SAVE_CHAINS = new Map();
 const PILGRIM_PENDING = new Map();
+const PILGRIM_RUNNING = new Map();
 const DELETED_ACTORS = new WeakSet();
 
 export function normalizeBiographyProfile(value = {}) {
@@ -135,7 +138,7 @@ export async function savePilgrimCardProfile(actor, value, { render = false } = 
   }
   const profile = normalizePilgrimCardProfile(value);
   await actor.update({
-    [`flags.${MODULE_ID}.${FLAG_PILGRIM_CARD_PROFILE}`]: profile
+    [flagReplaceUpdatePath(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE)]: profile
   }, { render });
   const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
   return plainValuesEqual(persisted ?? null, profile);
@@ -180,7 +183,7 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
   profile.identity.name = String(profile.identity.name || actor.name || "").trim();
 
   const update = {
-    [`flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}`]: profile,
+    [BIOGRAPHY_REPLACE_PATH]: profile,
     "system.bio.kin.value": profile.identity.kin,
     "system.bio.profession.value": profile.identity.profession,
     "system.bio.pride.value": normalizeRichText(profile.pride),
@@ -194,7 +197,7 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
 async function writeBiographyUpdate(actor, update, render) {
   await actor.update(clonePlainJson(update), { render });
   for (const [path, expected] of Object.entries(update)) {
-    if (path === `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}`) {
+    if (path === BIOGRAPHY_REPLACE_PATH) {
       const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
       if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
       continue;
@@ -247,8 +250,10 @@ export function cleanupBiographyTab(root) {
 }
 
 export function releaseBiographyState(actorOrId) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
-  const actor = typeof actorOrId === "string" ? SAVE_PENDING.get(key)?.actor ?? PILGRIM_PENDING.get(key)?.actor : actorOrId;
+  const key = drawerKey(actorOrId);
+  const actor = typeof actorOrId === "string"
+    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key) ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)
+    : actorOrId;
   if (actor && typeof actor === "object") DELETED_ACTORS.add(actor);
   closeBiographyDrawer(key, { discardPending: true });
   SAVE_PENDING.delete(key);
@@ -267,7 +272,7 @@ export function releaseBiographyState(actorOrId) {
 }
 
 export function closeBiographyDrawer(actorOrId, { discardPending = false } = {}) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  const key = drawerKey(actorOrId);
   if (!discardPending) flushPilgrimSave(key);
   const record = DRAWERS.get(key);
   if (!record) return;
@@ -1392,6 +1397,7 @@ export function queueProfileSave(actor, state, status, delay = 350, path = null)
   const persistedPath = normalizeBiographySavePath(path);
   const pending = SAVE_PENDING.get(key) ?? { actor, patches: new Map(), status };
   pending.status = status;
+  if (persistedPath === "*") pending.patches.clear();
   pending.patches.set(persistedPath, cloneProfileValue(persistedPath === "*" ? state : getPathValue(state, persistedPath)));
   SAVE_PENDING.set(key, pending);
 
@@ -1410,41 +1416,39 @@ function flushProfileSave(key) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
-  const pending = SAVE_PENDING.get(key);
-  if (!pending) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
-  SAVE_PENDING.delete(key);
+  if (!SAVE_PENDING.has(key)) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
   const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false).then(async () => {
+    const pending = SAVE_PENDING.get(key);
+    if (!pending) return true;
+    SAVE_PENDING.delete(key);
     if (DELETED_ACTORS.has(pending.actor)) return false;
-    // Merge only independently captured edits with the live profile. A second
-    // sheet's snapshot must never overwrite fields edited by the first sheet.
-    const profile = getBiographyProfile(pending.actor);
-    for (const [path, value] of pending.patches) {
-      if (path === "*") Object.assign(profile, normalizeBiographyProfile(value));
-      else setPath(profile, path, value);
-    }
-    for (const path of [...pending.patches.keys()]) {
-      const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
-      if (!saved) {
-        throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
+    SAVE_RUNNING.set(key, pending.actor);
+    try {
+      for (const [path, value] of pending.patches) {
+        if (DELETED_ACTORS.has(pending.actor)) return false;
+        const profile = path === "*" ? value : getBiographyProfile(pending.actor);
+        if (path !== "*") setPath(profile, path, value);
+        const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+        if (!saved) throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
+        pending.patches.delete(path);
       }
-      // A later failure must not retry a path that has already committed.
-      pending.patches.delete(path);
+      if (!SAVE_PENDING.has(key)) setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
+      return true;
+    } catch (error) {
+      if (DELETED_ACTORS.has(pending.actor)) return false;
+      const newer = SAVE_PENDING.get(key);
+      if (!newer) SAVE_PENDING.set(key, pending);
+      else if (!newer.patches.has("*")) newer.patches = new Map([...pending.patches, ...newer.patches]);
+      console.error(`${MODULE_ID} | biography save failed`, error);
+      if (!newer) {
+        const errorMessage = t("Bio.Save.Error", "Ошибка сохранения");
+        setSaveStatus(pending.status, errorMessage, "is-error");
+        if (!pending.status) globalThis.ui?.notifications?.error?.(errorMessage);
+      }
+      return false;
+    } finally {
+      SAVE_RUNNING.delete(key);
     }
-    setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
-    return true;
-  }).catch(error => {
-    // Retain the draft; explicit flush or later editing can retry it after close.
-    if (DELETED_ACTORS.has(pending.actor)) return false;
-    const newer = SAVE_PENDING.get(key);
-    if (newer) for (const [path, value] of pending.patches) {
-      if (!newer.patches.has(path)) newer.patches.set(path, value);
-    }
-    else SAVE_PENDING.set(key, pending);
-    console.error(`${MODULE_ID} | biography save failed`, error);
-    const errorMessage = t("Bio.Save.Error", "Ошибка сохранения");
-    setSaveStatus(pending.status, errorMessage, "is-error");
-    if (!pending.status) globalThis.ui?.notifications?.error?.(errorMessage);
-    return false;
   });
   SAVE_CHAINS.set(key, chain);
   chain.finally(() => { if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key); });
@@ -1452,7 +1456,7 @@ function flushProfileSave(key) {
 }
 
 export function flushBiographySaves(actorOrId) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  const key = drawerKey(actorOrId);
   return Promise.all([flushProfileSave(key), flushPilgrimSave(key)]);
 }
 
@@ -1544,22 +1548,29 @@ function flushPilgrimSave(key) {
   const timer = PILGRIM_SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   PILGRIM_SAVE_TIMERS.delete(key);
-  const pending = PILGRIM_PENDING.get(key);
-  if (!pending) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
-  PILGRIM_PENDING.delete(key);
+  if (!PILGRIM_PENDING.has(key)) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
   const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false)
     .then(async () => {
+      const pending = PILGRIM_PENDING.get(key);
+      if (!pending) return true;
+      PILGRIM_PENDING.delete(key);
       if (DELETED_ACTORS.has(pending.actor)) return false;
-      const saved = await savePilgrimCardProfile(pending.actor, pending.state, { render: false });
-      if (!saved) throw createCodedError("write-not-persisted", "Pilgrim card save was not persisted.");
-      return true;
-    })
-    .catch(error => {
-      if (DELETED_ACTORS.has(pending.actor)) return false;
-      if (!PILGRIM_PENDING.has(key)) PILGRIM_PENDING.set(key, pending);
-      console.error(`${MODULE_ID} | pilgrim card save failed`, error);
-      globalThis.ui?.notifications?.error?.(t("Bio.Save.Error", "Ошибка сохранения"));
-      return false;
+      PILGRIM_RUNNING.set(key, pending.actor);
+      try {
+        const saved = await savePilgrimCardProfile(pending.actor, pending.state, { render: false });
+        if (!saved) throw createCodedError("write-not-persisted", "Pilgrim card save was not persisted.");
+        return true;
+      } catch (error) {
+        if (DELETED_ACTORS.has(pending.actor)) return false;
+        console.error(`${MODULE_ID} | pilgrim card save failed`, error);
+        if (!PILGRIM_PENDING.has(key)) {
+          PILGRIM_PENDING.set(key, pending);
+          globalThis.ui?.notifications?.error?.(t("Bio.Save.Error", "Ошибка сохранения"));
+        }
+        return false;
+      } finally {
+        PILGRIM_RUNNING.delete(key);
+      }
     });
   PILGRIM_SAVE_CHAINS.set(key, chain);
   chain.finally(() => { if (PILGRIM_SAVE_CHAINS.get(key) === chain) PILGRIM_SAVE_CHAINS.delete(key); });

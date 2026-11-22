@@ -4,9 +4,13 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { actorKey, escapeHtml, makeEntryId } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, hasFoundryDialogApi } from "./dialogs.js";
 import { findNoteTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { createObjectOperationQueue } from "./operation-queue.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
+const REPUTATION_DRAFTS = new WeakMap();
+const enqueueReputationSave = createObjectOperationQueue();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
 export const MAX_REPUTATION_POINTS = 1000;
 
@@ -106,6 +110,10 @@ export async function saveReputationEntries(actor, entries, { render = false } =
     [`flags.${MODULE_ID}.${FLAG_REPUTATION_ENTRIES}`]: normalized,
     [REPUTATION_PATH]: total
   }, { render });
+  if (!plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_REPUTATION_ENTRIES), normalized)
+    || (actor._source ?? actor).system?.bio?.reputation?.value !== total) {
+    throw createCodedError("write-not-persisted", "Reputation entries or total were not saved.");
+  }
   return true;
 }
 
@@ -180,7 +188,7 @@ export function setupReputationNoteSummary(actor, root) {
 }
 
 export function closeReputationDialog(actorOrId) {
-  const key = typeof actorOrId === "string" ? actorOrId : actorKey(actorOrId);
+  const key = actorKey(actorOrId);
   const dialog = OPEN_DIALOGS.get(key);
   if (!dialog) return false;
   OPEN_DIALOGS.delete(key);
@@ -204,13 +212,14 @@ export function openReputationDialog(app, actor) {
   }
 
   const editable = canModifyActor(actor);
-  const content = buildDialogContent(actor, editable);
+  const persistedEntries = getReputationEntries(actor);
+  const draft = editable ? REPUTATION_DRAFTS.get(actor) : null;
+  const content = buildDialogContent(actor, editable, draft ?? persistedEntries);
   let saveTimeout = null;
-  let saveChain = Promise.resolve();
   let dialogRoot = null;
   let revision = 0;
-  let dirty = false;
-  let lastSerialized = JSON.stringify(getReputationEntries(actor));
+  let dirty = Boolean(draft);
+  let lastSerialized = JSON.stringify(persistedEntries);
 
   const queueSave = (rowsRoot, status) => {
     if (!editable || !rowsRoot) return Promise.resolve(false);
@@ -218,34 +227,31 @@ export function openReputationDialog(app, actor) {
     const entries = collectRows(rowsRoot).map(({ entry }) => entry);
     const serialized = JSON.stringify(entries);
     if (!dirty && serialized === lastSerialized) return Promise.resolve(true);
+    REPUTATION_DRAFTS.set(actor, entries);
     setStatus(status, qaLocalize("Reputation.Saving", "Сохранение…"), "is-saving");
 
-    saveChain = saveChain
-      .catch(() => false)
-      .then(async () => {
-        const saved = await saveReputationEntries(actor, entries, { render: false });
-        if (saved) {
-          lastSerialized = serialized;
-          if (localRevision === revision) dirty = false;
-          updateSheetReputationPresentation(app, actor, entries);
-        }
-        return saved;
-      })
-      .then((saved) => {
-        if (localRevision === revision && saved) {
-          setStatus(status, qaLocalize("Reputation.Saved", "Сохранено"), "is-saved");
-        }
-        return saved;
-      })
-      .catch((error) => {
-        console.error(`${MODULE_ID} | reputation save failed`, error);
-        setStatus(status, error instanceof RangeError
-          ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
-          : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
-        return false;
-      });
-
-    return saveChain;
+    return enqueueReputationSave(actor, async () => {
+      if (!await saveReputationEntries(actor, entries, { render: false })) {
+        throw createCodedError("write-not-persisted", "Reputation entries were not saved.");
+      }
+      lastSerialized = serialized;
+      if (localRevision === revision) {
+        dirty = false;
+        setStatus(status, qaLocalize("Reputation.Saved", "Сохранено"), "is-saved");
+      }
+      if (REPUTATION_DRAFTS.get(actor) === entries) REPUTATION_DRAFTS.delete(actor);
+      updateSheetReputationPresentation(app, actor, entries);
+      return true;
+    }).catch((error) => {
+      console.error(`${MODULE_ID} | reputation save failed`, error);
+      if (localRevision !== revision) return false;
+      const message = error instanceof RangeError
+        ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
+        : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию.");
+      setStatus(status, message, "is-error");
+      if (!status?.isConnected) globalThis.ui?.notifications?.error?.(message);
+      return false;
+    });
   };
 
   const dialog = createFoundryDialog({
@@ -255,6 +261,8 @@ export function openReputationDialog(app, actor) {
     render: (html) => {
       dialogRoot = extractDialogElement(html);
       if (!dialogRoot) return;
+      if (dirty) setStatus(dialogRoot.querySelector?.("[data-role='save-status']"),
+        qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");
       dialogRoot.closest?.(".app, .application")?.classList.add("fblqa-reputation-dialog");
       const resize = () => scheduleReputationDialogAutoSize(dialog, dialogRoot);
       setupDialogInteractions({
@@ -264,10 +272,12 @@ export function openReputationDialog(app, actor) {
         editable,
         scheduleSave: (rowsRoot, status) => {
           if (!editable || !rowsRoot) return;
-          const serialized = JSON.stringify(collectRows(rowsRoot).map(({ entry }) => entry));
+          const entries = collectRows(rowsRoot).map(({ entry }) => entry);
+          const serialized = JSON.stringify(entries);
           if (serialized === lastSerialized && !dirty) return;
           revision += 1;
           dirty = true;
+          REPUTATION_DRAFTS.set(actor, entries);
           if (saveTimeout) globalThis.clearTimeout?.(saveTimeout);
           setStatus(status, qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");
           saveTimeout = globalThis.setTimeout?.(() => {
@@ -328,8 +338,7 @@ function bindReputationTrigger(element, app, actor) {
   }, true);
 }
 
-function buildDialogContent(actor, editable) {
-  const entries = getReputationEntries(actor);
+function buildDialogContent(actor, editable, entries = getReputationEntries(actor)) {
   const total = getReputationTotal(entries);
 
   return `
@@ -443,19 +452,19 @@ function setupDialogInteractions({ app, actor, root, editable, scheduleSave, sav
     const selections = states
       .filter((state) => state.selected)
       .map((state) => ({ entry: state.entry, amount: state.entry.amount }));
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollReputation(actor, states.map((state) => state.entry), selections);
   }));
 
   root.querySelector("[data-action='roll-half']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollRandomReputation(actor, entries, 2);
   }));
 
   root.querySelector("[data-action='roll-third']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollRandomReputation(actor, entries, 3);
   }));
 

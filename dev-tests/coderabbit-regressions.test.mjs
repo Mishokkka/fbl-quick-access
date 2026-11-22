@@ -195,7 +195,7 @@ test("new-day custom-condition application recalculates the live timer", () => {
 test("rest deletes ActiveEffects in one embedded-document batch", () => {
   const source = read("scripts", "rest.js");
 
-  assert.match(source, /deleteEmbeddedDocuments\("ActiveEffect", effectIds\)/);
+  assert.match(source, /deleteEmbeddedDocuments\("ActiveEffect", remaining\)/);
   assert.doesNotMatch(source, /for \(const effect of result\.effectsToDelete\) await effect\.delete/);
   assert.match(source, /statusEffect\?\.img \?\? statusEffect\?\.icon/);
 });
@@ -259,9 +259,9 @@ test("PR11: failed wash cleanup cannot fall through to the success path", () => 
 
 test("PR11: only the local GM may suppress provider private summaries", () => {
   const source = read("scripts", "integration", "new-day-providers.js");
-  assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && Boolean\(context\.requestUser\?\.isGM\) && !context\.isRemote/);
-  assert.match(source, /provider\.applyAction\(actor, action, providerContext\)/);
-  assert.match(source, /if \(!suppressChat\) await postPrivateSummary/);
+  assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && requestUser\.isGM && !context\.isRemote/);
+  assert.match(source, /provider\.applyAction\(actor, action, liveContext\)/);
+  assert.match(source, /if \(!liveContext\.suppressChat\) await postPrivateSummary/);
 });
 
 test("PR11: BIO mounting is guarded against duplicate hooks in one render pass", () => {

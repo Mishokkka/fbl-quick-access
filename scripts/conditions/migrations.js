@@ -12,6 +12,7 @@ import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
 import { createCodedError, plainValuesEqual } from "../document-writes.js";
+import { enqueueCustomConditionOperation } from "../operation-queue.js";
 import {
   buildSpecialCounterMigrationUpdate,
   buildHeatModifierUpdate,
@@ -219,25 +220,20 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 export async function migrateActorData(actor) {
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return false;
 
-  let changed = false;
-
-  if (await migrateLegacyActorFlags(actor)) changed = true;
-  if (await migrateLegacyItemFlags(actor)) changed = true;
-
-  const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
-  let customConditions = customNormalization.list;
-  if (customNormalization.changed) {
-    await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    assertPersistedMigration(
-      plainValuesEqual(actor.getFlag?.(MODULE_ID, FLAGS.LIST), customConditions),
-      `Normalized custom conditions were not persisted for ${actor.id}`
-    );
-    changed = true;
-  }
-
-  const ordering = await ensureConditionItemOrders(actor, customConditions);
-  customConditions = ordering.list;
-  if (ordering.changed) changed = true;
+  let changed = await enqueueCustomConditionOperation(actor, async () => {
+    const actorMigrated = await migrateLegacyActorFlags(actor);
+    const itemsMigrated = await migrateLegacyItemFlags(actor);
+    const normalized = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
+    if (normalized.changed) {
+      await actor.update({ [flagUpdatePath(FLAGS.LIST)]: normalized.list }, { render: false });
+      assertPersistedMigration(
+        plainValuesEqual(actor.getFlag?.(MODULE_ID, FLAGS.LIST), normalized.list),
+        `Normalized custom conditions were not persisted for ${actor.id}`
+      );
+    }
+    const ordering = await ensureConditionItemOrders(actor, normalized.list);
+    return actorMigrated || itemsMigrated || normalized.changed || ordering.changed;
+  });
 
   const itemUpdates = Array.from(actor.items ?? [])
     .filter(item => item.type === "criticalInjury")

@@ -347,8 +347,8 @@ test("Pilgrim Card is stored independently from Actor name and Forbidden Lands B
   await savePilgrimCardProfile(actor, card, { render: false });
 
   assert.equal(actor.updates.length, 1);
-  assert.deepEqual(Object.keys(actor.updates[0].data), ["flags.fbl-quick-access.pilgrimCardProfile"]);
-  assert.equal(actor.updates[0].data["flags.fbl-quick-access.pilgrimCardProfile"].identity.name, "Новое имя только в карте");
+  assert.deepEqual(Object.keys(actor.updates[0].data), ["flags.fbl-quick-access.==pilgrimCardProfile"]);
+  assert.equal(actor.updates[0].data["flags.fbl-quick-access.==pilgrimCardProfile"].identity.name, "Новое имя только в карте");
   assert.equal("name" in actor.updates[0].data, false);
   assert.equal(Object.keys(actor.updates[0].data).some((key) => key.startsWith("system.bio.")), false);
   assert.deepEqual(actor.updates[0].options, { render: false });

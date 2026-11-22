@@ -208,8 +208,7 @@ test("selected new-day actions update timers without applying unselected actions
 
   const injury = actor.items.find((item) => item.id === "injury");
   assert.deepEqual(injury.updates, [
-    { "system.healingTime": "2 days" },
-    { "system.limit": "1 day" }
+    { "system.healingTime": "2 days", "system.limit": "1 day" }
   ]);
   assert.equal(actor.savedConditions.find((condition) => condition.id === "custom").time, "1 day");
   assert.deepEqual(actor.unsetFlags, [], "an already-absent Short Rest flag must not trigger a Document write");
@@ -409,7 +408,7 @@ test("New Day combines contiguous simple Item updates into one Foundry bulk writ
   assert.deepEqual(item.updates, [], "per-Item updates are skipped when the bulk API succeeds");
 });
 
-test("New Day bulk-update failure falls back to the previous per-action semantics", async () => {
+test("New Day bulk-update failure preserves both timer changes in one per-item write", async () => {
   const item = makeItem("fallback-injury", "Fallback Injury", { healingTime: "3 days", lethal: "yes", limit: "2 days" });
   const items = new Map([[item.id, item]]);
   const actor = {
@@ -434,8 +433,7 @@ test("New Day bulk-update failure falls back to the previous per-action semantic
     assert.equal(result.failed.length, 0);
     assert.equal(result.succeeded.length, 2);
     assert.deepEqual(item.updates, [
-      { "system.healingTime": "2 days" },
-      { "system.limit": "1 day" }
+      { "system.healingTime": "2 days", "system.limit": "1 day" }
     ]);
   } finally {
     console.error = originalError;

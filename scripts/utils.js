@@ -7,7 +7,8 @@ export function getActorFromApp(app) {
 }
 
 export function actorKey(actor) {
-  return String(actor?.uuid ?? actor?.id ?? actor ?? "unknown");
+  const key = String(actor?.uuid ?? actor?.id ?? actor ?? "unknown");
+  return /^Actor\.[^.]+$/.test(key) ? key.slice(6) : key;
 }
 
 export function makeEntryId(prefix = "entry") {
@@ -75,16 +76,7 @@ const BASIC_HTML_ENTITIES = Object.freeze({
 
 export function decodeHtmlEntities(value) {
   const text = String(value ?? "");
-  if (!/&(?:[a-zA-Z]+|#\d+|#x[0-9a-fA-F]+);/.test(text)) return text;
-
-  if (typeof globalThis.DOMParser === "function") {
-    const doc = new globalThis.DOMParser().parseFromString(
-      `<textarea>${text.replace(/<\/textarea/gi, "&lt;/textarea")}</textarea>`,
-      "text/html"
-    );
-    const decoded = doc.querySelector("textarea")?.value;
-    if (typeof decoded === "string") return decoded;
-  }
+  if (!/&(?:[a-z][a-z0-9]*|#\d+|#x[0-9a-f]+);/i.test(text)) return text;
 
   if (typeof globalThis.document?.createElement === "function") {
     const template = globalThis.document.createElement("template");
@@ -104,23 +96,18 @@ export function decodeHtmlEntities(value) {
       const code = Number.parseInt(hex, 16);
       return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
     }
-    return BASIC_HTML_ENTITIES[named.toLowerCase()] ?? match;
+    const key = named.toLowerCase();
+    return Object.hasOwn(BASIC_HTML_ENTITIES, key) ? BASIC_HTML_ENTITIES[key] : match;
   });
 }
 
 /**
  * Strip HTML markup safely without executing inline handlers or fetching subresources.
- * Uses an inert DOMParser / <template> document when available.
+ * Uses an inert <template> when available.
  */
 export function stripHtml(text) {
   const raw = String(text ?? "");
   if (!raw) return "";
-
-  if (typeof globalThis.DOMParser === "function") {
-    const doc = new globalThis.DOMParser().parseFromString(raw, "text/html");
-    for (const node of doc.querySelectorAll("script, style, noscript")) node.remove();
-    return doc.body?.textContent ?? "";
-  }
 
   if (typeof globalThis.document?.createElement === "function") {
     const template = globalThis.document.createElement("template");

@@ -4,14 +4,14 @@ import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
-import { updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { applyMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
 import { initializeWalletOperations } from "../scripts/wallet.js";
 import { executeAsActiveGM } from "../scripts/integration/socket-api.js";
 import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scripts/integration/new-day-providers.js";
-import { enqueueCurrencyOperation } from "../scripts/operation-queue.js";
+import { enqueueCurrencyOperation, enqueueCustomConditionOperation } from "../scripts/operation-queue.js";
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
@@ -296,7 +296,7 @@ test("A15: remote second-GM action returns no private summary and cannot suppres
 test("provider apply rejects a stale/tampered action before invoking privileged code", async () => {
   reset(); const a = actor(); const providerModule = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]); let applications = 0;
   const unregister = providerModule.registerNewDayProvider({ id: "audit.stale", category: "audit", buildActions: async () => [{ id: "today", caseId: "allowed" }], applyAction: async () => { applications += 1; return {}; }, describeAction: () => "", icon: () => "fa-check" });
-  try { await assert.rejects(providerModule.handleApplyProviderAction({ actorUuid: a.uuid, providerId: "audit.stale", action: { id: "today", caseId: "other" } }, { requestUser: game.user, activeGM: game.user, isRemote: false })); assert.equal(applications, 0); }
+  try { await assert.rejects(providerModule.handleApplyProviderAction({ actorUuid: a.uuid, providerId: "audit.stale", action: { id: "today", caseId: "other" } }, { requesterId: game.user.id, requestUser: game.user, activeGM: game.user, isRemote: false }), { code: "stale-provider-action" }); assert.equal(applications, 0); }
   finally { unregister(); }
 });
 test("provider action revalidation preserves the existing index fallback", async () => {
@@ -305,8 +305,200 @@ test("provider action revalidation preserves the existing index fallback", async
   const unregister = providerModule.registerNewDayProvider({ id: "audit.index", category: "audit", buildActions: async () => structuredClone(actions),
     applyAction: async (_actor, action) => { applied = action; return { changed: true }; }, describeAction: () => "", icon: () => "fa-check" });
   try { await providerModule.handleApplyProviderAction({ actorUuid: a.uuid, providerId: "audit.index", actionId: "1", action: actions[1] },
-    { requestUser: game.user, activeGM: game.user, isRemote: false }); assert.deepEqual(applied, actions[1]); }
+    { requesterId: game.user.id, requestUser: game.user, activeGM: game.user, isRemote: false }); assert.deepEqual(applied, actions[1]); }
   finally { unregister(); }
+});
+
+test("provider apply rechecks ownership after the provider rebuild awaits", async () => {
+  reset();
+  const owner = user("owner");
+  game.users.push(owner);
+  const character = actor();
+  let allowed = true;
+  character.testUserPermission = () => allowed;
+  const { handleApplyProviderAction, registerNewDayProvider } = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]);
+  const action = { id: "daily" };
+  let applications = 0;
+  const unregister = registerNewDayProvider({
+    id: "audit.revoke", category: "audit",
+    async buildActions() { await Promise.resolve(); allowed = false; return [action]; },
+    async applyAction() { applications += 1; return { changed: true }; },
+    describeAction: () => "", icon: () => "fa-check"
+  });
+  try {
+    await assert.rejects(handleApplyProviderAction({ actorUuid: character.uuid, providerId: "audit.revoke", action }, {
+      requesterId: owner.id, requestUser: owner, activeGM: game.user, isRemote: true
+    }), { code: "actor-permission" });
+    assert.equal(applications, 0);
+  } finally {
+    unregister();
+  }
+});
+
+test("Mor gain resumes a vetoed Item write after reload without repeating damage or the roll", async () => {
+  reset();
+  let rolls = 0;
+  globalThis.Roll = class {
+    async evaluate() { rolls += 1; this.terms = [{ results: [{ result: 1 }] }]; return this; }
+    static fromJSON(raw) { return Object.assign(new this(), JSON.parse(raw)); }
+  };
+  const mor = item("mor", { healingTime: "1/0" }, "Mor");
+  const character = actor([mor]);
+  character.system.attribute.strength.value = 4;
+  const write = mor.update;
+  mor.update = async patch => Object.values(patch).includes(null) ? undefined : write(patch);
+  await assert.rejects(applyMorGain(character, mor), { code: "write-not-persisted" });
+  assert.equal(character.system.attribute.strength.value, 3);
+  assert.equal(getMorState(mor).current, 1);
+
+  const reloadedMor = item(mor.id, structuredClone(mor.system), "Mor");
+  reloadedMor.flags = structuredClone(mor.flags);
+  const reloadedActor = actor([reloadedMor]);
+  reloadedActor.flags = structuredClone(character.flags);
+  reloadedActor.system = structuredClone(character.system);
+  const result = await applyMorGain(reloadedActor, reloadedMor);
+  assert.equal(result.state.current, 2);
+  assert.equal(rolls, 1);
+  assert.equal(reloadedActor.system.attribute.strength.value, 3);
+});
+
+test("Biography keeps the more recent field edit when a queued write is vetoed", async () => {
+  reset();
+  const character = actor();
+  const initial = getBiographyProfile(character);
+  await character.setFlag(scope, "biographyProfile", initial);
+  const started = Promise.withResolvers();
+  const resume = Promise.withResolvers();
+  const write = character.update;
+  character.update = async patch => {
+    if (Object.values(patch).includes("older edit")) {
+      started.resolve();
+      await resume.promise;
+      return;
+    }
+    return write(patch);
+  };
+  queueProfileSave(character, { ...initial, concept: "older edit" }, null, 10_000, "concept");
+  const older = flushBiographySaves(character.id);
+  await started.promise;
+  queueProfileSave(character, { ...initial, concept: "newer edit" }, null, 10_000, "concept");
+  const newer = flushBiographySaves(character.id);
+  resume.resolve();
+  assert.equal((await older)[0], false);
+  assert.equal((await newer)[0], true);
+  await flushBiographySaves(character);
+  assert.equal(getBiographyProfile(character).concept, "newer edit");
+});
+
+test("whole BIO and Pilgrim Card saves drop obsolete keys while keeping migrated values", async () => {
+  reset();
+  const { saveBiographyProfile, savePilgrimCardProfile } = await import("../scripts/biography.js");
+  const character = actor();
+  const legacy = { identity: { name: character.name, country: "Old Country" } };
+  await character.setFlag(scope, "biographyProfile", structuredClone(legacy));
+  await character.setFlag(scope, "pilgrimCardProfile", structuredClone(legacy));
+  const write = character.update;
+  character.update = async patch => {
+    for (const path of [`flags.${scope}.biographyProfile`, `flags.${scope}.pilgrimCardProfile`]) {
+      if (Object.hasOwn(patch, path)) patch[path] = { ...patch[path], identity: { ...legacy.identity, ...patch[path].identity } };
+    }
+    return write(patch);
+  };
+  assert.equal(await saveBiographyProfile(character, legacy), true);
+  assert.equal(await savePilgrimCardProfile(character, legacy), true);
+  for (const key of ["biographyProfile", "pilgrimCardProfile"]) {
+    const saved = character.getFlag(scope, key);
+    assert.equal(saved.identity.issuingCountry, "Old Country");
+    assert.equal(Object.hasOwn(saved.identity, "country"), false);
+  }
+});
+
+test("Reputation rejects a veto, but accepts a no-op with an already persisted total and ledger", async () => {
+  reset();
+  const character = actor();
+  const write = character.update;
+  const entries = [{ id: "reputation", amount: 2, description: "Deed", location: "City" }];
+  character.update = async () => undefined;
+  await assert.rejects(saveReputationEntries(character, entries), { code: "write-not-persisted" });
+  character.update = write;
+  assert.equal(await saveReputationEntries(character, entries), true);
+  character.update = async () => undefined;
+  assert.equal(await saveReputationEntries(character, entries), true);
+});
+
+test("New Day rejects a changed legacy timer after waiting behind a STAT operation", async () => {
+  reset();
+  const character = actor();
+  const entry = { name: "Cold", time: "3 days", order: 10 };
+  const key = "conditions.list";
+  await character.setFlag(scope, key, [entry]);
+  const plan = buildNewDayPlan(character);
+  const action = plan.actions.find(candidate => candidate.kind === "custom-condition");
+  assert.ok(action);
+  const release = Promise.withResolvers();
+  const edit = enqueueCustomConditionOperation(character, async () => {
+    await release.promise;
+    await character.setFlag(scope, key, [{ ...entry, time: "8 days" }]);
+  });
+  const applying = applyNewDayPlan(character, plan, [action.id], { postChat: false });
+  release.resolve();
+  await edit;
+  const result = await applying;
+  assert.equal(result.succeeded.length, 0);
+  assert.equal(result.failed.length, 1);
+  assert.equal(character.getFlag(scope, key)[0].time, "8 days");
+});
+
+test("Long Rest verifies the source under Sleepy and resumes without recovering twice", async () => {
+  reset();
+  const { applyRest } = await expose("scripts/rest.js", ["applyRest"]);
+  const character = actor();
+  character.system.condition.sleepy = { value: true };
+  character.effects = [{ id: "sleepy", active: true, statuses: ["sleepy"] }];
+  character._source = { system: structuredClone(character.system) };
+  const write = character.update;
+  character.update = async patch => {
+    for (const [path, value] of Object.entries(patch)) if (path.startsWith("system.")) set(character._source, path, value);
+    await write(patch);
+    if (character.effects.length) character.system.condition.sleepy.value = true;
+  };
+  let deletes = 0;
+  character.deleteEmbeddedDocuments = async () => { deletes += 1; return []; };
+  const first = await applyRest(null, character, { type: "long" });
+  assert.equal(first.failed, true);
+  assert.equal(deletes, 1);
+  assert.equal(character._source.system.condition.sleepy.value, false);
+  assert.equal(character.system.condition.sleepy.value, true);
+  assert.equal(character.system.attribute.strength.value, 2);
+
+  const reloaded = actor();
+  reloaded.flags = structuredClone(character.flags);
+  reloaded.system = structuredClone(character._source.system);
+  reloaded.deleteEmbeddedDocuments = async () => { assert.fail("the effect is already gone"); };
+  const resumed = await applyRest(null, reloaded, { type: "long" });
+  assert.equal(resumed.changed, true);
+  assert.equal(resumed.failed, undefined);
+  assert.equal(reloaded.getFlag(scope, "pendingRestCleanup"), null);
+  assert.equal(reloaded.system.attribute.strength.value, 2);
+});
+
+test("bulk reset reports a refused marker and continues resetting the next Actor", async () => {
+  reset();
+  const { resetAllCalendarMarkersToCurrent } = await import("../scripts/state-progression.js");
+  const characters = [actor(), actor(), actor()];
+  for (const [index, character] of characters.entries()) {
+    const player = user(`player${index}`);
+    player.character = character;
+    game.users.push(player);
+    await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: "audit", date: { year: 1, month: 1, day: 1 } });
+  }
+  characters[1].update = async () => undefined;
+  const result = await resetAllCalendarMarkersToCurrent();
+  assert.equal(result.count, 2);
+  assert.deepEqual(result.failedActorIds, [characters[1].id]);
+  assert.deepEqual(result.succeededActorIds, [characters[0].id, characters[2].id]);
+  assert.equal(characters[1].getFlag(scope, "stateProgressionCalendaria").date.day, 1);
+  assert.equal(characters[2].getFlag(scope, "stateProgressionCalendaria").date.day, 3);
 });
 test("calendar failure records retain IDs without action payloads or private errors", async () => {
   reset(); const a = actor(); await calendar.recordCalendarFailures(a, context, context.date, [{ action: { id: "public-id", secret: "Hidden diagnosis" }, error: "Private failure" }]);

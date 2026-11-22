@@ -109,7 +109,9 @@ export function isItemCarriedForEncumbrance(item) {
 }
 
 export function normalizeItemCarryValue(value, booleanState = "") {
+  if (value && typeof value === "object") value = value.value;
   if (value === null || value === undefined || value === "") return "";
+  if (typeof value === "object") return "";
   if (typeof value === "boolean") return value ? (booleanState || "true") : "";
   if (typeof value === "number" && Number.isFinite(value)) return String(value);
 
