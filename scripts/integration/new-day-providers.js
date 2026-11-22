@@ -2,7 +2,7 @@ import { MODULE_ID } from "../constants.js";
 import { escapeHtml, humanizeKey } from "../utils.js";
 import { executeAsActiveGM, getActiveGM, registerSocketHandler } from "./socket-api.js";
 import { createObjectOperationQueue } from "../operation-queue.js";
-import { canonicalJson } from "../document-writes.js";
+import { createCodedError, plainValuesEqual } from "../document-writes.js";
 import { findGameUser } from "../socket-utils.js";
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
@@ -166,7 +166,7 @@ export function normalizeProviderActions(provider, rawActions) {
     }
     const rawId = normalizeProviderActionId(rawAction.id, index);
     if (seenIds.has(rawId)) {
-      throw new Error(`New-day provider ${provider.id} returned duplicate action id: ${rawId}`);
+      throw createCodedError("duplicate-provider-action", `New-day provider ${provider.id} returned duplicate action id: ${rawId}`);
     }
     seenIds.add(rawId);
     const itemName = String(rawAction.itemName ?? rawAction.label ?? rawAction.name ?? provider.id);
@@ -214,42 +214,25 @@ async function handleApplyProviderAction(payload, context) {
   assertRequesterCanManageActor(actor, context.requestUser);
 
   return enqueueProviderApply(actor, async () => {
-    const requestUser = await requireLiveApplyAuthority(actor, context);
-    // Private provider summaries are GM-visible audit output. A remote player
-    // must not be able to suppress them merely by forging a socket payload.
-    const suppressChat = Boolean(payload?.suppressChat) && requestUser.isGM && !context.isRemote;
-    const providerContext = Object.freeze({
+    const requestUser = requireLiveApplyAuthority(actor, context);
+    const buildContext = Object.freeze({
       requesterId: context.requesterId,
       requestUser,
       activeGM: context.activeGM,
-      isRemote: context.isRemote,
-      suppressChat
+      isRemote: context.isRemote
     });
-    const { suppressChat: _suppressChat, ...buildContext } = providerContext;
-    const freshActions = await provider.buildActions(actor, Object.freeze(buildContext)) ?? [];
-    if (!Array.isArray(freshActions)) throw new TypeError("Provider actions must be an array");
-    const seenIds = new Set();
-    for (let index = 0; index < freshActions.length; index += 1) {
-      const candidate = freshActions[index];
-      if (!candidate || typeof candidate !== "object") {
-        throw new TypeError(`New-day provider ${provider.id} returned a non-object action at index ${index}`);
-      }
-      const candidateId = normalizeProviderActionId(candidate.id, index);
-      if (seenIds.has(candidateId)) {
-        throw Object.assign(
-          new Error(`New-day provider ${provider.id} returned duplicate action id: ${candidateId}`),
-          { code: "duplicate-provider-action" }
-        );
-      }
-      seenIds.add(candidateId);
-    }
+    const freshActions = normalizeProviderActions(provider, await provider.buildActions(actor, buildContext));
     const actionId = normalizeProviderActionId(payload?.actionId ?? payload?.action?.id, 0);
-    const action = freshActions.find((candidate, index) => normalizeProviderActionId(candidate?.id, index) === actionId);
-    if (!action || canonicalJson(action) !== canonicalJson(payload.action)) {
-      throw Object.assign(new Error("Provider action changed. Refresh the preview."), { code: "stale-provider-action" });
+    const action = freshActions.find(candidate => candidate.providerActionId === actionId)?.providerAction;
+    const liveUser = requireLiveApplyAuthority(actor, context);
+    if (!action || !plainValuesEqual(action, payload.action)) {
+      throw createCodedError("stale-provider-action", "Provider action changed. Refresh the preview.");
     }
-    const liveUser = await requireLiveApplyAuthority(actor, context);
-    const liveContext = Object.freeze({ ...providerContext, requestUser: liveUser, suppressChat: suppressChat && liveUser.isGM });
+    const liveContext = Object.freeze({
+      ...buildContext,
+      requestUser: liveUser,
+      suppressChat: Boolean(payload?.suppressChat) && liveUser.isGM && !context.isRemote
+    });
     const result = await provider.applyAction(actor, action, liveContext) ?? {};
 
     const normalized = {
@@ -266,12 +249,18 @@ async function handleApplyProviderAction(payload, context) {
   });
 }
 
-async function requireLiveApplyAuthority(actor, context) {
-  if (await resolveActor({ actorId: actor.id, actorUuid: actor.uuid }) !== actor) {
-    throw Object.assign(new Error("New-day provider actor changed"), { code: "missing-actor" });
+function requireLiveApplyAuthority(actor, context) {
+  // Foundry can resolve live non-compendium documents synchronously. Keep the
+  // authority and action checks in the same turn as dispatch.
+  const fromUuidSync = globalThis.foundry?.utils?.fromUuidSync ?? globalThis.fromUuidSync;
+  const liveActor = actor.uuid && fromUuidSync
+    ? fromUuidSync(actor.uuid)
+    : globalThis.game?.actors?.get?.(actor.id);
+  if (liveActor !== actor) {
+    throw createCodedError("missing-actor", "New-day provider actor changed");
   }
   if (getActiveGM()?.id !== globalThis.game?.user?.id) {
-    throw Object.assign(new Error("Active GM changed"), { code: "active-gm-only" });
+    throw createCodedError("active-gm-only", "Active GM changed");
   }
   const user = findGameUser(context.requesterId);
   assertRequesterCanManageActor(actor, user);

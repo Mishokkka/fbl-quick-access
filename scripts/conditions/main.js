@@ -18,13 +18,13 @@ import {
   getAddictionState,
   applyHeatFailure,
   applyMorGain,
-  assertMorChangeAvailable,
   buildHeatModifierUpdate,
-  getMorState,
+  changePermanentMor,
+  clearStaleMorGain,
   normalizeAddictionSeverityChange,
   parseHeatValue,
-  updateHeatItem,
-  updateMorItem
+  removeCurrentMor,
+  updateHeatItem
 } from "./features/special-counters.js";
 import {
   activateConditionsTab,
@@ -697,7 +697,22 @@ export async function renderExpandedConditions(app, html) {
   // Mor.
   html.find(".conditions-tab").off("click", ".mor-item-x-plus").on("click", ".mor-item-x-plus", async (ev) => {
     await runSpecialItemAction(ev, async item => {
-      const { roll, state, diceCount, ones, appliedDamage } = await applyMorGain(app.actor, item, { render: false });
+      let result;
+      try {
+        result = await applyMorGain(app.actor, item, { render: false });
+      } catch (error) {
+        if (error?.code !== "stale-mor-gain") throw error;
+        const confirmed = await confirmDangerAction({
+          title: localize("Mor.ReviewGainTitle", "Review interrupted Mor gain"),
+          message: localize("Mor.ReviewGainMessage", "Mor changed before the pending gain could finish. Check the current Mor and any Strength damage before clearing the pending roll."),
+          confirmLabel: localize("Mor.ClearGain", "Clear pending roll"),
+          cancelLabel: localize("Delete.ConfirmNo", "Cancel"),
+          icon: "fas fa-biohazard"
+        });
+        if (confirmed) await clearStaleMorGain(item, error.pendingGainId, { render: false });
+        return null;
+      }
+      const { roll, state, diceCount, ones, appliedDamage } = result;
       syncAttributeDamageInputs(appliedDamage);
       const flavor = buildMorGainMessage(app.actor.name, state, diceCount, ones, appliedDamage);
       try {
@@ -711,18 +726,12 @@ export async function renderExpandedConditions(app, html) {
 
   html.find(".conditions-tab").off("click", ".mor-item-x-minus").on("click", ".mor-item-x-minus", async (ev) => {
     await runSpecialItemAction(ev, async item => {
-      assertMorChangeAvailable(item);
-      const mor = getMorState(item);
-      if (mor.current <= 0) {
+      const result = await removeCurrentMor(item, { render: false });
+      if (!result) {
         ui.notifications?.warn?.(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
         return null;
       }
-      const x = mor.current - 1;
-      let y = mor.permanent;
-      const roll = await new Roll("1d6").evaluate();
-      const becamePermanent = roll.total === 1;
-      if (becamePermanent) y += 1;
-      const state = await updateMorItem(item, x, y, { render: false });
+      const { roll, state, becamePermanent } = result;
       const flavor = buildMorRemoveMessage(app.actor.name, roll.total, state, becamePermanent);
       try {
         await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
@@ -735,11 +744,7 @@ export async function renderExpandedConditions(app, html) {
 
   html.find(".conditions-tab").off("click", ".mor-item-y-plus, .mor-item-y-minus").on("click", ".mor-item-y-plus, .mor-item-y-minus", async (ev) => {
     const isPlus = $(ev.currentTarget).hasClass("mor-item-y-plus");
-    await runSpecialItemAction(ev, async item => {
-      const mor = getMorState(item);
-      const y = isPlus ? mor.permanent + 1 : Math.max(0, mor.permanent - 1);
-      return updateMorItem(item, mor.current, y, { render: false });
-    });
+    await runSpecialItemAction(ev, item => changePermanentMor(item, isPlus ? 1 : -1, { render: false }));
   });
 
   // Custom conditions.

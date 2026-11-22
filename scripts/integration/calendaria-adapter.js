@@ -119,13 +119,16 @@ export function getCalendariaQuarterInfo() {
 
     const calendar = api.getActiveCalendar?.();
     const calendarId = String(calendar?.metadata?.id ?? calendar?.id ?? "").trim();
-    const rawHours = Number(calendar?.days?.hoursPerDay);
-    const quarterHours = Number.isFinite(rawHours) && rawHours > 0 ? rawHours / 4 : 6;
+    const hoursPerDay = positiveClockUnit(calendar?.days?.hoursPerDay, 24);
+    const minutesPerHour = positiveClockUnit(calendar?.days?.minutesPerHour, 60);
+    const secondsPerMinute = positiveClockUnit(calendar?.days?.secondsPerMinute, 60);
+    const secondsPerHour = minutesPerHour * secondsPerMinute;
+    const quarterSeconds = hoursPerDay * secondsPerHour / 4;
     const hour = Number.isFinite(Number(dateTime.hour)) ? Number(dateTime.hour) : 0;
     const minute = Number.isFinite(Number(dateTime.minute)) ? Number(dateTime.minute) : 0;
     const second = Number.isFinite(Number(dateTime.second)) ? Number(dateTime.second) : 0;
-    const timeOfDay = hour + (minute / 60) + (second / 3600);
-    const quarterIndex = Math.max(0, Math.min(3, Math.floor(timeOfDay / quarterHours)));
+    const elapsedSeconds = hour * secondsPerHour + minute * secondsPerMinute + second;
+    const quarterIndex = Math.max(0, Math.min(3, Math.floor(elapsedSeconds / quarterSeconds)));
     const legacyKey = `calendaria:${year}:${month}:${day}:q${quarterIndex}`;
     const key = calendarId
       ? `calendaria:${calendarId}:${year}:${month}:${day}:q${quarterIndex}`
@@ -140,4 +143,9 @@ export function getCalendariaQuarterInfo() {
   } catch (_error) {
     return null;
   }
+}
+
+function positiveClockUnit(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? number : fallback;
 }

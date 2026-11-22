@@ -52,7 +52,7 @@ export function plainValuesEqual(a, b) {
 function sortPlainValue(value) {
   if (Array.isArray(value)) return value.map(sortPlainValue);
   if (!value || typeof value !== "object") return value;
-  const result = {};
+  const result = Object.create(null);
   for (const key of Object.keys(value).sort()) {
     if (value[key] === undefined) continue;
     result[key] = sortPlainValue(value[key]);

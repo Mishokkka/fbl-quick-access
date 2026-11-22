@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { setImmediate as nextTurn } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
@@ -528,25 +529,28 @@ test("PR26: BIO retains pending draft on cancelled Actor.update and ownership lo
   }
 });
 
-test("PR26: Reputation tracks edit revision during in-flight save so concurrent edits are not lost on close", async () => {
+test("PR26: Reputation keeps the newest failed edit visible after reopening", async testContext => {
   const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement", "document"]);
   try {
+    testContext.mock.method(console, "error", () => {});
     const savedSnapshots = [];
-    let releaseFirstSave;
-    let updateCall = 0;
+    const firstSaveStarted = Promise.withResolvers();
+    const releaseFirstSave = Promise.withResolvers();
+    let allowSave = false;
 
     const actor = makeFoundryActor({
       id: "rep-race-actor",
-      _flags: { "fbl-quick-access": { reputationEntries: [{ id: "r1", amount: 1, description: "Old Town" }] } },
-      async update(patch) {
-        updateCall += 1;
-        if (updateCall === 1) {
-          await new Promise((r) => { releaseFirstSave = r; });
-        }
-        savedSnapshots.push(structuredClone(patch["flags.fbl-quick-access.reputationEntries"]));
-        return this;
-      }
+      _flags: { "fbl-quick-access": { reputationEntries: [{ id: "r1", amount: 1, description: "Old Town" }] } }
     });
+    const persist = actor.update;
+    actor.update = async patch => {
+      savedSnapshots.push(structuredClone(patch["flags.fbl-quick-access.reputationEntries"]));
+      if (savedSnapshots.length === 1) {
+        firstSaveStarted.resolve();
+        await releaseFirstSave.promise;
+      }
+      if (allowSave) return persist.call(actor, patch);
+    };
 
     class FakeDomNode {
       constructor(tag = "div") {
@@ -646,19 +650,17 @@ test("PR26: Reputation tracks edit revision during in-flight save so concurrent 
       }
     }
 
-    const rootEl = new FakeDomNode("div");
-    const rowsRoot = new FakeDomNode("div");
-    rowsRoot.classList.add("fblqa-reputation-rows");
-    const statusEl = new FakeDomNode("span");
-    statusEl.dataset.role = "save-status";
-    rootEl.append(rowsRoot, statusEl);
-
     globalThis.document = {
       createElement: (tag) => new FakeDomNode(tag)
     };
     class FakeDialogV2 {
       constructor() {
-        this.element = rootEl;
+        this.element = new FakeDomNode("div");
+        this.rowsRoot = new FakeDomNode("div");
+        this.rowsRoot.classList.add("fblqa-reputation-rows");
+        const status = new FakeDomNode("span");
+        status.dataset.role = "save-status";
+        this.element.append(this.rowsRoot, status);
         this._listeners = new Map();
       }
       addEventListener(t, fn) { this._listeners.set(t, fn); }
@@ -678,6 +680,7 @@ test("PR26: Reputation tracks edit revision during in-flight save so concurrent 
     const rep = await import(`../scripts/reputation.js?rep-rev=${Date.now()}`);
     const dialog = rep.openReputationDialog(null, actor);
     assert.ok(dialog);
+    const { rowsRoot } = dialog;
 
     const firstRow = rowsRoot.querySelector(".fblqa-reputation-row");
     const amountInput = firstRow.querySelector("input[data-field='amount']");
@@ -696,7 +699,7 @@ test("PR26: Reputation tracks edit revision during in-flight save so concurrent 
       const save1Fn = scheduledFn;
       scheduledFn = null;
       save1Fn();
-      await new Promise((r) => origSetTimeout(r, 10));
+      await firstSaveStarted.promise;
 
       // Edit 2 happens WHILE save 1 is in flight!
       amountInput.value = "3";
@@ -704,18 +707,25 @@ test("PR26: Reputation tracks edit revision during in-flight save so concurrent 
       assert.ok(scheduledFn, "edit 2 schedules another save");
 
       // Now save 1 resolves — dirty MUST remain true because revision advanced on edit 2!
-      releaseFirstSave();
-      await new Promise((r) => origSetTimeout(r, 10));
+      releaseFirstSave.resolve();
+      await nextTurn();
 
       // User closes dialog BEFORE edit 2's debounce fires -> close() MUST still save amount=3!
       await dialog.close();
-      await new Promise((r) => origSetTimeout(r, 20));
+      await nextTurn();
+      assert.deepEqual(savedSnapshots.map(entries => entries[0].amount), [2, 3]);
+      assert.equal(rep.getReputationEntries(actor)[0].amount, 1);
+
+      const reopened = rep.openReputationDialog(null, actor);
+      assert.equal(reopened.rowsRoot.querySelector("input[data-field='amount']").value, "3");
+      allowSave = true;
+      await reopened.close();
+      await nextTurn();
     } finally {
       globalThis.setTimeout = origSetTimeout;
     }
 
-    assert.equal(savedSnapshots.length, 2, "closing before debounce after concurrent edit must save the newer snapshot");
-    assert.equal(savedSnapshots[1][0].amount, 3);
+    assert.equal(rep.getReputationEntries(actor)[0].amount, 3);
   } finally {
     restore();
   }
@@ -883,7 +893,10 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
       getActiveCalendar: () => ({ id: "air" }),
       getCurrentDateTime: () => ({ year: 882, month: 4, day: 12 }),
       daysBetween: (a, b) => ordinal(b) - ordinal(a),
-      addDays: (d, n) => ({ ...d, day: d.day + n })
+      addDays: (date, days) => {
+        const day = ordinal(date) + days - 1;
+        return { year: Math.floor(day / 360), month: Math.floor(day % 360 / 30) + 1, day: day % 30 + 1 };
+      }
     };
     globalThis.CALENDARIA = { api };
     globalThis.foundry = { utils: { randomID: () => "rand-new-id", deepClone: (v) => structuredClone(v) } };
@@ -933,15 +946,30 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
     assert.equal(firstRewind.ok, false);
     assert.equal(firstRewind.count, 1);
     assert.deepEqual(firstRewind.failedActorIds, ["rewind-b"]);
+    assert.deepEqual(Object.keys(firstRewind.targetDates), [actorB.id]);
     assert.deepEqual(actorA.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 10 });
     assert.deepEqual(actorB.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 12 });
 
-    // Fix B and retry using targetDates -> A stays at day 10 (NOT day 8!), B moves to day 10!
+    const nextDay = { ...context, date: { ...context.date, day: 11 } };
+    await sp.setActorCalendarMarker(actorA, nextDay);
     actorB.setCancelUpdate(false);
+    await sp.setActorCalendarMarker(actorB, nextDay);
+    const staleRetry = await sp.rewindAllCalendarMarkers(2, context, api, { targetDates: firstRewind.targetDates });
+    assert.equal(staleRetry.failed[0]?.error.code, "stale-calendar-marker");
+    assert.deepEqual(sp.getActorCalendarMarker(actorB).date, nextDay.date);
+
+    await sp.setActorCalendarMarker(actorB, context);
     const retryRewind = await sp.rewindAllCalendarMarkers(2, context, api, { targetDates: firstRewind.targetDates });
     assert.equal(retryRewind.ok, true);
-    assert.deepEqual(actorA.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 10 }, "Actor A must not shift a second time on retry");
+    assert.deepEqual(sp.getActorCalendarMarker(actorA).date, nextDay.date);
     assert.deepEqual(actorB.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 10 });
+    const repeated = await sp.rewindAllCalendarMarkers(2, context, api, { targetDates: firstRewind.targetDates });
+    assert.equal(repeated.succeeded[0]?.changed, false);
+
+    await assert.rejects(sp.rewindActorCalendarMarker(actorA, 365, context, api), { code: "rewind-backlog-limit" });
+    assert.deepEqual(sp.getActorCalendarMarker(actorA).date, nextDay.date);
+    const capped = await sp.rewindActorCalendarMarker(actorA, 364, context, api);
+    assert.equal(api.daysBetween(capped.marker.date, context.date), 365);
 
     // 3. Vetoed marker write after committed New Day actions must NOT replay injury decrement on retry
     const injury = {
@@ -1009,6 +1037,8 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
       selectedPreconditions: { [refreshedAction.id]: refreshedPlan.preconditions[refreshedAction.id] }
     });
     assert.equal(retryRes.status, "processed");
+    assert.deepEqual(retryRes.calendarResult.recoveredMarkerDate, { year: 882, month: 4, day: 12 });
+    assert.deepEqual(retryRes.calendarResult.days, []);
     assert.equal(injury.system.healingTime, "4 days", "retry must NOT replay already committed injury decrement");
     assert.deepEqual(replayActor.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 12 });
   } finally {
@@ -1026,5 +1056,4 @@ test("PR26: static guards confirm tooltips pinned/catch guards, STAT live-merge,
   assert.match(condMainSrc, /enqueueCustomConditionOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
   assert.match(condMainSrc, /if \(!entry\) return false;\s*value = edit\(entry\[field\]\)/);
   assert.match(spSrc, /sameCalendariaDay\(liveContext\.date, approvedContext\.date\) && liveDays === approvedDays/);
-  assert.match(spSrc, /if\s*\(!liveContext \|\| liveContext\.calendarId !== context\.calendarId\)\s*return;/);
 });

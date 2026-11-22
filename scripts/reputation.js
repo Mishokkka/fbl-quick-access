@@ -214,7 +214,7 @@ export function openReputationDialog(app, actor) {
   const editable = canModifyActor(actor);
   const persistedEntries = getReputationEntries(actor);
   const draft = editable ? REPUTATION_DRAFTS.get(actor) : null;
-  const content = buildDialogContent(actor, editable, draft ?? persistedEntries);
+  const content = buildDialogContent(editable, draft ?? persistedEntries);
   let saveTimeout = null;
   let dialogRoot = null;
   let revision = 0;
@@ -266,10 +266,10 @@ export function openReputationDialog(app, actor) {
       dialogRoot.closest?.(".app, .application")?.classList.add("fblqa-reputation-dialog");
       const resize = () => scheduleReputationDialogAutoSize(dialog, dialogRoot);
       setupDialogInteractions({
-        app,
         actor,
         root: dialogRoot,
         editable,
+        entries: (editable ? REPUTATION_DRAFTS.get(actor) : null) ?? getReputationEntries(actor),
         scheduleSave: (rowsRoot, status) => {
           if (!editable || !rowsRoot) return;
           const entries = collectRows(rowsRoot).map(({ entry }) => entry);
@@ -305,7 +305,7 @@ export function openReputationDialog(app, actor) {
       const rowsRoot = dialogRoot?.querySelector?.(".fblqa-reputation-rows");
       const status = dialogRoot?.querySelector?.("[data-role='save-status']");
       if (editable && rowsRoot && dirty) void queueSave(rowsRoot, status);
-      OPEN_DIALOGS.delete(key);
+      if (OPEN_DIALOGS.get(key) === dialog) OPEN_DIALOGS.delete(key);
     }
   }, {
     classes: ["fblqa-reputation-dialog"],
@@ -338,7 +338,7 @@ function bindReputationTrigger(element, app, actor) {
   }, true);
 }
 
-function buildDialogContent(actor, editable, entries = getReputationEntries(actor)) {
+function buildDialogContent(editable, entries) {
   const total = getReputationTotal(entries);
 
   return `
@@ -394,12 +394,12 @@ function buildDialogContent(actor, editable, entries = getReputationEntries(acto
   `;
 }
 
-function setupDialogInteractions({ app, actor, root, editable, scheduleSave, saveNow, resize }) {
+function setupDialogInteractions({ actor, root, editable, entries, scheduleSave, saveNow, resize }) {
   const rowsRoot = root.querySelector(".fblqa-reputation-rows");
   const status = root.querySelector("[data-role='save-status']");
   if (!rowsRoot) return;
 
-  for (const entry of getReputationEntries(actor)) rowsRoot.append(buildRow(entry, editable, true));
+  for (const entry of entries) rowsRoot.append(buildRow(entry, editable, true));
   if (editable) rowsRoot.append(buildRow(null, editable, false));
   refreshDialogSummary(root);
 

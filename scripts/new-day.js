@@ -225,7 +225,7 @@ function isCustomConditionAction(action) {
   return !action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire");
 }
 
-function actionPrecondition(actor, action, customConditions) {
+function actionPrecondition(actor, action, customConditions, appliedHealing) {
   if (action.providerId) {
     return opaquePreconditionToken({
       providerId: action.providerId,
@@ -245,16 +245,23 @@ function actionPrecondition(actor, action, customConditions) {
   if (action.kind === "addiction-day") {
     return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
   }
-  return opaquePreconditionToken([action.kind, item.id, item.type, item.name, item.system?.healingTime,
+  let healingTime = item.system?.healingTime;
+  if (action.kind === "lethal-limit" && appliedHealing) {
+    if (!Object.is(healingTime, appliedHealing.after)) return null;
+    healingTime = appliedHealing.before;
+  }
+  return opaquePreconditionToken([action.kind, item.id, item.type, item.name, healingTime,
     action.kind === "lethal-limit" ? item.system?.limit : null, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
 }
 
-function assertActionCurrent(actor, plan, action, customConditions) {
+function assertActionCurrent(actor, plan, action, { customConditions, appliedHealing } = {}) {
   if ((action.providerId || action.kind !== "addiction-day") && getPendingAddictions(actor).length) {
     throw createCodedError("awaiting-endurance", qaLocalize("NewDay.PendingBlocked", "Resolve pending Addiction checks in STAT before advancing other timers."));
   }
   const expected = plan?.preconditions?.[action.id];
-  const current = expected !== undefined || isCustomConditionAction(action) ? actionPrecondition(actor, action, customConditions) : undefined;
+  const current = expected !== undefined || isCustomConditionAction(action)
+    ? actionPrecondition(actor, action, customConditions, appliedHealing)
+    : undefined;
   if (current === null || (expected !== undefined && expected !== current)) {
     const error = new Error(qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
     error.code = "stale-plan";
@@ -304,7 +311,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     await enqueueCustomConditionOperation(actor, async () => {
       const conditions = getCustomConditions(actor);
       const current = customActions.filter(action => {
-        try { assertActionCurrent(actor, plan, action, conditions); return true; }
+        try { assertActionCurrent(actor, plan, action, { customConditions: conditions }); return true; }
         catch (error) { results.push(failureResult(action, error)); return false; }
       });
       if (!current.length) return;
@@ -463,77 +470,60 @@ async function applyItemUpdateBatch(actor, plan, actions, results, documentOptio
       results.push(failureResult(action, error));
       continue;
     }
-    valid.push({ action, item });
+    valid.push({ action, healingBefore: item.system?.healingTime });
   }
   if (!valid.length) return;
 
-  if (typeof actor.updateEmbeddedDocuments === "function") {
+  const appliedHealing = new Map();
+  const remaining = typeof actor.updateEmbeddedDocuments === "function" ? await applyBulkUpdates() : valid;
+  for (const entry of remaining) {
+    const { action } = entry;
+    const item = getActorItem(actor, action.itemId);
+    try {
+      if (!item) throw new Error(`Missing item ${action.itemId}`);
+      assertActionCurrent(actor, plan, action, { appliedHealing: appliedHealing.get(action.itemId) });
+    } catch (error) {
+      results.push(failureResult(action, error));
+      continue;
+    }
+
+    let updateError;
+    try {
+      await item.update(getSimpleItemUpdate(action), documentOptions);
+    } catch (error) {
+      updateError = error;
+    }
+    if (!recordIfPersisted(entry)) {
+      results.push(failureResult(action, updateError ?? `New Day update for item ${action.itemId} was not persisted.`));
+    }
+  }
+
+  async function applyBulkUpdates() {
     const updatesById = new Map();
     for (const { action } of valid) {
-      const update = getSimpleItemUpdate(action);
-      if (!update) continue;
       const current = updatesById.get(action.itemId) ?? { _id: action.itemId };
-      Object.assign(current, update);
+      Object.assign(current, getSimpleItemUpdate(action));
       updatesById.set(action.itemId, current);
     }
 
     try {
       await actor.updateEmbeddedDocuments("Item", [...updatesById.values()], documentOptions);
-      const unpersisted = valid.filter(({ action }) => !isSimpleItemUpdatePersisted(getActorItem(actor, action.itemId), action));
-      if (!unpersisted.length) {
-        for (const { action } of valid) results.push(successResult(action));
-        return;
-      }
-      throw createCodedError("write-not-persisted", `New Day bulk item update did not persist ${unpersisted.length} change(s).`);
     } catch (error) {
-      // A bulk write can fail because one embedded Item is stale or rejected by
-      // another module. Fall back to the original per-action path so one bad
-      // update does not change the previous partial-success semantics.
       console.error(`${MODULE_ID} | new-day item update batch failed; retrying individually`, error);
     }
-
-    await applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions, { acceptPersisted: true });
-    return;
+    return valid.filter(entry => !recordIfPersisted(entry));
   }
 
-  // Compatibility fallback for test doubles and wrappers without the bulk API.
-  await applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions);
-}
-
-async function applyItemUpdatesIndividually(actor, plan, valid, results, documentOptions, { acceptPersisted = false } = {}) {
-  const actionsByItem = new Map();
-  for (const { action } of valid) {
-    if (!actionsByItem.has(action.itemId)) actionsByItem.set(action.itemId, []);
-    actionsByItem.get(action.itemId).push(action);
-  }
-
-  for (const [itemId, actions] of actionsByItem) {
-    const item = getActorItem(actor, itemId);
-    const current = actions.filter(action => {
-      if (acceptPersisted && isSimpleItemUpdatePersisted(item, action)) {
-        results.push(successResult(action));
-        return false;
-      }
-      try {
-        if (!item) throw new Error(`Missing item ${itemId}`);
-        assertActionCurrent(actor, plan, action);
-        return true;
-      } catch (error) {
-        results.push(failureResult(action, error));
-        return false;
-      }
-    });
-    if (!current.length) continue;
-    try {
-      await item.update(Object.assign({}, ...current.map(getSimpleItemUpdate)), documentOptions);
-      for (const action of current) {
-        const persisted = isSimpleItemUpdatePersisted(getActorItem(actor, itemId), action);
-        results.push(persisted ? successResult(action) : failureResult(action, `New Day update for item ${itemId} was not persisted.`));
-      }
-    } catch (error) {
-      console.error(`${MODULE_ID} | new-day item update failed`, itemId, error);
-      for (const action of current) results.push(failureResult(action, error));
+  function recordIfPersisted({ action, healingBefore }) {
+    const item = getActorItem(actor, action.itemId);
+    if (!isSimpleItemUpdatePersisted(item, action)) return false;
+    if (action.kind === "injury-healing") {
+      // The lethal-limit preview also depends on healing time. Account for a
+      // verified write from this batch, then require that value to still match.
+      appliedHealing.set(action.itemId, { before: healingBefore, after: item.system?.healingTime });
     }
+    results.push(successResult(action));
+    return true;
   }
 }
 

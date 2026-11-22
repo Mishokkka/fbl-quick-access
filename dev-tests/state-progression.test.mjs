@@ -4,7 +4,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { setImmediate as nextTurn } from "node:timers/promises";
-import { getCalendariaContext } from "../scripts/integration/calendaria-adapter.js";
+import { getCalendariaContext, getCalendariaQuarterInfo } from "../scripts/integration/calendaria-adapter.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(join(root, "scripts/state-progression.js"), "utf8");
@@ -95,12 +95,18 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
     getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? marker : undefined,
     async setFlag(_scope, key, value) { assert.equal(key, "stateProgressionCalendaria"); marker = value; }
   };
+  let missingMarker;
+  const uninitialized = {
+    id: "uninitialized", type: "character", documentName: "Actor",
+    getFlag: () => missingMarker,
+    async setFlag(_scope, key, value) { assert.equal(key, "stateProgressionCalendaria"); missingMarker = value; }
+  };
   const gm = { id: "gm", isGM: true, active: true };
   const hooks = new Map();
   const warnings = [];
   globalThis.game = {
-    user: gm, users: [gm, { id: "player", character: actor, active: true }],
-    actors: new Map([[actor.id, actor]]), modules: new Map([["calendaria", { active: true }]]),
+    user: gm, users: [gm, { id: "player", character: actor, active: true }, { id: "second", character: uninitialized, active: true }],
+    actors: new Map([[actor.id, actor], [uninitialized.id, uninitialized]]), modules: new Map([["calendaria", { active: true }]]),
     settings: { get: () => "calendaria" }
   };
   globalThis.Hooks = { on(event, callback) { hooks.set(event, [...(hooks.get(event) ?? []), callback]); } };
@@ -118,14 +124,33 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
   for (const callback of hooks.get("calendaria.calendarSwitched")) callback();
   await nextTurn();
   assert.deepEqual(marker.date, previousDate);
+  assert.equal(missingMarker, undefined);
   delete game.modules.get("calendaria").api;
   for (const callback of hooks.get("calendaria.ready")) callback({ api });
   await nextTurn();
   assert.equal(getCalendariaContext().api, api);
   assert.deepEqual(marker.date, previousDate);
+  assert.deepEqual(missingMarker, { calendarId: "air-islands", date });
   for (const callback of hooks.get("calendaria.calendarSwitched")) callback();
   await nextTurn();
   assert.deepEqual(marker.date, date);
+});
+
+test("Short Rest quarters respect Calendaria's minutes and seconds as well as hours", testContext => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "CALENDARIA");
+  testContext.after(() => {
+    if (original) Object.defineProperty(globalThis, "CALENDARIA", original);
+    else delete globalThis.CALENDARIA;
+  });
+  let time;
+  globalThis.CALENDARIA = { api: {
+    getActiveCalendar: () => ({ id: "custom", days: { hoursPerDay: 25, minutesPerHour: 41, secondsPerMinute: 20 } }),
+    getCurrentDateTime: () => ({ year: 12, month: 1, day: 2, ...time })
+  } };
+  time = { hour: 6, minute: 10, second: 4 };
+  assert.equal(getCalendariaQuarterInfo()?.key, "calendaria:custom:12:1:2:q0");
+  time.second = 5;
+  assert.equal(getCalendariaQuarterInfo()?.key, "calendaria:custom:12:1:2:q1");
 });
 
 test("calendar application suppresses new-day chat output", () => {

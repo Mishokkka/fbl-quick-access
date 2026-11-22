@@ -819,7 +819,7 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
 test("Rest detects ActiveEffect even when system.condition value is false, and serializes parallel Short Rests per actor", async () => {
   const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement"]);
   try {
-    let dialogConfig = null;
+    const dialogs = [];
     class FakeElement {
       matches(selector) { return selector === "form"; }
       querySelector() { return null; }
@@ -839,14 +839,16 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
     }
     class FakeDialogV2 {
       constructor(config) {
-        dialogConfig = config;
+        this.config = config;
         this.element = new FakeElement();
         this.form = new FakeShortForm();
         this.listeners = new Map();
+        this.closed = false;
+        dialogs.push(this);
       }
       addEventListener(type, listener) { this.listeners.set(type, listener); }
       render() { return Promise.resolve(this); }
-      close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
+      close() { this.closed = true; this.listeners.get("close")?.(); return Promise.resolve(this); }
     }
 
     globalThis.HTMLElement = FakeElement;
@@ -894,15 +896,15 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
     };
 
     const p1 = rest.openRestDialog(null, actor, null);
-    const apply1 = dialogConfig.buttons.find((b) => b.action === "apply");
     const p2 = rest.openRestDialog(null, actor, null);
-    const apply2 = dialogConfig.buttons.find((b) => b.action === "apply");
-
-    await Promise.all([
-      apply1.callback({}, { form: new FakeShortForm() }, { element: new FakeElement(), close: async () => {} }),
-      apply2.callback({}, { form: new FakeShortForm() }, { element: new FakeElement(), close: async () => {} })
-    ]);
-    await Promise.all([p1, Promise.race([p2, new Promise((r) => setTimeout(r, 30))])]);
+    await Promise.all(dialogs.map(dialog => dialog.config.buttons.find(button => button.action === "apply")
+      .callback({}, { form: dialog.form }, dialog)));
+    assert.equal(dialogs[0].closed, true);
+    assert.equal(dialogs[1].closed, false);
+    await dialogs[1].close();
+    const [applied, cancelled] = await Promise.all([p1, p2]);
+    assert.equal(applied?.changed, true);
+    assert.equal(cancelled, null);
 
     assert.equal(strengthUpdates, 1, "parallel Short Rests in the same quarter must serialize and apply at most once");
     assert.equal(actor.system.attribute.strength.value, 2);

@@ -4,7 +4,8 @@ import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
-import { applyMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { applyMorGain, changePermanentMor, clearStaleMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { canonicalJson } from "../scripts/document-writes.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
@@ -102,11 +103,34 @@ async function expose(path, names) {
   return exposedModules.get(key);
 }
 reset();
-const calendar = await expose("scripts/state-progression.js", ["processActorAutomaticDays", "recordCalendarFailures"]);
+const calendar = await expose("scripts/state-progression.js", [
+  "buildPlayerResultContent", "handleCalendariaMultiDayJump", "processActorAutomaticDays", "recordCalendarFailures",
+  "resetAllFromGMSummary", "rewindAllFromGMSummary"
+]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["executeMoneyTransfer", "processTransferDecision"]);
 const start = { year: 1, month: 1, day: 1 };
 const context = { calendarId: "audit", date: { ...start, day: 3 } };
+
+function captureCalendarDialogs() {
+  const dialogs = [];
+  foundry.applications = { api: { DialogV2: class {
+    constructor(config) { this.config = config; dialogs.push(this); }
+    addEventListener() {}
+    close() {}
+    render() {}
+    submit(action) { return this.config.buttons.find(button => button.action === action).callback({}, {}, this); }
+  } } };
+  return dialogs;
+}
+
+function assignedActor(items) {
+  const character = actor(items);
+  const owner = user(`owner-${character.id}`);
+  owner.character = character;
+  game.users.push(owner);
+  return character;
+}
 
 test("A01: overlapping calendar requests read the live marker inside the queue", async () => {
   reset(); const a = actor([item("timer", { healingTime: "10 days" })]);
@@ -115,11 +139,94 @@ test("A01: overlapping calendar requests read the live marker inside the queue",
   assert.equal(a.items[0].system.healingTime, "8 days");
   assert.equal(results.reduce((sum, result) => sum + result.processedDays, 0), 2);
 });
-test("A01: a later overlapping target processes only remaining dates", async () => {
+test("A01: a later calendar date supersedes a queued time skip after the started day", async () => {
   reset(); const a = actor([item("timer", { healingTime: "10 days" })]);
   await a.setFlag(scope, "stateProgressionCalendaria", { calendarId: "audit", date: start });
-  await Promise.all([calendar.processActorAutomaticDays(a, start, context, 2), calendar.processActorAutomaticDays(a, start, { ...context, date: { ...start, day: 4 } }, 3)]);
+  const nextContext = { ...context, date: { ...start, day: 4 } };
+  const write = a.update;
+  a.update = async patch => {
+    await write(patch);
+    if (patch[`flags.${scope}.==stateProgressionCalendaria`]?.date.day === 2) {
+      CALENDARIA.api.getCurrentDateTime = () => nextContext.date;
+    }
+  };
+  const first = calendar.processActorAutomaticDays(a, start, context, 2);
+  const next = calendar.processActorAutomaticDays(a, start, nextContext, 3);
+  await assert.rejects(first, { code: "stale-calendar-day" });
+  assert.equal((await next).processedDays, 2);
   assert.equal(a.items[0].system.healingTime, "7 days");
+});
+
+test("a confirmation from the old calendar cannot replace another calendar's baseline", async () => {
+  reset();
+  const dialogs = captureCalendarDialogs();
+  const character = assignedActor();
+  const skip = calendar.handleCalendariaMultiDayJump(start, { ...context, api: CALENDARIA.api }, 2);
+  await delay(0);
+  const confirmation = dialogs.at(-1);
+  assert.match(confirmation.config.window.title, /time skip/i);
+
+  CALENDARIA.api.getActiveCalendar = () => ({ id: "new-calendar" });
+  const newMarker = { calendarId: "new-calendar", date: context.date };
+  await character.setFlag(scope, "stateProgressionCalendaria", newMarker);
+  await confirmation.submit("yes");
+  await skip;
+  assert.deepEqual(calendar.getActorCalendarMarker(character), newMarker);
+  assert.deepEqual(character.updates, []);
+});
+
+test("bulk reset leaves markers untouched when the confirmation date changes", async () => {
+  reset();
+  const dialogs = captureCalendarDialogs();
+  const characters = [assignedActor(), assignedActor()];
+  const original = { calendarId: context.calendarId, date: start };
+  for (const character of characters) await character.setFlag(scope, "stateProgressionCalendaria", original);
+  const manager = await calendar.openStateProgressionManager();
+  const resetting = calendar.resetAllFromGMSummary(manager);
+  const confirmation = dialogs.at(-1);
+  CALENDARIA.api.getCurrentDateTime = () => ({ ...context.date, day: 4 });
+  await confirmation.submit("yes");
+  await resetting;
+  for (const character of characters) {
+    assert.deepEqual(calendar.getActorCalendarMarker(character), original);
+    assert.deepEqual(character.updates, []);
+  }
+});
+
+test("bulk rewind keeps Resolve available for an interrupted day", async () => {
+  reset();
+  const dialogs = captureCalendarDialogs();
+  const character = assignedActor();
+  const unfinished = {
+    id: "unfinished", phase: "applying", calendarId: context.calendarId, previousDate: start,
+    date: { ...start, day: 2 }, through: { ...start, day: 2 }
+  };
+  await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: start });
+  await character.setFlag(scope, "stateProgressionOperation", unfinished);
+  const manager = await calendar.openStateProgressionManager();
+  const rewinding = calendar.rewindAllFromGMSummary(manager);
+  await dialogs.at(-1).submit("rewind");
+  await rewinding;
+  assert.equal(manager.statuses.get(character.id).state, "recovery");
+  assert.equal(manager.statuses.get(character.id).canAcknowledge, true);
+  assert.deepEqual(character.getFlag(scope, "stateProgressionOperation"), unfinished);
+});
+
+test("the player result distinguishes marker recovery from an empty day", () => {
+  reset();
+  const recovered = calendar.buildPlayerResultContent({ recoveredMarkerDate: context.date, days: [] });
+  assert.match(recovered, /Saved the marker through 3\.1\.1/);
+  assert.doesNotMatch(recovered, /No selected state changes/);
+  assert.match(calendar.buildPlayerResultContent({ days: [] }), /No selected state changes/);
+});
+
+test("canonical document values preserve every own JSON property", () => {
+  const value = Object.create(null);
+  value.z = 1;
+  value["__proto__"] = { label: "metadata" };
+  value.a = 2;
+  assert.deepEqual(Object.keys(JSON.parse(canonicalJson(value))), ["__proto__", "a", "z"]);
+  assert.deepEqual(JSON.parse(canonicalJson(value))["__proto__"], { label: "metadata" });
 });
 for (const [initial, replacement, expectedLength] of [["2 days", "10 days", 1], ["1 day", "20 days", 1]]) {
   test(`A02: stale ${initial} preview neither overwrites nor deletes a changed injury`, async () => {
@@ -335,6 +442,33 @@ test("provider apply rechecks ownership after the provider rebuild awaits", asyn
   }
 });
 
+test("the rebuilt provider action is dispatched without another async actor lookup", async () => {
+  reset();
+  const character = actor();
+  const { handleApplyProviderAction, registerNewDayProvider } = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]);
+  const action = { id: "daily", days: 4 };
+  let rebuilt = false;
+  const lookup = globalThis.fromUuid;
+  globalThis.fromUuid = async uuid => {
+    assert.equal(rebuilt, false);
+    return lookup(uuid);
+  };
+  const unregister = registerNewDayProvider({
+    id: "audit.fresh-dispatch", category: "audit",
+    async buildActions() { rebuilt = true; return [action]; },
+    async applyAction(_actor, current) { assert.deepEqual(current, action); return { changed: true }; },
+    describeAction: () => "", icon: () => "fa-check"
+  });
+  try {
+    const result = await handleApplyProviderAction({ actorUuid: character.uuid, providerId: "audit.fresh-dispatch", action }, {
+      requesterId: game.user.id, requestUser: game.user, activeGM: game.user, isRemote: false
+    });
+    assert.equal(result.changed, true);
+  } finally {
+    unregister();
+  }
+});
+
 test("Mor gain resumes a vetoed Item write after reload without repeating damage or the roll", async () => {
   reset();
   let rolls = 0;
@@ -360,6 +494,35 @@ test("Mor gain resumes a vetoed Item write after reload without repeating damage
   assert.equal(result.state.current, 2);
   assert.equal(rolls, 1);
   assert.equal(reloadedActor.system.attribute.strength.value, 3);
+});
+
+test("a stale Mor gain can be cleared without replaying damage", async () => {
+  reset();
+  let rolls = 0;
+  globalThis.Roll = class {
+    async evaluate() { rolls += 1; this.terms = [{ results: [{ result: 1 }] }]; return this; }
+  };
+  const mor = item("mor", { healingTime: "1/0" }, "Mor");
+  const character = actor([mor]);
+  character.system.attribute.strength.value = 4;
+  const write = character.update;
+  character.update = async patch => {
+    await write(patch);
+    if (Object.hasOwn(patch, `flags.${scope}.conditions.morReceipts.${mor.id}`)) {
+      await mor.update({ [`flags.${scope}.conditions.morState`]: { current: 1, permanent: 2 } });
+    }
+  };
+  const pendingKey = "conditions.morPendingGain";
+  await assert.rejects(applyMorGain(character, mor), { code: "stale-mor-gain" });
+  const pending = mor.getFlag(scope, pendingKey);
+  await assert.rejects(applyMorGain(character, mor), { code: "stale-mor-gain", pendingGainId: pending.id });
+  await assert.rejects(clearStaleMorGain(mor, "older-operation"), { code: "stale-mor-state" });
+
+  assert.equal(await clearStaleMorGain(mor, pending.id), true);
+  assert.equal(mor.getFlag(scope, pendingKey), null);
+  assert.deepEqual(await changePermanentMor(mor, 1), { current: 1, permanent: 3 });
+  assert.equal(character.system.attribute.strength.value, 3);
+  assert.equal(rolls, 1);
 });
 
 test("Biography keeps the more recent field edit when a queued write is vetoed", async () => {
@@ -410,6 +573,68 @@ test("whole BIO and Pilgrim Card saves drop obsolete keys while keeping migrated
     const saved = character.getFlag(scope, key);
     assert.equal(saved.identity.issuingCountry, "Old Country");
     assert.equal(Object.hasOwn(saved.identity, "country"), false);
+  }
+});
+
+test("a reopened Pilgrim Card retains the name from a failed or in-flight save", async testContext => {
+  reset();
+  const bio = await expose("scripts/biography.js", ["openPilgrimCard", "queuePilgrimSave"]);
+  const character = actor();
+  const persisted = bio.normalizePilgrimCardProfile({ identity: { name: "Original name" }, physical: { height: "170" } });
+  const draft = { ...persisted, identity: { ...persisted.identity, name: "Draft name" } };
+  await character.setFlag(scope, "pilgrimCardProfile", persisted);
+
+  const write = character.update;
+  character.update = async () => undefined;
+  bio.queuePilgrimSave(character, draft, 10_000);
+  assert.equal((await bio.flushBiographySaves(character))[1], false);
+
+  const retryStarted = Promise.withResolvers();
+  const releaseRetry = Promise.withResolvers();
+  character.update = async patch => {
+    retryStarted.resolve();
+    await releaseRetry.promise;
+    return write(patch);
+  };
+  const drawers = [];
+  globalThis.requestAnimationFrame = callback => { callback(); return 0; };
+  testContext.after(() => { delete globalThis.requestAnimationFrame; });
+  Object.assign(window, { innerWidth: 1000, innerHeight: 800, addEventListener() {}, removeEventListener() {} });
+  globalThis.document = {
+    body: { append: drawer => drawers.push(drawer) },
+    createElement: () => ({
+      innerHTML: "",
+      dataset: {},
+      style: {},
+      classList: { add() {}, remove() {} },
+      height: {
+        dataset: { bioPath: "physical.height" },
+        matches: () => false,
+        addEventListener(_type, listener) { this.edit = listener; }
+      },
+      querySelector: () => null,
+      querySelectorAll(selector) { return selector.startsWith("[data-bio-path]") ? [this.height] : []; },
+      remove() {}
+    })
+  };
+
+  try {
+    bio.openPilgrimCard(character, {}, null, true);
+    assert.match(drawers.at(-1).innerHTML, /value="Draft name"/);
+    await retryStarted.promise;
+    bio.openPilgrimCard(character, {}, null, true);
+    const reopened = drawers.at(-1);
+    assert.match(reopened.innerHTML, /value="Draft name"/);
+    reopened.height.value = "180";
+    reopened.height.edit({ stopPropagation() {} });
+    releaseRetry.resolve();
+    assert.equal((await bio.flushBiographySaves(character))[1], true);
+    const saved = bio.getPilgrimCardProfile(character);
+    assert.equal(saved.identity.name, "Draft name");
+    assert.equal(saved.physical.height, "180");
+  } finally {
+    releaseRetry.resolve();
+    bio.releaseBiographyState(character);
   }
 });
 
@@ -568,7 +793,7 @@ test("CodeRabbit: over-limit reputation stays visible and unchanged until explic
 test("CodeRabbit: reputation dialog warns and disables rolls until the displayed pool is corrected", async () => {
   reset(); const rep = await expose("scripts/reputation.js", ["refreshDialogSummary", "buildDialogContent"]);
   const a = actor(); await a.setFlag(scope, "reputationEntries", [{ id: "old", amount: 1500, description: "Legacy" }]);
-  const content = rep.buildDialogContent(a, true);
+  const content = rep.buildDialogContent(true, getReputationEntries(a));
   assert.match(content, /data-role="limit-warning" role="alert" >[\s\S]*Existing values are preserved/);
   let amount = "1500"; const warning = { hidden: true }; const controls = Object.fromEntries(["roll-selected", "roll-half", "roll-third"].map(key => [key, { disabled: false }]));
   const row = { dataset: { entryId: "old" }, querySelector: selector => selector.includes("amount") ? { value: amount } : selector.includes("selected") ? { checked: true } : { value: "Legacy" } };

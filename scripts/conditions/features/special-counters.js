@@ -3,13 +3,13 @@ import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind } from "../condition-kind.js";
 import { createObjectOperationQueue } from "../../operation-queue.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
-import { createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
+import { clearDocumentFlagNullVerified, createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
 
 import { isFeatureEnabled } from "../settings.js";
 import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger } from "../utils.js";
 
 const enqueueHeatChange = createObjectOperationQueue();
-const enqueueMorGain = createObjectOperationQueue();
+const enqueueMorChange = createObjectOperationQueue();
 const MOR_PENDING_GAIN = "conditions.morPendingGain";
 
 export function getHeatDefinition() {
@@ -347,36 +347,79 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
   };
 }
 
-export async function updateMorItem(item, newX, newY, documentOptions = {}) {
-  if (!item) return null;
-  assertMorChangeAvailable(item);
-  return writeMorState(item, newX, newY, documentOptions);
+export function changePermanentMor(item, delta, documentOptions = {}) {
+  return enqueueMorChange(item, () => {
+    assertMorChangeAvailable(item);
+    const { current, permanent } = getMorState(item);
+    return writeMorState(item, current, permanent + delta, documentOptions);
+  });
 }
 
-export function assertMorChangeAvailable(item) {
+export function removeCurrentMor(item, documentOptions = {}) {
+  return enqueueMorChange(item, async () => {
+    assertMorChangeAvailable(item);
+    const before = getMorState(item);
+    if (before.current <= 0) return null;
+    const roll = await new Roll("1d6").evaluate();
+    assertMorChangeAvailable(item);
+    assertMorStateCurrent(item, before);
+    const becamePermanent = roll.total === 1;
+    const state = await writeMorState(item, before.current - 1, before.permanent + Number(becamePermanent), documentOptions);
+    return { roll, state, becamePermanent };
+  });
+}
+
+function assertMorChangeAvailable(item) {
   if (!readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN)) return;
-  const message = localize("Mor.PendingGain", "Finish the pending Mor gain with + before changing Mor again.");
+  const message = localize("Mor.PendingGain", "Use + to resume or review the pending Mor gain.");
   throw Object.assign(createCodedError("mor-pending-gain", message), { fblqaUserMessage: message });
 }
 
+function sameMorState(left, right) {
+  return left.current === right.current && left.permanent === right.permanent;
+}
+
+function assertMorStateCurrent(item, before) {
+  if (sameMorState(getMorState(item), before)) return;
+  throw createCodedError("stale-mor-state", "Mor changed before the roll could be applied.");
+}
+
+function assertPendingMorGainCurrent(item, pending) {
+  if (readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN)?.id !== pending.id) {
+    throw createCodedError("stale-mor-state", "The pending Mor gain changed.");
+  }
+  if (!sameMorState(getMorState(item), pending.before)) {
+    const message = localize("Mor.StaleGain", "Mor changed during the pending gain. Review the pending roll with +.");
+    throw Object.assign(createCodedError("stale-mor-gain", message), { fblqaUserMessage: message, pendingGainId: pending.id });
+  }
+}
+
+export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
+  return enqueueMorChange(item, async () => {
+    const pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
+    if (!pending || pending.id !== pendingGainId || sameMorState(getMorState(item), pending.before)) {
+      throw createCodedError("stale-mor-state", "The pending Mor gain changed while awaiting confirmation.");
+    }
+    return clearDocumentFlagNullVerified(item, MODULE_ID, MOR_PENDING_GAIN, documentOptions);
+  });
+}
+
 export function applyMorGain(actor, item, documentOptions = {}) {
-  return enqueueMorGain(item, async () => {
+  return enqueueMorChange(item, async () => {
     let pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
-    const before = getMorState(item);
     let roll;
     if (pending == null) {
+      const before = getMorState(item);
       const diceCount = before.current + before.permanent + 1;
       roll = await new Roll(`${diceCount}d6`).evaluate();
       const ones = roll.terms[0].results.filter(result => result.result === 1).length;
+      assertMorChangeAvailable(item);
+      assertMorStateCurrent(item, before);
       pending = { id: makeSocketRequestId(), before, diceCount, ones, roll: JSON.stringify(roll) };
       await setDocumentFlagVerified(item, MODULE_ID, MOR_PENDING_GAIN, pending, documentOptions);
-    } else {
-      roll = Roll.fromJSON(pending.roll);
     }
-    const current = getMorState(item);
-    if (current.current !== pending.before.current || current.permanent !== pending.before.permanent) {
-      throw createCodedError("stale-mor-gain", "Mor changed while the gain was pending.");
-    }
+    assertPendingMorGainCurrent(item, pending);
+    roll ??= Roll.fromJSON(pending.roll);
 
     let appliedDamage = [];
     if (pending.ones > 0) {
@@ -387,7 +430,8 @@ export function applyMorGain(actor, item, documentOptions = {}) {
         applied => ({ [flagUpdatePath(key)]: { id: pending.id, appliedDamage: applied } })
       );
     }
-    const state = await writeMorState(item, before.current + 1, before.permanent, documentOptions, true);
+    assertPendingMorGainCurrent(item, pending);
+    const state = await writeMorState(item, pending.before.current + 1, pending.before.permanent, documentOptions, true);
     return { roll, state, diceCount: pending.diceCount, ones: pending.ones, appliedDamage };
   });
 }
@@ -399,8 +443,7 @@ async function writeMorState(item, newX, newY, documentOptions, finishGain = fal
     [flagUpdatePath(FLAGS.MOR_STATE)]: state,
     "system.healingTime": ""
   }, documentOptions);
-  const persisted = getMorState(item);
-  if (persisted.current !== state.current || persisted.permanent !== state.permanent
+  if (!sameMorState(getMorState(item), state)
     || (finishGain && readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN) != null)) {
     throw createCodedError("write-not-persisted", "Mor update was not persisted.");
   }

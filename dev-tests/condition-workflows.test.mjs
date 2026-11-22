@@ -281,12 +281,20 @@ async function calendarWorker({ fresh = false } = {}) {
 }
 
 test("a calendar skip consumes only the started day and resumes after its manual outcome", async () => {
-  const rolls = setup(); globalThis.CALENDARIA = { api: { daysBetween: (from, to) => to.day - from.day, addDays: (date, n) => ({ ...date, day: date.day + n }) } };
+  const rolls = setup();
   const dependency = item("Зависимость", { phase: "flat", die: 6, daysLeft: 3, severity: 5 });
   const wound = item("Wound"); wound.system.healingTime = "6 days";
   const owner = actor(dependency, wound); const worker = await calendarWorker();
   const start = { year: 1, month: 1, day: 1 }; const context = { calendarId: "test", date: { ...start, day: 4 } };
-  context.api = CALENDARIA.api;
+  context.api = {
+    getActiveCalendar: () => ({ id: context.calendarId }),
+    getCurrentDateTime: () => context.date,
+    daysBetween: (from, to) => to.day - from.day,
+    addDays: (date, n) => ({ ...date, day: date.day + n })
+  };
+  game.user.active = true;
+  game.users = [game.user];
+  game.modules.set("calendaria", { active: true, api: context.api });
   await worker.setActorCalendarMarker(owner, { ...context, date: start });
   const first = await worker.processActorAutomaticDays(owner, start, context, 3);
   assert.equal(first.processedDays, 1); assert.equal(first.limitedDays, 2); assert.equal(first.pendingManual, 1);

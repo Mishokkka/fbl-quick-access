@@ -208,7 +208,8 @@ test("selected new-day actions update timers without applying unselected actions
 
   const injury = actor.items.find((item) => item.id === "injury");
   assert.deepEqual(injury.updates, [
-    { "system.healingTime": "2 days", "system.limit": "1 day" }
+    { "system.healingTime": "2 days" },
+    { "system.limit": "1 day" }
   ]);
   assert.equal(actor.savedConditions.find((condition) => condition.id === "custom").time, "1 day");
   assert.deepEqual(actor.unsetFlags, [], "an already-absent Short Rest flag must not trigger a Document write");
@@ -408,34 +409,31 @@ test("New Day combines contiguous simple Item updates into one Foundry bulk writ
   assert.deepEqual(item.updates, [], "per-Item updates are skipped when the bulk API succeeds");
 });
 
-test("New Day bulk-update failure preserves both timer changes in one per-item write", async () => {
-  const item = makeItem("fallback-injury", "Fallback Injury", { healingTime: "3 days", lethal: "yes", limit: "2 days" });
-  const items = new Map([[item.id, item]]);
-  const actor = {
-    id: "fallback-actor",
-    name: "Fallback Tester",
-    items,
-    async updateEmbeddedDocuments() {
-      throw new Error("synthetic bulk failure");
-    }
-  };
-  const plan = {
-    actions: [
-      { id: "heal-fallback", kind: "injury-healing", itemId: item.id, itemName: item.name, afterText: "2 days" },
-      { id: "limit-fallback", kind: "lethal-limit", itemId: item.id, itemName: item.name, afterText: "1 day" }
-    ]
-  };
-
-  const originalError = console.error;
-  console.error = () => {};
-  try {
-    const result = await newDay.applyNewDayPlan(actor, plan, ["heal-fallback", "limit-fallback"], { postChat: false });
-    assert.equal(result.failed.length, 0);
-    assert.equal(result.succeeded.length, 2);
-    assert.deepEqual(item.updates, [
-      { "system.healingTime": "2 days", "system.limit": "1 day" }
-    ]);
-  } finally {
-    console.error = originalError;
-  }
-});
+for (const { name, bulkHealing, vetoLimit, healing, limit, writes, failed } of [
+  { name: "a vetoed limit", vetoLimit: true, healing: "2 days", limit: "2 days", writes: ["system.healingTime", "system.limit"], failed: 1 },
+  { name: "healing already written in bulk", bulkHealing: "2 days", healing: "2 days", limit: "1 day", writes: ["system.limit"], failed: 0 },
+  { name: "an intervening edit to healing", bulkHealing: "9 days", healing: "9 days", limit: "2 days", writes: [], failed: 2 }
+]) {
+  test(`New Day isolates timer retries after ${name}`, async () => {
+    const actor = makeActor();
+    const injury = actor.items.find(item => item.id === "injury");
+    actor.updateEmbeddedDocuments = async (_type, [patch]) => {
+      assert.deepEqual(patch, { _id: injury.id, "system.healingTime": "2 days", "system.limit": "1 day" });
+      if (bulkHealing) injury.system.healingTime = bulkHealing;
+    };
+    const originalUpdate = injury.update;
+    const attempts = [];
+    injury.update = async patch => {
+      attempts.push(Object.keys(patch)[0]);
+      if (!vetoLimit || !Object.hasOwn(patch, "system.limit")) await originalUpdate.call(injury, patch);
+    };
+    const plan = newDay.buildNewDayPlan(actor);
+    const selected = plan.actions.filter(action => action.itemId === injury.id).map(action => action.id);
+    const result = await newDay.applyNewDayPlan(actor, plan, selected, { postChat: false });
+    assert.deepEqual(attempts, writes);
+    assert.equal(injury.system.healingTime, healing);
+    assert.equal(injury.system.limit, limit);
+    assert.equal(result.failed.length, failed);
+    assert.equal(result.succeeded.length, 2 - failed);
+  });
+}

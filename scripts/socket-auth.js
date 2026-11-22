@@ -1,4 +1,5 @@
 import { MODULE_ID } from "./constants.js";
+import { clonePlainJson, plainValuesEqual } from "./document-writes.js";
 import { normalizeSocketRequestId } from "./socket-utils.js";
 
 const PROOF_ROOT = "socketProofs";
@@ -144,31 +145,11 @@ function normalizeKind(value) {
 }
 
 function clonePlain(value) {
-  if (value === undefined) return null;
   try {
-    return JSON.parse(JSON.stringify(value));
+    return clonePlainJson(value);
   } catch (error) {
     throw socketProofError("non-serializable-payload", `Socket proof payload is not serializable: ${error?.message ?? error}`);
   }
-}
-
-function plainValuesEqual(a, b) {
-  return canonicalStringify(a) === canonicalStringify(b);
-}
-
-function canonicalStringify(value) {
-  return JSON.stringify(sortPlainValue(value));
-}
-
-function sortPlainValue(value) {
-  if (Array.isArray(value)) return value.map(sortPlainValue);
-  if (!value || typeof value !== "object") return value;
-  const sorted = {};
-  for (const key of Object.keys(value).sort()) {
-    if (value[key] === undefined) continue;
-    sorted[key] = sortPlainValue(value[key]);
-  }
-  return sorted;
 }
 
 function getSocketClock() {

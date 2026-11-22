@@ -252,7 +252,7 @@ export function cleanupBiographyTab(root) {
 export function releaseBiographyState(actorOrId) {
   const key = drawerKey(actorOrId);
   const actor = typeof actorOrId === "string"
-    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key) ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)
+    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key) ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)?.actor
     : actorOrId;
   if (actor && typeof actor === "object") DELETED_ACTORS.add(actor);
   closeBiographyDrawer(key, { discardPending: true });
@@ -524,13 +524,13 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
 function openPilgrimCard(actor, root, biographyState, editable) {
   closeBiographyDrawer(actor);
   const application = findApplicationRoot(root) ?? root;
+  const key = drawerKey(actor);
   const stored = actor?.getFlag?.(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
-  const cardState = getPilgrimCardProfile(actor, biographyState);
+  const draft = editable ? PILGRIM_PENDING.get(key) ?? PILGRIM_RUNNING.get(key) : null;
+  const cardState = draft ? cloneProfileValue(draft.state) : getPilgrimCardProfile(actor, biographyState);
 
-  // Persist the one-time migration snapshot immediately. The same mutable state
-  // object is used by later edits, so a quick edit before this timer fires cannot
-  // overwrite the user's newer value with the migration seed.
-  if (!(stored && typeof stored === "object") && editable) queuePilgrimSave(actor, cardState, 0);
+  // Persist the one-time migration snapshot if a prior save has not started.
+  if (editable && !draft && !(stored && typeof stored === "object")) queuePilgrimSave(actor, cardState, 0);
 
   const drawer = document.createElement("aside");
   drawer.className = "fblqa-pilgrim-drawer";
@@ -541,7 +541,7 @@ function openPilgrimCard(actor, root, biographyState, editable) {
   applyPilgrimCardFont(drawer, getPilgrimCardFontFamily());
 
   const cleanup = setupPilgrimMovement(drawer, application);
-  DRAWERS.set(drawerKey(actor), { element: drawer, cleanup });
+  DRAWERS.set(key, { element: drawer, cleanup });
   positionPilgrimDrawer(drawer, application);
   updatePilgrimAttachmentUi(drawer);
   requestAnimationFrame(() => drawer.classList.add("is-open"));
@@ -1555,7 +1555,7 @@ function flushPilgrimSave(key) {
       if (!pending) return true;
       PILGRIM_PENDING.delete(key);
       if (DELETED_ACTORS.has(pending.actor)) return false;
-      PILGRIM_RUNNING.set(key, pending.actor);
+      PILGRIM_RUNNING.set(key, pending);
       try {
         const saved = await savePilgrimCardProfile(pending.actor, pending.state, { render: false });
         if (!saved) throw createCodedError("write-not-persisted", "Pilgrim card save was not persisted.");
