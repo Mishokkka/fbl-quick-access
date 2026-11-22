@@ -10,6 +10,7 @@ export const FLAG_BIOGRAPHY_PROFILE = "biographyProfile";
 export const FLAG_PILGRIM_CARD_PROFILE = "pilgrimCardProfile";
 export const FLAG_STATE_PROGRESSION_CALENDAR = "stateProgressionCalendaria";
 export const FLAG_STATE_PROGRESSION_FAILURES = "stateProgressionFailures";
+export const FLAG_STATE_PROGRESSION_OPERATION = "stateProgressionOperation";
 export const FLAG_WILLPOWER_TALENTS = "willpowerTalents";
 export const FLAG_EQUIPMENT_HANDS = "equipmentHands";
 export const FLAG_EQUIPMENT_RECEIPTS = "equipmentReceipts";

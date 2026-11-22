@@ -269,15 +269,15 @@ test("a pending morning blocks other daily timers and stays visible in the seria
 });
 
 let progression;
-async function calendarWorker() {
-  if (!progression) {
-    const url = new URL("../scripts/state-progression.js", import.meta.url);
-    let source = await readFile(url, "utf8");
-    source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
-    source += "\nexport { processActorAutomaticDays };\n";
-    progression = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
-  }
-  return progression;
+async function calendarWorker({ fresh = false } = {}) {
+  if (progression && !fresh) return progression;
+  const url = new URL("../scripts/state-progression.js", import.meta.url);
+  let source = await readFile(url, "utf8");
+  source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
+  source += "\nexport { processActorAutomaticDays, handleCalendariaApplyRequest, handleCalendariaPendingReport };\n";
+  const worker = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${++id}`);
+  if (!fresh) progression = worker;
+  return worker;
 }
 
 test("a calendar skip consumes only the started day and resumes after its manual outcome", async () => {
@@ -286,6 +286,8 @@ test("a calendar skip consumes only the started day and resumes after its manual
   const wound = item("Wound"); wound.system.healingTime = "6 days";
   const owner = actor(dependency, wound); const worker = await calendarWorker();
   const start = { year: 1, month: 1, day: 1 }; const context = { calendarId: "test", date: { ...start, day: 4 } };
+  context.api = CALENDARIA.api;
+  await worker.setActorCalendarMarker(owner, { ...context, date: start });
   const first = await worker.processActorAutomaticDays(owner, start, context, 3);
   assert.equal(first.processedDays, 1); assert.equal(first.limitedDays, 2); assert.equal(first.pendingManual, 1);
   assert.equal(getAddictionState(dependency).daysLeft, 3); assert.equal(wound.system.healingTime, "5 days");
@@ -299,6 +301,82 @@ test("a calendar skip consumes only the started day and resumes after its manual
   assert.equal(getAddictionMorning(dependency).dayKey, "calendar:test:1:1:3");
   assert.deepEqual(rolls, []);
 });
+
+for (const mode of ["interactive", "automatic"]) {
+  for (const veto of ["applying", "applied", "marker"]) {
+    test(`${mode} day recovery after reload with ${veto} write veto`, async () => {
+      setup();
+      const start = { year: 1, month: 1, day: 1 };
+      const date = { ...start, day: 2 };
+      const calendarId = "test";
+      const operationKey = "stateProgressionOperation";
+      const markerKey = "stateProgressionCalendaria";
+      const operationPath = `flags.${scope}.==${operationKey}`;
+      const markerPath = `flags.${scope}.==${markerKey}`;
+      const api = {
+        daysBetween: (from, to) => to.day - from.day,
+        addDays: (from, days) => ({ ...from, day: from.day + days }),
+        getCurrentDateTime: () => date,
+        getActiveCalendar: () => ({ id: calendarId })
+      };
+      const context = { calendarId, date, api };
+      game.user.active = true;
+      const player = { id: "owner", active: true, character: "recovery-pc" };
+      game.users = [game.user, player];
+      game.modules.set("calendaria", { active: true, api });
+      game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
+
+      const loadActor = ({ flags, healingTime, blockedWrite = null }) => {
+        const wound = item("Wound");
+        wound.id = "recovery-injury";
+        wound.system.healingTime = healingTime;
+        const owner = actor(wound);
+        owner.id = player.character;
+        owner.flags = structuredClone(flags);
+        const update = owner.update;
+        owner.update = function (payload, options) {
+          const stage = Object.hasOwn(payload, markerPath) ? "marker" : payload[operationPath]?.phase;
+          if (stage === blockedWrite) return undefined;
+          return update.call(this, payload, options);
+        };
+        game.actors = new Map([[owner.id, owner]]);
+        return { owner, wound };
+      };
+      const processDay = (worker, owner) => {
+        if (mode === "automatic") return worker.processActorAutomaticDays(owner, start, context, 1);
+        return worker.handleCalendariaApplyRequest({
+          actorId: owner.id, calendarId, targetDate: date, selectedIds: ["injury:recovery-injury:healing"]
+        }, { requestUser: player });
+      };
+      const first = loadActor({ flags: { [scope]: { [markerKey]: { calendarId, date: start } } }, healingTime: "5 days", blockedWrite: veto });
+      await assert.rejects(processDay(await calendarWorker({ fresh: true }), first.owner), { code: "write-not-persisted" });
+      assert.deepEqual(first.owner.getFlag(scope, markerKey).date, start);
+      assert.equal(first.wound.system.healingTime, veto === "applying" ? "5 days" : "4 days");
+      assert.equal(first.owner.getFlag(scope, operationKey)?.phase, { applying: undefined, applied: "applying", marker: "applied" }[veto]);
+
+      const reloaded = loadActor({ flags: first.owner.flags, healingTime: first.wound.system.healingTime });
+      const worker = await calendarWorker({ fresh: true });
+      if (veto === "applied") {
+        const needsReview = { code: "calendar-reconciliation-required" };
+        await assert.rejects(processDay(worker, reloaded.owner), needsReview);
+        const report = await worker.handleCalendariaPendingReport({ actorId: reloaded.owner.id }, { requestUser: player });
+        assert.equal(report.status, "recovery");
+        await assert.rejects(worker.markActorCalendariaAbsent(reloaded.owner, context), needsReview);
+        await assert.rejects(worker.rewindActorCalendarMarker(reloaded.owner, 1, context), needsReview);
+        await assert.rejects(worker.resetActorCalendarMarkerToCurrent(reloaded.owner, context), needsReview);
+        assert.deepEqual((await worker.resetAllCalendarMarkersToCurrent(context)).skippedActorIds, [reloaded.owner.id]);
+        assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, start);
+        assert.equal(reloaded.owner.getFlag(scope, operationKey).phase, "applying");
+      } else {
+        await processDay(worker, reloaded.owner);
+        assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, date);
+        assert.equal(reloaded.owner.getFlag(scope, operationKey), null);
+        assert.equal(reloaded.wound.updates.length, veto === "marker" ? 0 : 1);
+      }
+      assert.equal(reloaded.wound.system.healingTime, "4 days");
+    });
+  }
+}
 
 test("calendar STAT uses the same public day key as the daily plan", () => {
   setup(); game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;

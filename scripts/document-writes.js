@@ -105,18 +105,19 @@ export function opaquePreconditionToken(value) {
 }
 
 export async function setDocumentFlagVerified(document, scope, key, value, documentOptions = {}, { replace = false } = {}) {
-  const expected = value === undefined ? null : value;
+  const expected = clonePlainJson(value);
+  const payload = clonePlainJson(expected);
   const shouldReplace = Boolean(replace && isPlainObject(expected));
   if (shouldReplace && typeof document?.update === "function") {
-    const update = { [flagReplaceUpdatePath(scope, key)]: expected };
+    const update = { [flagReplaceUpdatePath(scope, key)]: payload };
     if (hasDocumentOptions(documentOptions)) await document.update(update, documentOptions);
     else await document.update(update);
   } else if (hasDocumentOptions(documentOptions) && typeof document?.update === "function") {
-    await document.update({ [`flags.${scope}.${key}`]: expected }, documentOptions);
+    await document.update({ [`flags.${scope}.${key}`]: payload }, documentOptions);
   } else if (typeof document?.setFlag === "function") {
-    await document.setFlag(scope, key, expected);
+    await document.setFlag(scope, key, payload);
   } else if (typeof document?.update === "function") {
-    await document.update({ [`flags.${scope}.${key}`]: expected });
+    await document.update({ [`flags.${scope}.${key}`]: payload });
   } else {
     throw createCodedError("write-unavailable", `Cannot persist flag ${scope}.${key}`);
   }

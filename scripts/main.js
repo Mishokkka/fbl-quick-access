@@ -11,6 +11,7 @@ import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
 import {
   getPendingMoneyTransferReconciliations,
   openMoneyTransferDialog,
+  readyMoneyTransferReconciliations,
   registerMoneyTransferSocket,
   resolveMoneyTransferReconciliation
 } from "./money-transfer.js";
@@ -126,6 +127,7 @@ Hooks.once("ready", async () => {
   refreshPilgrimFontChoices();
   registerIntegrationSocket();
   registerMoneyTransferSocket();
+  void readyMoneyTransferReconciliations();
   await readyStateProgression();
   await pruneOwnSocketProofs();
   await readyExpandedConditions();

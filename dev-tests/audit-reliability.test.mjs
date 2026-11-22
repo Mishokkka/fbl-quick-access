@@ -14,6 +14,7 @@ import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scrip
 import { enqueueCurrencyOperation } from "../scripts/operation-queue.js";
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
+import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
 const scope = "fbl-quick-access";
 // Several cases deliberately simulate failed writes/notifications. Keep their
@@ -37,6 +38,7 @@ function reset() {
   globalThis.Hooks = { on() {}, callAll() {} };
   globalThis.ui = { notifications: { info() {}, warn() {}, error() {} }, windows: {} };
   globalThis.game = { user: user("gm", true), users: [], actors: new Map(), items: [], packs: [],
+    world: { id: "audit-world" },
     modules: new Map([["calendaria", { active: true }]]), time: { worldTime: 0 },
     settings: { get: (_scope, key) => key === "stateProgressionMode" ? "calendaria" : key.startsWith("feature") || key === "chatMessages" || key === "playersCanEdit" },
     i18n: { localize: key => key, format: key => key }, socket: { on() {}, emit() {} } };
@@ -46,7 +48,7 @@ function reset() {
     getActiveCalendar: () => ({ id: "audit", days: { hoursPerDay: 24 } }),
     daysBetween: (from, to) => to.day - from.day, addDays: (from, days) => ({ ...from, day: from.day + days }) } };
   globalThis.window = { setTimeout, clearTimeout };
-  globalThis.localStorage = { getItem: () => null, setItem() {} };
+  globalThis.localStorage = createMemoryStorage();
   globalThis.HTMLElement = class {};
   globalThis.fromUuid = async uuid => [...game.actors.values()].find(actor => actor.uuid === uuid) ?? null;
   delete globalThis.document;
@@ -225,6 +227,20 @@ test("A08: wallet edits and transfers share one authoritative queue", async () =
   await Promise.all([executeAsActiveGM("wallet.apply-change", { actorUuid: source.uuid, mode: "delta", key: "copper", value: -10 }),
     enqueueCurrencyOperation(() => money.executeMoneyTransfer(source, target, { copper: 20 }))]);
   assert.equal(source.system.currency.copper.value, 70); assert.equal(target.system.currency.copper.value, 20);
+});
+
+test("a transfer cannot change either wallet without a saved reconciliation record", async () => {
+  reset();
+  const source = actor();
+  const target = actor();
+  source.system.currency.copper.value = 100;
+  globalThis.localStorage.setItem = () => {};
+  const result = await money.executeMoneyTransfer(source, target, { copper: 20 });
+  assert.deepEqual(result, { ok: false, error: "update-failed" });
+  assert.equal(source.system.currency.copper.value, 100);
+  assert.equal(target.system.currency.copper.value, 0);
+  assert.deepEqual(source.updates, []);
+  assert.deepEqual(target.updates, []);
 });
 test("A08: wallet input bounds and insufficient funds reject before a write", async () => {
   reset(); initializeWalletOperations(); const a = actor();

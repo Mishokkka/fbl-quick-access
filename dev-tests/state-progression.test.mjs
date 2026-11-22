@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { setImmediate as nextTurn } from "node:timers/promises";
+import { getCalendariaContext } from "../scripts/integration/calendaria-adapter.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 const source = readFileSync(join(root, "scripts/state-progression.js"), "utf8");
@@ -77,10 +79,53 @@ test("Calendaria integration is hook-driven and contains no polling loop", () =>
   assert.doesNotMatch(source, /requestAnimationFrame\s*\(/);
 });
 
-test("Calendaria startup calendarSwitched is ignored until calendaria.ready", () => {
-  assert.match(source, /let calendariaReadySeen = false/);
-  assert.match(source, /async function handleCalendariaReady[\s\S]*?calendariaReadySeen = true/);
-  assert.match(source, /async function handleCalendariaCalendarSwitch\(\) \{[\s\S]*?if \(!calendariaReadySeen\) return;/);
+test("Calendaria startup waits for the ready hook without warning or rebaselining", async testContext => {
+  const descriptors = ["game", "Hooks", "ui", "CALENDARIA"].map(key => [key, Object.getOwnPropertyDescriptor(globalThis, key)]);
+  testContext.after(() => {
+    for (const [key, descriptor] of descriptors) {
+      if (descriptor) Object.defineProperty(globalThis, key, descriptor);
+      else delete globalThis[key];
+    }
+  });
+  const previousDate = { year: 882, month: 4, day: 11 };
+  const date = { ...previousDate, day: 12 };
+  let marker = { calendarId: "air-islands", date: previousDate };
+  const actor = {
+    id: "pc", type: "character", documentName: "Actor",
+    getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? marker : undefined,
+    async setFlag(_scope, key, value) { assert.equal(key, "stateProgressionCalendaria"); marker = value; }
+  };
+  const gm = { id: "gm", isGM: true, active: true };
+  const hooks = new Map();
+  const warnings = [];
+  globalThis.game = {
+    user: gm, users: [gm, { id: "player", character: actor, active: true }],
+    actors: new Map([[actor.id, actor]]), modules: new Map([["calendaria", { active: true }]]),
+    settings: { get: () => "calendaria" }
+  };
+  globalThis.Hooks = { on(event, callback) { hooks.set(event, [...(hooks.get(event) ?? []), callback]); } };
+  globalThis.ui = { notifications: { warn: warning => warnings.push(warning) } };
+  delete globalThis.CALENDARIA;
+  mod.initializeStateProgression();
+  await mod.readyStateProgression();
+  assert.deepEqual(warnings, []);
+
+  const api = {
+    getCurrentDateTime: () => date, getActiveCalendar: () => ({ id: "air-islands" }),
+    daysBetween: (start, end) => end.day - start.day, addDays: (value, days) => ({ ...value, day: value.day + days })
+  };
+  game.modules.get("calendaria").api = api;
+  for (const callback of hooks.get("calendaria.calendarSwitched")) callback();
+  await nextTurn();
+  assert.deepEqual(marker.date, previousDate);
+  delete game.modules.get("calendaria").api;
+  for (const callback of hooks.get("calendaria.ready")) callback({ api });
+  await nextTurn();
+  assert.equal(getCalendariaContext().api, api);
+  assert.deepEqual(marker.date, previousDate);
+  for (const callback of hooks.get("calendaria.calendarSwitched")) callback();
+  await nextTurn();
+  assert.deepEqual(marker.date, date);
 });
 
 test("calendar application suppresses new-day chat output", () => {
@@ -104,7 +149,7 @@ test("GM can mark a pending Calendaria batch absent without advancing state docu
   const api = { daysBetween: (start, end) => ordinal(end) - ordinal(start) };
   let stored = { calendarId: "air-islands", date: { year: 882, month: 4, day: 8 } };
   const actor = {
-    getFlag: () => stored,
+    getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? stored : undefined,
     setFlag: async (_moduleId, _key, value) => { stored = structuredClone(value); }
   };
   const context = {
@@ -137,7 +182,7 @@ test("Absent undo restores the previous marker and makes the skipped batch pendi
     previousDate: { year: 882, month: 4, day: 8 }
   };
   const actor = {
-    getFlag: () => stored,
+    getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? stored : undefined,
     setFlag: async (_moduleId, _key, value) => { stored = structuredClone(value); }
   };
   const context = {
@@ -171,7 +216,7 @@ test("Absent and Undo are serialized per Actor so near-simultaneous GM actions c
   const api = { daysBetween: (start, end) => ordinal(end) - ordinal(start) };
   let stored = { calendarId: "air-islands", date: { year: 882, month: 4, day: 11 } };
   const actor = {
-    getFlag: () => structuredClone(stored),
+    getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? structuredClone(stored) : undefined,
     setFlag: async (_moduleId, _key, value) => {
       await new Promise((resolve) => setTimeout(resolve, 5));
       stored = structuredClone(value);
@@ -195,14 +240,6 @@ test("Absent and Undo are serialized per Actor so near-simultaneous GM actions c
   });
 });
 
-test("Calendaria readiness does not misreport an enabled module as unavailable", () => {
-  assert.match(source, /Hooks\?\.on\?\.\("calendaria\.ready", \(data\)/);
-  assert.match(source, /calendariaReadyApi = data\?\.api/);
-  assert.match(source, /if \(!isCalendariaModuleActive\(\)\) warnCalendariaUnavailable\(\)/);
-  assert.match(source, /function warnCalendariaUnavailable\([\s\S]*?if \(isCalendariaModuleActive\(\)\) return;/);
-  assert.match(source, /globalThis\.CALENDARIA\?\.api \?\? calendariaReadyApi/);
-});
-
 test("PR11: automatic multi-day work has a low default cap and a hard ceiling", () => {
   assert.match(source, /DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT\s*=\s*90/);
   assert.match(source, /MAX_AUTOMATIC_CALENDAR_DAYS\s*=\s*365/);
@@ -218,10 +255,17 @@ test("PR11: a newer GM progression summary closes and evicts stale summary windo
   assert.match(source, /existingState\.dialog\?\.close\?\.\(\)/);
 });
 
-test("PR11: Calendaria public current date is not double-converted", () => {
-  const contextSection = source.slice(source.indexOf("function getCalendariaContext"), source.indexOf("function isCalendariaModuleActive"));
-  assert.match(contextSection, /normalizeCalendariaDate\(dateOverride \?\? api\.getCurrentDateTime\(\)\)/);
-  assert.doesNotMatch(contextSection, /calendariaHookComponentToPublicDate\(.*getCurrentDateTime/);
+test("PR11: Calendaria public current date is not double-converted", testContext => {
+  const previousGame = globalThis.game;
+  const previousCalendaria = globalThis.CALENDARIA;
+  testContext.after(() => { globalThis.game = previousGame; globalThis.CALENDARIA = previousCalendaria; });
+  const date = { year: 882, month: 1, day: 1 };
+  globalThis.game = { modules: new Map([["calendaria", { active: true }]]) };
+  globalThis.CALENDARIA = { api: {
+    getCurrentDateTime: () => ({ ...date, hour: 6 }), getActiveCalendar: () => ({ metadata: { id: "air-islands" } }),
+    daysBetween: () => 0, addDays: () => date
+  } };
+  assert.deepEqual(getCalendariaContext().date, date);
 });
 
 test("PR11 follow-up: automatic progression reports logical marker advancement and never marks limited work done", () => {

@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -56,6 +57,15 @@ function setNested(obj, key, value) {
   const last = parts[parts.length - 1];
   if (last.startsWith("-=")) delete cursor[last.slice(2)];
   else cursor[last] = structuredClone(value);
+}
+
+function expandUpdateInPlace(update, id) {
+  for (const [key, value] of Object.entries(update)) {
+    if (!key.includes(".")) continue;
+    delete update[key];
+    setNested(update, key, value);
+  }
+  update._id = id;
 }
 
 function deleteNested(obj, key) {
@@ -177,7 +187,7 @@ function makeFlaggedActor(overrides = {}) {
   };
 }
 
-test("BIO queueProfileSave + flushBiographySaves preserves languages/rumors arrays, blocks prototype pollution, and enforces ownership", async () => {
+test("BIO saves languages and rumors when Foundry expands the update in place", async () => {
   const restore = saveGlobals(["game", "foundry", "ui"]);
   try {
     globalThis.game = {
@@ -198,6 +208,14 @@ test("BIO queueProfileSave + flushBiographySaves preserves languages/rumors arra
       id: "bio-array-actor",
       system: { bio: { kin: { value: "Human" }, profession: { value: "Hunter" }, pride: { value: "" }, darkSecret: { value: "" }, note: { value: "" } } }
     });
+    let veto = false;
+    const update = actor.update;
+    actor.update = async function (payload, options) {
+      const sent = structuredClone(payload);
+      expandUpdateInPlace(payload, this.id);
+      if (veto) return undefined;
+      return update.call(this, sent, options);
+    };
 
     const state = bio.getBiographyProfile(actor);
     state.languages = [
@@ -221,10 +239,52 @@ test("BIO queueProfileSave + flushBiographySaves preserves languages/rumors arra
     assert.equal(saved.rumors.length, 1);
     assert.equal(saved.rumors[0].text, "Знает тайную тропу");
 
+    saved.publicNote = "<p>Verified full profile</p>";
+    assert.equal(await bio.saveBiographyProfile(actor, saved), true);
+    assert.equal(actor.system.bio.note.value, saved.publicNote);
+    veto = true;
+    assert.equal(await bio.saveBiographyProfile(actor, { ...saved, publicNote: "<p>Vetoed</p>" }), false);
+    assert.equal(actor.system.bio.note.value, saved.publicNote);
+
     const readonlyActor = makeFlaggedActor({ id: "bio-readonly", isOwner: false });
     const writeResult = await bio.saveBiographyProfile(readonlyActor, saved);
     assert.equal(writeResult, false, "non-owner saveBiographyProfile must refuse write");
     assert.equal(readonlyActor.getFlag("fbl-quick-access", "biographyProfile"), undefined);
+  } finally {
+    restore();
+  }
+});
+
+test("STAT verifies embedded injury order independently of Foundry's mutated update", async () => {
+  const restore = saveGlobals(["foundry", "game"]);
+  try {
+    globalThis.foundry = { utils: { deepClone: structuredClone } };
+    globalThis.game = { modules: new Map() };
+    const { ensureConditionItemOrders } = await import("../scripts/conditions/migrations.js");
+    let order;
+    let veto = false;
+    const injury = {
+      id: "wound-1", name: "Broken leg", type: "criticalInjury", system: {},
+      getFlag: (_scope, key) => key === "conditions.order" ? order : undefined
+    };
+    const actor = {
+      id: "stat-order-actor", documentName: "Actor", items: [injury],
+      async updateEmbeddedDocuments(type, updates) {
+        assert.equal(type, "Item");
+        assert.equal(updates.length, 1);
+        for (const update of updates) {
+          expandUpdateInPlace(update, injury.id);
+          if (!veto) order = getNested(update, "flags.fbl-quick-access.conditions.order");
+        }
+      }
+    };
+    assert.equal((await ensureConditionItemOrders(actor)).changed, true);
+    assert.equal(order, 0);
+    assert.equal((await ensureConditionItemOrders(actor)).changed, false);
+    order = 80;
+    veto = true;
+    await assert.rejects(ensureConditionItemOrders(actor), /Item condition order was not persisted/);
+    assert.equal(order, 80);
   } finally {
     restore();
   }
@@ -329,7 +389,7 @@ test("Willpower treats empty/null max as uncapped and unranked Kin talent as ran
 });
 
 test("Money transfer rejects third-party decision abort and surfaces update-incomplete on partial veto", async () => {
-  const restore = saveGlobals(["game", "foundry", "ui", "ChatMessage", "Actor"]);
+  const restore = saveGlobals(["game", "foundry", "ui", "ChatMessage", "Actor", "localStorage"]);
   try {
     const emitted = [];
     let socketListener = null;
@@ -378,8 +438,10 @@ test("Money transfer rejects third-party decision abort and surfaces update-inco
     globalThis.foundry = { utils: { deepClone: (v) => structuredClone(v) } };
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
     globalThis.ChatMessage = { async create() {} };
+    globalThis.localStorage = createMemoryStorage();
     globalThis.game = {
       user: gmUser,
+      world: { id: "audit-world" },
       users,
       actors,
       i18n: { localize: (k) => k, format: (k) => k },

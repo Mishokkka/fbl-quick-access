@@ -140,7 +140,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 
   const list = foundry.utils.deepClone(Array.isArray(customConditions) ? customConditions : []);
   const injuries = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury");
-  const itemUpdates = [];
+  const itemOrders = new Map();
   let customChanged = false;
 
   for (const arcGroup of [true, false]) {
@@ -187,7 +187,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
       }
 
       if (Number(entry.item.getFlag?.(MODULE_ID, FLAGS.ORDER)) !== order) {
-        itemUpdates.push({ _id: entry.item.id, [flagUpdatePath(FLAGS.ORDER)]: order });
+        itemOrders.set(entry.item.id, order);
       }
     });
   }
@@ -201,18 +201,19 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
       );
     }
   }
-  if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
-    for (const update of itemUpdates) {
-      const item = getActorItemById(actor, update._id);
+  if (itemOrders.size) {
+    const updates = Array.from(itemOrders, ([id, order]) => ({ _id: id, [flagUpdatePath(FLAGS.ORDER)]: order }));
+    await actor.updateEmbeddedDocuments("Item", updates, { render: false });
+    for (const [id, order] of itemOrders) {
+      const item = getActorItemById(actor, id);
       assertPersistedMigration(
-        !item || Number(item.getFlag?.(MODULE_ID, FLAGS.ORDER)) === Number(update[flagUpdatePath(FLAGS.ORDER)]),
-        `Item condition order was not persisted for ${update._id}`
+        !item || Number(item.getFlag?.(MODULE_ID, FLAGS.ORDER)) === order,
+        `Item condition order was not persisted for ${id}`
       );
     }
   }
 
-  return { changed: customChanged || itemUpdates.length > 0, list };
+  return { changed: customChanged || itemOrders.size > 0, list };
 }
 
 export async function migrateActorData(actor) {

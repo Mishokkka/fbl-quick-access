@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
 function makeFlagUser(id, { isGM = false, active = true, character = null } = {}) {
   const flags = new Map();
@@ -131,6 +132,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
   const previousFoundry = globalThis.foundry;
   const previousHooks = globalThis.Hooks;
   const previousChatMessage = globalThis.ChatMessage;
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
   let sequence = 0;
   let listener = null;
@@ -183,6 +185,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
   };
   globalThis.game = {
     user: gm,
+    world: { id: "secure-world" },
     users,
     actors,
     socket: {
@@ -190,6 +193,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
       emit(_channel, message) { emitted.push(structuredClone(message)); }
     }
   };
+  globalThis.localStorage = createMemoryStorage();
 
   try {
     const transfer = await import(`../scripts/money-transfer.js?security=${Date.now()}`);
@@ -270,6 +274,8 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
     globalThis.foundry = previousFoundry;
     globalThis.Hooks = previousHooks;
     globalThis.ChatMessage = previousChatMessage;
+    if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage);
+    else delete globalThis.localStorage;
   }
 });
 

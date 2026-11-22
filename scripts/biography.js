@@ -4,7 +4,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
 import { findApplicationRoot, findBiographyTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { actorKey, decodeHtmlEntities, escapeHtml, stripHtml } from "./utils.js";
-import { createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { clonePlainJson, createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 
 const PROFILE_VERSION = 1;
 const QUESTION_FIELDS = Object.freeze([
@@ -188,11 +188,11 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
     "system.bio.note.value": normalizeRichText(profile.publicNote)
   };
   if (profile.identity.name && profile.identity.name !== actor.name) update.name = profile.identity.name;
-  await actor.update(update, { render });
-  return biographyUpdatePersisted(actor, update);
+  return writeBiographyUpdate(actor, update, render);
 }
 
-function biographyUpdatePersisted(actor, update) {
+async function writeBiographyUpdate(actor, update, render) {
+  await actor.update(clonePlainJson(update), { render });
   for (const [path, expected] of Object.entries(update)) {
     if (path === `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}`) {
       const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
@@ -1513,8 +1513,7 @@ async function saveBiographyProfilePath(actor, state, path, { render = false } =
     update["system.bio.note.value"] = normalizeRichText(value);
   }
 
-  await actor.update(update, { render });
-  return biographyUpdatePersisted(actor, update);
+  return writeBiographyUpdate(actor, update, render);
 }
 
 function isBiographyRichPath(path) {

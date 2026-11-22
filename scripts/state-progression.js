@@ -1,6 +1,7 @@
 import {
   FLAG_STATE_PROGRESSION_CALENDAR,
   FLAG_STATE_PROGRESSION_FAILURES,
+  FLAG_STATE_PROGRESSION_OPERATION,
   MODULE_ID,
   SETTINGS
 } from "./constants.js";
@@ -36,16 +37,28 @@ import {
   normalizeSocketRequestId
 } from "./socket-utils.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
-import { setDocumentFlagVerified } from "./document-writes.js";
-import { markCalendariaReady } from "./integration/calendaria-adapter.js";
+import { clonePlainJson, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag, setDocumentFlagVerified } from "./document-writes.js";
+import {
+  calendariaDateKey,
+  calendariaHookComponentToPublicDate,
+  formatCalendariaDate,
+  getCalendariaApi,
+  getCalendariaContext,
+  hasCalendariaReadyFired,
+  isCalendariaModuleActive,
+  normalizeCalendariaDate,
+  registerCalendariaReadyHook,
+  sameCalendariaDay
+} from "./integration/calendaria-adapter.js";
 import { addictionCalendarDayKey, getPendingAddictions } from "./conditions/services/addiction-service.js";
+
+export { calendariaDateKey, calendariaHookComponentToPublicDate, normalizeCalendariaDate } from "./integration/calendaria-adapter.js";
 
 export const STATE_PROGRESSION_MODES = Object.freeze({
   LONG_REST: "long-rest",
   CALENDARIA: "calendaria"
 });
 
-const CALENDARIA_MODULE_ID = "calendaria";
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const APPLY_OPERATION = "state-progression.apply-calendaria-day";
 const REPORT_OPERATION = "state-progression.report-calendaria-pending";
@@ -60,27 +73,17 @@ let resultSocketRegistered = false;
 let observedMode = null;
 let revertingMode = false;
 let calendariaUnavailableWarned = false;
-let calendariaReadyApi = null;
-let calendariaReadySeen = false;
 let lastAheadWarningKey = "";
 
 const activePlayerPrompts = new Set();
 const gmSummaryWindows = new Map();
 const activeSummaryOperations = new Set();
-const committedUnmarkedDays = new Map();
 const enqueueStateProgressionOperation = createObjectOperationQueue();
-
-function committedDayKey(actorId, calendarId) {
-  return `${String(actorId ?? "")}:${String(calendarId ?? "")}`;
-}
 
 export function handleStateProgressionActorDeleted(actor) {
   const actorId = String(actor?.id ?? "");
   if (!actorId) return;
   activeSummaryOperations.delete(actorId);
-  for (const key of [...committedUnmarkedDays.keys()]) {
-    if (key.startsWith(`${actorId}:`)) committedUnmarkedDays.delete(key);
-  }
   for (const state of gmSummaryWindows.values()) {
     if (!state.entries.has(actorId)) continue;
     state.entries.delete(actorId);
@@ -100,9 +103,7 @@ export function initializeStateProgression() {
   globalThis.Hooks?.on?.("calendaria.calendarSwitched", () => {
     void handleCalendariaCalendarSwitch();
   });
-  globalThis.Hooks?.on?.("calendaria.ready", (data) => {
-    void handleCalendariaReady(data);
-  });
+  registerCalendariaReadyHook(handleCalendariaReady);
   globalThis.Hooks?.on?.("fblQuickAccess.stateProgressionModeChanged", (mode) => {
     void handleProgressionModeChanged(mode);
   });
@@ -112,6 +113,12 @@ export function initializeStateProgression() {
     for (const state of gmSummaryWindows.values()) {
       if (!state.entries.has(actor.id)) continue;
       const old = state.statuses.get(actor.id);
+      if (old?.state === "processing" && activeSummaryOperations.has(actor.id)) continue;
+      const recovery = calendarOperationSummaryStatus(actor, state.context);
+      if (recovery) {
+        updateGMSummaryStatus(state, actor.id, recovery);
+        continue;
+      }
       const pendingCount = getPendingAddictions(actor).length;
       if (!pendingCount && old?.pendingManual) {
         const marker = getActorCalendarMarker(actor);
@@ -157,6 +164,7 @@ export async function readyStateProgression() {
   if (isActiveQuickAccessGM()) {
     await ensureMissingPlayerBaselines(context);
     warnIfAnyMarkersAhead(context);
+    warnIfCalendarRecoveryNeeded();
   }
   if (!game.user?.isGM) await checkCurrentPlayerPending();
 }
@@ -173,36 +181,6 @@ export function getStateProgressionMode() {
 
 export function usesCalendariaStateProgression() {
   return getStateProgressionMode() === STATE_PROGRESSION_MODES.CALENDARIA;
-}
-
-/** Calendaria's dayChange payload uses internal 0-indexed month/day fields. */
-export function calendariaHookComponentToPublicDate(components) {
-  if (!components || typeof components !== "object") return null;
-  const year = Number(components.year);
-  const month = Number(components.month);
-  const dayOfMonth = Number(components.dayOfMonth ?? components.day);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(dayOfMonth)) return null;
-  return {
-    year,
-    month: month + 1,
-    day: dayOfMonth + 1
-  };
-}
-
-export function normalizeCalendariaDate(date) {
-  if (!date || typeof date !== "object") return null;
-  const year = Number(date.year);
-  const month = Number(date.month);
-  const day = Number(date.day);
-  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
-  if (month < 1 || day < 1) return null;
-  return { year, month, day };
-}
-
-export function calendariaDateKey(date) {
-  const normalized = normalizeCalendariaDate(date);
-  if (!normalized) return "invalid-date";
-  return `${normalized.year}:${normalized.month}:${normalized.day}`;
 }
 
 export function getAssignedPlayerActors(users = globalThis.game?.users, actors = globalThis.game?.actors) {
@@ -232,7 +210,7 @@ export function getAssignedPlayerActors(users = globalThis.game?.users, actors =
     .sort((a, b) => String(a.actor?.name ?? "").localeCompare(String(b.actor?.name ?? "")) || String(a.actor?.id).localeCompare(String(b.actor?.id)));
 }
 
-export function calculateActorCalendarStatus(marker, context, api = getCalendariaApi()) {
+export function calculateActorCalendarStatus(marker, context, api = context?.api ?? getCalendariaApi()) {
   if (!context?.date || !context?.calendarId || !api?.daysBetween) {
     return { status: "unavailable", days: null };
   }
@@ -285,6 +263,7 @@ async function handleProgressionModeChanged(mode) {
   // Switching from Long Rest to Calendaria starts from "now". Old calendar
   // history must never be interpreted as overdue progression.
   await baselinePlayerActors(context, { force: true });
+  warnIfCalendarRecoveryNeeded();
 }
 
 async function confirmProgressionModeChange(previousMode, nextMode) {
@@ -310,13 +289,7 @@ async function confirmProgressionModeChange(previousMode, nextMode) {
   });
 }
 
-async function handleCalendariaReady(data = null) {
-  // Calendaria emits `calendarSwitched` once during CalendarManager.initialize()
-  // before it emits `calendaria.ready`. That startup event only announces the
-  // persisted active calendar and must not be treated as a user-initiated switch.
-  calendariaReadySeen = true;
-  calendariaReadyApi = data?.api ?? globalThis.CALENDARIA?.api ?? calendariaReadyApi;
-  markCalendariaReady(data);
+async function handleCalendariaReady() {
   if (!usesCalendariaStateProgression()) return;
   calendariaUnavailableWarned = false;
   const context = getCalendariaContext();
@@ -330,6 +303,7 @@ async function handleCalendariaReady(data = null) {
   if (isActiveQuickAccessGM()) {
     await ensureMissingPlayerBaselines(context);
     warnIfAnyMarkersAhead(context);
+    warnIfCalendarRecoveryNeeded();
   }
   if (!game.user?.isGM) await checkCurrentPlayerPending();
 }
@@ -338,7 +312,7 @@ async function handleCalendariaCalendarSwitch() {
   // Calendaria deliberately fires calendarSwitched during its own world startup,
   // before calendaria.ready. Ignore that initialization signal. The ready handler
   // establishes any missing baselines against the final persisted calendar.
-  if (!calendariaReadySeen) return;
+  if (!hasCalendariaReadyFired()) return;
   if (!usesCalendariaStateProgression() || !isActiveQuickAccessGM()) return;
   const context = getCalendariaContext();
   if (!context) return;
@@ -347,20 +321,20 @@ async function handleCalendariaCalendarSwitch() {
   ui.notifications?.info?.(qaLocalize(
     "StateProgression.CalendarChanged",
     "Calendaria changed its active calendar. Player state progression was re-baselined to the current date; no states were advanced."));
+  warnIfCalendarRecoveryNeeded();
 }
 
 async function handleCalendariaDayChange(data) {
   if (!usesCalendariaStateProgression()) return;
-  const api = getCalendariaApi();
-  if (!api?.daysBetween) return;
-
   const previous = calendariaHookComponentToPublicDate(data?.previous);
   const current = calendariaHookComponentToPublicDate(data?.current);
   if (!previous || !current) return;
+  const context = getCalendariaContext(current);
+  if (!context) return;
 
   let delta;
   try {
-    delta = Number(api.daysBetween(previous, current));
+    delta = Number(context.api.daysBetween(previous, current));
   } catch (error) {
     console.error(`${MODULE_ID} | could not calculate Calendaria day change`, error);
     return;
@@ -375,9 +349,6 @@ async function handleCalendariaDayChange(data) {
     }
     return;
   }
-
-  const context = getCalendariaContext(current);
-  if (!context) return;
 
   if (delta > 1) {
     if (isActiveQuickAccessGM()) await handleCalendariaMultiDayJump(previous, context, delta);
@@ -398,7 +369,7 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
   const summary = await prepareGMSummary(context, { reason: "time-skip", skipBaselineMutation: true });
   if (delta > MAX_AUTOMATIC_CALENDAR_DAYS) {
     for (const entry of entries) {
-      updateGMSummaryStatus(summary, entry.actor.id, {
+      updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? {
         state: "blocked",
         days: pendingDaysForActor(entry.actor, context),
         detail: qaLocalize("StateProgression.TooManyDays", "The time skip is too large for automatic processing.")
@@ -431,6 +402,11 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
 
   if (!confirmed) {
     for (const entry of entries) {
+      const recovery = calendarOperationSummaryStatus(entry.actor, context);
+      if (recovery) {
+        updateGMSummaryStatus(summary, entry.actor.id, recovery);
+        continue;
+      }
       const days = pendingDaysForActor(entry.actor, context);
       if (days > 0) {
         updateGMSummaryStatus(summary, entry.actor.id, {
@@ -444,18 +420,22 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
   }
 
   for (const entry of entries) {
+    const recovery = calendarOperationSummaryStatus(entry.actor, context);
+    if (recovery) {
+      updateGMSummaryStatus(summary, entry.actor.id, recovery);
+      continue;
+    }
     const marker = getActorCalendarMarker(entry.actor);
     if (!marker || marker.calendarId !== context.calendarId) {
       // Missing markers usually mean a newly assigned/newly created PC. A
       // multi-day world jump must not age a character from an unknown origin.
       try {
-        const written = await setActorCalendarMarker(entry.actor, context);
-        if (!written) throw progressionError("write-not-persisted", "Could not persist Calendaria baseline marker");
-        updateGMSummaryStatus(summary, entry.actor.id, {
+        const updated = await ensureActorCalendarBaseline(entry.actor, context);
+        updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? (updated ? {
           state: "baseline",
           days: 0,
           detail: qaLocalize("StateProgression.Baselined", "Baseline set to the current Calendaria date.")
-        });
+        } : summaryStatusForCurrentMarker(getActorCalendarMarker(entry.actor), context)));
       } catch (error) {
         console.error(`${MODULE_ID} | Calendaria baseline write failed for ${entry.actor?.name}`, error);
         updateGMSummaryStatus(summary, entry.actor.id, {
@@ -495,6 +475,7 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
       continue;
     }
 
+    activeSummaryOperations.add(entry.actor.id);
     updateGMSummaryStatus(summary, entry.actor.id, { state: "processing", days });
     try {
       const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
@@ -509,11 +490,13 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
       await sendPlayerResults(entry, context, result);
     } catch (error) {
       console.error(`${MODULE_ID} | automatic Calendaria time skip failed for ${entry.actor?.name}`, error);
-      updateGMSummaryStatus(summary, entry.actor.id, {
+      updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? {
         state: "error",
         days: pendingDaysForActor(entry.actor, context),
         detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
       });
+    } finally {
+      activeSummaryOperations.delete(entry.actor.id);
     }
   }
 }
@@ -525,11 +508,15 @@ async function processActorAutomaticDays(actor, startDate, context, requestedDay
 }
 
 async function processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays, options = {}) {
-  const api = getCalendariaApi();
+  const api = context.api ?? getCalendariaApi();
   const dayResults = [];
   // Requests target a date. Another queued request may already have advanced
   // this Actor while this request was waiting for the queue.
   const marker = getActorCalendarMarker(actor);
+  const storedOperation = getCalendarOperation(actor);
+  if (storedOperation && !canFinishCalendarOperation(storedOperation, marker, context, api)) {
+    throw calendarRecoveryError(storedOperation);
+  }
   const currentStatus = calculateActorCalendarStatus(marker, context, api);
   if (marker && currentStatus.status === "baseline") return emptyCalendarResult(context.date);
   const initialDate = normalizeCalendariaDate(marker?.date ?? startDate);
@@ -545,32 +532,24 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
   let failedActions = 0;
   let pendingManual = getPendingAddictions(actor).length;
 
-  while (remaining > 0 && cursor && !pendingManual) {
+  while (remaining > 0 && cursor) {
     const nextDate = normalizeCalendariaDate(api?.addDays?.(cursor, 1));
     if (!nextDate) break;
 
-    const commitKey = committedDayKey(actor?.id, context.calendarId);
-    const pendingCommit = committedUnmarkedDays.get(commitKey);
-    if (pendingCommit && sameCalendariaDay(pendingCommit.date, nextDate)) {
-      const markerTargetDate = pendingCommit.markerTargetDate ?? nextDate;
-      const consumed = Math.max(1, Math.min(remaining, Math.floor(Number(pendingCommit.consumedDays) || 1)));
-      const finalIteration = remaining - consumed <= 0;
-      await setActorCalendarMarker(
-        actor,
-        { ...context, date: markerTargetDate },
-        {},
-        finalIteration ? {} : { render: false }
-      );
-      if (pendingCommit.dayResult) dayResults.push(pendingCommit.dayResult);
-      if (pendingCommit.failedActions) {
+    const operation = getCalendarOperation(actor);
+    if (operation) {
+      const consumed = api.daysBetween(cursor, operation.through);
+      await finishCalendarOperation(actor, context, operation, consumed < remaining ? { render: false } : {});
+      if (operation.failures.length) {
         failedDays += 1;
-        failedActions += pendingCommit.failedActions;
+        failedActions += operation.failures.length;
       }
-      cursor = markerTargetDate;
+      cursor = operation.through;
       remaining -= consumed;
       pendingManual = getPendingAddictions(actor).length;
       continue;
     }
+    if (pendingManual) break;
 
     const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, nextDate) });
     const selectedIds = plan.actions.filter((action) => action.checked !== false).map((action) => action.id);
@@ -589,70 +568,32 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     // If only the bookkeeping Short Rest reset remains, repeating an empty day
     // hundreds of times would create document traffic with no gameplay value.
     const meaningful = plan.actions.filter((action) => action.kind !== "short-rest-reset");
-    if (!meaningful.length && !plan.providerErrors?.length) {
+    if (!meaningful.length) {
       const reset = plan.actions.find((action) => action.kind === "short-rest-reset");
-      let shortcutDayResult = null;
-      let shortcutFailedActions = 0;
+      const targetDate = normalizeCalendariaDate(api?.addDays?.(cursor, remaining)) ?? context.date;
       if (reset) {
-        const resetResult = await applyNewDayPlan(actor, plan, [reset.id], calendarApplyOptions());
-        shortcutDayResult = { date: nextDate, result: serializeNewDayResult(resetResult) };
-        dayResults.push(shortcutDayResult);
+        const resetResult = await applyCalendarDay(actor, context, cursor, nextDate, targetDate, plan, [reset.id]);
+        dayResults.push({ date: nextDate, result: serializeNewDayResult(resetResult) });
         if (resetResult.failed.length) {
           failedDays += 1;
-          shortcutFailedActions = resetResult.failed.length;
-          failedActions += shortcutFailedActions;
-          await recordCalendarFailures(actor, context, nextDate, resetResult.failed);
+          failedActions += resetResult.failed.length;
         }
+      } else {
+        await setActorCalendarMarker(actor, { ...context, date: targetDate });
       }
-      const targetDate = normalizeCalendariaDate(api?.addDays?.(cursor, remaining)) ?? context.date;
-      committedUnmarkedDays.set(commitKey, {
-        date: nextDate,
-        markerTargetDate: targetDate,
-        consumedDays: remaining,
-        dayResult: shortcutDayResult,
-        failedActions: shortcutFailedActions
-      });
-      // Keep the marker as the final Actor mutation for this shortcut. Core
-      // New Day writes keep their normal Foundry render behavior so any open
-      // embedded Item sheets stay synchronized on every client.
-      await setActorCalendarMarker(actor, { ...context, date: targetDate });
       remaining = 0;
       cursor = targetDate;
       break;
     }
 
-    const applied = await applyNewDayPlan(actor, plan, selectedIds, calendarApplyOptions());
+    const applied = await applyCalendarDay(actor, context, cursor, nextDate, nextDate, plan, selectedIds,
+      remaining > 1 ? { render: false } : {});
     const dayResult = { date: nextDate, result: serializeNewDayResult(applied) };
     dayResults.push(dayResult);
     if (applied.failed.length) {
       failedDays += 1;
       failedActions += applied.failed.length;
-      await recordCalendarFailures(actor, context, nextDate, applied.failed.map(entry => ({
-        id: String(entry.action?.id ?? entry.id ?? "action"), kind: "action-apply"
-      })));
     }
-
-    // Record the committed day before persisting its marker. If the marker
-    // write is vetoed, a retry will finish only the marker write instead of
-    // re-running already applied daily actions.
-    committedUnmarkedDays.set(commitKey, {
-      date: nextDate,
-      markerTargetDate: nextDate,
-      consumedDays: 1,
-      dayResult,
-      failedActions: applied.failed.length
-    });
-
-    // Consume this day even if an individual action failed. Re-running an
-    // already partly-applied day can decrement successful timers twice. The GM
-    // summary exposes failures for manual correction instead.
-    const finalIteration = remaining <= 1;
-    await setActorCalendarMarker(
-      actor,
-      { ...context, date: nextDate },
-      {},
-      finalIteration ? {} : { render: false }
-    );
     cursor = nextDate;
     remaining -= 1;
     pendingManual = getPendingAddictions(actor).length;
@@ -685,18 +626,24 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
 }
 
 async function recordCalendarFailures(actor, context, date, failures) {
-  const key = FLAG_STATE_PROGRESSION_FAILURES;
-  const previous = actor.getFlag?.(MODULE_ID, key);
-  const entries = Array.isArray(previous) ? previous : [];
-  // Store identifiers only. Provider actions/results can contain private data.
-  const safeFailures = failures.map(value => ({
+  await actor.setFlag(MODULE_ID, FLAG_STATE_PROGRESSION_FAILURES,
+    calendarFailureHistory(actor, context.calendarId, date, calendarFailureIds(failures)));
+}
+
+function calendarFailureIds(failures) {
+  return failures.map(value => ({
     id: String(value.action?.id ?? value.id ?? "action"),
     kind: value.kind === "provider-build" ? "provider-build" : "action-apply"
   }));
-  const entry = { calendarId: context.calendarId, date, failures: safeFailures, at: Date.now() };
-  const next = entries.filter(value => value.calendarId !== entry.calendarId || calendariaDateKey(value.date) !== calendariaDateKey(date));
+}
+
+function calendarFailureHistory(actor, calendarId, date, failures) {
+  const previous = readDocumentFlag(actor, MODULE_ID, FLAG_STATE_PROGRESSION_FAILURES);
+  const entries = Array.isArray(previous) ? previous : [];
+  const entry = { calendarId, date, failures, at: Date.now() };
+  const next = entries.filter(value => value.calendarId !== calendarId || !sameCalendariaDay(value.date, date));
   next.push(entry);
-  await actor.setFlag(MODULE_ID, key, next.slice(-100));
+  return next.slice(-100);
 }
 
 async function checkCurrentPlayerPending({ context = null } = {}) {
@@ -707,6 +654,16 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
   context ??= getCalendariaContext();
   if (!context) return null;
   const marker = getActorCalendarMarker(actor);
+  const operation = getCalendarOperation(actor);
+  if (operation) {
+    try {
+      await executeAsActiveGM(REPORT_OPERATION, { actorId: actor.id, targetDate: context.date, calendarId: context.calendarId });
+    } catch (error) {
+      console.error(`${MODULE_ID} | could not report unfinished Calendaria progression`, error);
+    }
+    ui.notifications?.warn?.(qaLocalize("StateProgression.DayAwaitingGM", "The GM needs to review an unfinished calendar day for this character."));
+    return null;
+  }
 
   if (!marker || marker.calendarId !== context.calendarId) {
     try {
@@ -764,7 +721,9 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
     return result;
   } catch (error) {
     const code = String(error?.code ?? "");
-    if (code === "multi-day-pending" || code === "stale-calendar-day") {
+    if (code === "calendar-reconciliation-required") {
+      ui.notifications?.warn?.(qaLocalize("StateProgression.DayAwaitingGM", "The GM needs to review an unfinished calendar day for this character."));
+    } else if (code === "multi-day-pending" || code === "stale-calendar-day") {
       ui.notifications?.warn?.(qaLocalize("StateProgression.StalePlayerDialog", "The calendar changed while this window was open. The GM summary now holds the pending progression."));
     } else {
       console.error(`${MODULE_ID} | Calendaria player progression failed`, error);
@@ -778,171 +737,132 @@ async function checkCurrentPlayerPending({ context = null } = {}) {
 
 async function handleCalendariaApplyRequest(payload, context) {
   assertCalendariaModeAvailable();
-  const calendaria = getCalendariaContext();
-  if (!calendaria) throw progressionError("calendaria-unavailable", "Calendaria is unavailable");
-
   const actorEntry = resolveAssignedActorEntry(payload?.actorId);
   assertRequesterAssignedToActor(actorEntry, context.requestUser);
-
+  const actor = actorEntry.actor;
   const targetDate = normalizeCalendariaDate(payload?.targetDate);
-  if (!targetDate || String(payload?.calendarId ?? "") !== calendaria.calendarId) {
-    throw progressionError("stale-calendar-day", "The Calendaria calendar changed");
-  }
-  if (!sameCalendariaDay(targetDate, calendaria.date)) {
-    throw progressionError("stale-calendar-day", "The Calendaria date changed while the dialog was open");
-  }
 
-  return enqueueStateProgressionOperation(actorEntry.actor, async () => {
-    // Re-read the marker inside the per-Actor queue. This makes Apply, Absent,
-    // Undo and multi-day GM resolution mutually exclusive even if two clients
-    // act on the same calendar prompt at nearly the same moment.
-    let marker = getActorCalendarMarker(actorEntry.actor);
-    const pendingManual = getPendingAddictions(actorEntry.actor).length;
-    if (pendingManual) {
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "blocked", days: calculateActorCalendarStatus(marker, calendaria).days ?? 0 });
-      return { status: "awaiting-endurance", calendarResult: { ...emptyCalendarResult(marker?.date ?? targetDate), pendingManual } };
-    }
-    if (!marker || marker.calendarId !== calendaria.calendarId) {
-      await setActorCalendarMarker(actorEntry.actor, calendaria);
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, {
-        state: "baseline",
-        days: 0,
-        detail: qaLocalize("StateProgression.Baselined", "Baseline set to the current Calendaria date.")
-      });
-      return { status: "baseline", calendarResult: emptyCalendarResult(targetDate) };
+  return enqueueStateProgressionOperation(actor, async () => {
+    const calendaria = getCalendariaContext();
+    if (!calendaria || String(payload?.calendarId ?? "") !== calendaria.calendarId || !sameCalendariaDay(targetDate, calendaria.date)) {
+      throw progressionError("stale-calendar-day", "The Calendaria calendar or date changed while the dialog was open");
     }
 
+    const marker = getActorCalendarMarker(actor);
+    const operation = getCalendarOperation(actor);
     const status = calculateActorCalendarStatus(marker, calendaria);
-    if (status.status === "ahead") {
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, summaryStatusForAheadMarker(marker, status.days));
-      throw progressionError("stale-calendar-day", "The character calendar marker is ahead of the current date");
-    }
-    if (status.status === "current") {
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, summaryStatusForCurrentMarker(marker, calendaria));
-      return {
-        status: isAbsentMarkerForContext(marker, calendaria) ? "already-skipped" : "already-processed",
-        calendarResult: emptyCalendarResult(targetDate)
-      };
-    }
-    if (status.status !== "pending") {
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "pending", days: status.days ?? 0 });
-      throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
-    }
-
-    const commitKey = committedDayKey(actorEntry.actor.id, calendaria.calendarId);
-    const pendingCommit = committedUnmarkedDays.get(commitKey);
-    if (pendingCommit && sameCalendariaDay(pendingCommit.date, targetDate)) {
-      activeSummaryOperations.add(actorEntry.actor.id);
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "processing", days: 1 });
-      try {
-        await setActorCalendarMarker(actorEntry.actor, calendaria);
-        const calendarResult = pendingCommit.calendarResult ?? {
-          mode: "interactive",
-          processedDays: 1,
-          failedDays: pendingCommit.failedActions ? 1 : 0,
-          failedActions: pendingCommit.failedActions ?? 0,
-          pendingManual: getPendingAddictions(actorEntry.actor).length,
-          days: pendingCommit.dayResult ? [pendingCommit.dayResult] : []
-        };
-        updateCurrentGMSummary(actorEntry.actor.id, calendaria, calendarResult.failedActions
-          ? {
-              state: "error",
-              days: 0,
-              result: calendarResult,
-              detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: calendarResult.failedActions })
-            }
-          : {
-              state: "done",
-              days: 0,
-              result: calendarResult,
-              detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: 1 })
-            });
-        return { status: calendarResult.failedActions ? "processed-with-errors" : "processed", calendarResult };
-      } catch (error) {
-        updateCurrentGMSummary(actorEntry.actor.id, calendaria, {
-          state: "error",
-          days: pendingDaysForActor(actorEntry.actor, calendaria),
-          detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
+    let plan, selectedIds;
+    if (operation) {
+      if (!canFinishCalendarOperation(operation, marker, calendaria)) {
+        updateCurrentGMSummary(actor.id, calendaria, calendarOperationSummaryStatus(actor, calendaria));
+        throw calendarRecoveryError(operation);
+      }
+      if (!sameCalendariaDay(operation.through, targetDate)) {
+        updateCurrentGMSummary(actor.id, calendaria, calendarOperationSummaryStatus(actor, calendaria));
+        throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
+      }
+    } else {
+      const pendingManual = getPendingAddictions(actor).length;
+      if (pendingManual) {
+        updateCurrentGMSummary(actor.id, calendaria, { state: "blocked", days: status.days ?? 0 });
+        return { status: "awaiting-endurance", calendarResult: { ...emptyCalendarResult(marker?.date ?? targetDate), pendingManual } };
+      }
+      if (status.status === "baseline") {
+        await setActorCalendarMarker(actor, calendaria);
+        updateCurrentGMSummary(actor.id, calendaria, {
+          state: "baseline",
+          days: 0,
+          detail: qaLocalize("StateProgression.Baselined", "Baseline set to the current Calendaria date.")
         });
-        throw error;
-      } finally {
-        activeSummaryOperations.delete(actorEntry.actor.id);
+        return { status: "baseline", calendarResult: emptyCalendarResult(targetDate) };
       }
-    }
-
-    const plan = await buildNewDayPlanWithProviders(actorEntry.actor, { dayKey: addictionCalendarDayKey(calendaria.calendarId, targetDate) });
-    if (plan.providerErrors?.length) {
-      await recordCalendarFailures(actorEntry.actor, calendaria, targetDate, plan.providerErrors.map(error => ({ id: error.providerId, kind: "provider-build" })));
-      throw progressionError("provider-build-failed", "A New Day provider is unavailable. The day was not applied.");
-    }
-    const selectedIds = normalizeSelectedActionIds(payload?.selectedIds);
-    const knownIds = new Set(plan.actions.map((action) => action.id));
-    const unknown = selectedIds.find((id) => !knownIds.has(id));
-    if (unknown) throw progressionError("invalid-action", `Unknown new-day action: ${unknown}`);
-
-    if (payload?.selectedPreconditions && typeof payload.selectedPreconditions === "object") {
-      for (const id of selectedIds) {
-        const hasExpected = Object.hasOwn(payload.selectedPreconditions, id);
-        const expected = hasExpected ? payload.selectedPreconditions[id] : undefined;
-        const live = plan.preconditions?.[id];
-        if (live !== undefined && (!hasExpected || expected !== live)) {
-          throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
-        }
+      if (status.status === "ahead") {
+        updateCurrentGMSummary(actor.id, calendaria, summaryStatusForAheadMarker(marker, status.days));
+        throw progressionError("stale-calendar-day", "The character calendar marker is ahead of the current date");
       }
+      if (status.status === "current") {
+        updateCurrentGMSummary(actor.id, calendaria, summaryStatusForCurrentMarker(marker, calendaria));
+        return {
+          status: isAbsentMarkerForContext(marker, calendaria) ? "already-skipped" : "already-processed",
+          calendarResult: emptyCalendarResult(targetDate)
+        };
+      }
+      if (status.status !== "pending") {
+        updateCurrentGMSummary(actor.id, calendaria, { state: "pending", days: status.days ?? 0 });
+        throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
+      }
+      ({ plan, selectedIds } = await buildInteractiveCalendarPlan(actor, calendaria, payload));
     }
 
-    activeSummaryOperations.add(actorEntry.actor.id);
-    updateCurrentGMSummary(actorEntry.actor.id, calendaria, { state: "processing", days: 1 });
+    activeSummaryOperations.add(actor.id);
+    updateCurrentGMSummary(actor.id, calendaria, { state: "processing", days: status.days });
     try {
-      const applied = await applyNewDayPlan(actorEntry.actor, plan, selectedIds, calendarApplyOptions());
-      if (applied.failed.length) await recordCalendarFailures(actorEntry.actor, calendaria, targetDate, applied.failed);
-
-      const dayResult = { date: targetDate, result: serializeNewDayResult(applied) };
+      let failedActions, days;
+      if (operation) {
+        await finishCalendarOperation(actor, calendaria, operation);
+        failedActions = operation.failures.length;
+        days = [];
+      } else {
+        const applied = await applyCalendarDay(actor, calendaria, marker.date, targetDate, targetDate, plan, selectedIds);
+        failedActions = applied.failed.length;
+        days = [{ date: targetDate, result: serializeNewDayResult(applied) }];
+      }
       const calendarResult = {
         mode: "interactive",
-        processedDays: 1,
-        failedDays: applied.failed.length ? 1 : 0,
-        failedActions: applied.failed.length,
-        pendingManual: getPendingAddictions(actorEntry.actor).length,
-        days: [dayResult]
+        processedDays: status.days,
+        failedDays: failedActions ? 1 : 0,
+        failedActions,
+        pendingManual: getPendingAddictions(actor).length,
+        days
       };
-      committedUnmarkedDays.set(commitKey, {
-        date: targetDate,
-        markerTargetDate: targetDate,
-        consumedDays: 1,
-        dayResult,
-        failedActions: applied.failed.length,
-        calendarResult
-      });
-
-      await setActorCalendarMarker(actorEntry.actor, calendaria);
-
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, applied.failed.length
+      updateCurrentGMSummary(actor.id, calendaria, failedActions
         ? {
             state: "error",
             days: 0,
             result: calendarResult,
-            detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: applied.failed.length })
+            detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: failedActions })
           }
         : {
             state: "done",
             days: 0,
             result: calendarResult,
-            detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: 1 })
+            detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: calendarResult.processedDays })
           });
-
-      return { status: applied.failed.length ? "processed-with-errors" : "processed", calendarResult };
+      return { status: failedActions ? "processed-with-errors" : "processed", calendarResult };
     } catch (error) {
-      updateCurrentGMSummary(actorEntry.actor.id, calendaria, {
+      updateCurrentGMSummary(actor.id, calendaria, calendarOperationSummaryStatus(actor, calendaria) ?? {
         state: "error",
-        days: pendingDaysForActor(actorEntry.actor, calendaria),
+        days: pendingDaysForActor(actor, calendaria),
         detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
       });
       throw error;
     } finally {
-      activeSummaryOperations.delete(actorEntry.actor.id);
+      activeSummaryOperations.delete(actor.id);
     }
   });
+}
+
+async function buildInteractiveCalendarPlan(actor, context, payload) {
+  const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, context.date) });
+  if (plan.providerErrors?.length) {
+    await recordCalendarFailures(actor, context, context.date, plan.providerErrors.map(error => ({ id: error.providerId, kind: "provider-build" })));
+    throw progressionError("provider-build-failed", "A New Day provider is unavailable. The day was not applied.");
+  }
+  const selectedIds = normalizeSelectedActionIds(payload?.selectedIds);
+  const knownIds = new Set(plan.actions.map(action => action.id));
+  const unknown = selectedIds.find(id => !knownIds.has(id));
+  if (unknown) throw progressionError("invalid-action", `Unknown new-day action: ${unknown}`);
+
+  if (payload?.selectedPreconditions && typeof payload.selectedPreconditions === "object") {
+    for (const id of selectedIds) {
+      const expected = Object.hasOwn(payload.selectedPreconditions, id) ? payload.selectedPreconditions[id] : undefined;
+      const live = plan.preconditions?.[id];
+      if (live !== undefined && expected !== live) {
+        throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
+      }
+    }
+  }
+  return { plan, selectedIds };
 }
 
 async function handleCalendariaPendingReport(payload, context) {
@@ -953,28 +873,12 @@ async function handleCalendariaPendingReport(payload, context) {
   const actorEntry = resolveAssignedActorEntry(payload?.actorId);
   assertRequesterAssignedToActor(actorEntry, context.requestUser);
 
-  let marker = getActorCalendarMarker(actorEntry.actor);
-  if (!marker || marker.calendarId !== calendaria.calendarId) {
-    await setActorCalendarMarker(actorEntry.actor, calendaria);
-    marker = getActorCalendarMarker(actorEntry.actor);
-  }
-
-  const status = calculateActorCalendarStatus(marker, calendaria);
-  const summary = await prepareGMSummary(calendaria, { reason: "player-report", skipBaselineMutation: true });
-  if (status.status === "ahead") {
-    updateGMSummaryStatus(summary, actorEntry.actor.id, summaryStatusForAheadMarker(marker, status.days));
-  } else if (status.status === "current") {
-    updateGMSummaryStatus(summary, actorEntry.actor.id, summaryStatusForCurrentMarker(marker, calendaria));
-  } else {
-    updateGMSummaryStatus(summary, actorEntry.actor.id, {
-      state: actorEntry.primaryUser?.active ? "pending" : "offline",
-      days: Math.max(0, Number(status.days) || 0),
-      detail: status.status === "pending-multiple"
-        ? qaLocalize("StateProgression.MultiplePendingGM", "Multiple calendar days are pending; GM resolution is required.")
-        : ""
-    });
-  }
-
+  const actor = actorEntry.actor;
+  await ensureActorCalendarBaseline(actor, calendaria);
+  await prepareGMSummary(calendaria, { reason: "player-report", skipBaselineMutation: true });
+  const recovery = calendarOperationSummaryStatus(actor, calendaria);
+  if (recovery) return { status: recovery.state, days: recovery.days };
+  const status = calculateActorCalendarStatus(getActorCalendarMarker(actor), calendaria);
   return { status: status.status, days: status.days ?? 0 };
 }
 
@@ -987,22 +891,26 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
     const existing = summary.statuses.get(entry.actor.id);
     if (existing?.state === "processing" && activeSummaryOperations.has(entry.actor.id)) continue;
 
+    const operationStatus = calendarOperationSummaryStatus(entry.actor, context);
+    if (operationStatus) {
+      updateGMSummaryStatus(summary, entry.actor.id, operationStatus);
+      continue;
+    }
+
     let marker = getActorCalendarMarker(entry.actor);
     if ((!marker || marker.calendarId !== context.calendarId) && !skipBaselineMutation) {
       try {
-        await enqueueStateProgressionOperation(entry.actor, async () => {
-          const liveMarker = getActorCalendarMarker(entry.actor);
-          if (!liveMarker || liveMarker.calendarId !== context.calendarId) {
-            const written = await setActorCalendarMarker(entry.actor, context);
-            if (!written) throw progressionError("write-not-persisted", "Could not persist Calendaria baseline marker");
-          }
-        });
+        const updated = await ensureActorCalendarBaseline(entry.actor, context);
+        const recovery = calendarOperationSummaryStatus(entry.actor, context);
         marker = getActorCalendarMarker(entry.actor);
-        updateGMSummaryStatus(summary, entry.actor.id, {
-          state: "baseline",
-          days: 0,
-          detail: qaLocalize("StateProgression.Baselined", "Baseline set to the current Calendaria date.")
-        });
+        if (recovery || updated) {
+          updateGMSummaryStatus(summary, entry.actor.id, recovery ?? {
+            state: "baseline",
+            days: 0,
+            detail: qaLocalize("StateProgression.Baselined", "Baseline set to the current Calendaria date.")
+          });
+          continue;
+        }
       } catch (error) {
         console.error(`${MODULE_ID} | Calendaria baseline write failed for ${entry.actor?.name}`, error);
         updateGMSummaryStatus(summary, entry.actor.id, {
@@ -1010,8 +918,8 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
           days: 0,
           detail: qaLocalize("StateProgression.BaselineFailed", "Could not save the Calendaria baseline marker.")
         });
+        continue;
       }
-      continue;
     }
 
     const status = calculateActorCalendarStatus(marker, context);
@@ -1138,11 +1046,14 @@ function renderGMSummaryRow(state, entry) {
   const pendingManual = getPendingAddictions(entry.actor).length;
   const pendingDays = Math.max(0, Number(status.days) || 0);
   const isProcessing = status.state === "processing";
-  const canResolve = ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
-  const canMarkAbsent = ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
-  const canUndoAbsent = status.state === "absent" && Boolean(status.undoAvailable);
+  const operation = getCalendarOperation(entry.actor);
+  const canResolve = status.state === "unmarked"
+    || (!operation && ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual);
+  const canMarkAbsent = !operation && ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
+  const canUndoAbsent = !operation && status.state === "absent" && Boolean(status.undoAvailable);
   const canResetCurrent = !isProcessing && (
-    status.state === "ahead"
+    operation
+    || status.state === "ahead"
     || status.state === "baseline"
     || status.state === "absent"
     || pendingDays > 0
@@ -1150,7 +1061,7 @@ function renderGMSummaryRow(state, entry) {
     || marker.calendarId !== state.context?.calendarId
     || !sameCalendariaDay(marker.date, state.context?.date)
   );
-  const canRewind = !isProcessing;
+  const canRewind = !isProcessing && !operation;
   const playerNames = entry.users.map((user) => user.name ?? user.id).filter(Boolean).join(", ") || "—";
   const detail = status.detail || progressionStatusDetail(status);
   const resultDetails = renderGMSummaryResult(status.result);
@@ -1340,6 +1251,10 @@ async function resolveActorFromGMSummary(state, actorId) {
   if (!entry) return;
   const context = getCalendariaContext();
   if (!context || context.calendarId !== state.context.calendarId) return;
+  if (getCalendarOperation(entry.actor)) {
+    await resolveCalendarOperationFromSummary(state, entry.actor, context);
+    return;
+  }
   const marker = getActorCalendarMarker(entry.actor);
   const status = calculateActorCalendarStatus(marker, context);
   const days = Math.max(0, Number(status.days) || 0);
@@ -1389,6 +1304,10 @@ async function resolveActorFromGMSummary(state, actorId) {
 
       liveContext = getCalendariaContext();
       if (!liveContext || liveContext.calendarId !== state.context.calendarId) return;
+      if (getCalendarOperation(entry.actor)) {
+        await resolveCalendarOperationFromSummary(state, entry.actor, liveContext);
+        return;
+      }
       liveMarker = getActorCalendarMarker(entry.actor);
       const liveStatus = calculateActorCalendarStatus(liveMarker, liveContext);
       liveDays = Math.max(0, Number(liveStatus.days) || 0);
@@ -1427,7 +1346,7 @@ async function resolveActorFromGMSummary(state, actorId) {
     } catch (error) {
       console.error(`${MODULE_ID} | GM multi-day resolve failed`, error);
       ui.notifications?.error?.(qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression."));
-      updateGMSummaryStatus(state, actorId, {
+      updateGMSummaryStatus(state, actorId, calendarOperationSummaryStatus(entry.actor, liveContext) ?? {
         state: "error",
         days: pendingDaysForActor(entry.actor, liveContext),
         detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
@@ -1467,8 +1386,23 @@ async function resetActorFromGMSummary(state, actorId) {
     ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
     return;
   }
+  const operation = clonePlainJson(getCalendarOperation(entry.actor));
+  if (operation) {
+    const confirmed = await confirmDangerAction({
+      title: qaLocalize("StateProgression.ResetInterruptedTitle", "Close unfinished calendar day?"),
+      heading: qaLocalize("StateProgression.ResetInterruptedHeading", "Set {actor}’s marker to {date}?", {
+        actor: entry.actor.name ?? "", date: formatCalendariaDate(context.date)
+      }),
+      warning: qaLocalize("StateProgression.ResetInterruptedWarning", "Check and correct the character’s states first. This closes the unfinished day and skips all pending days without applying or undoing any actions."),
+      confirmLabel: qaLocalize("StateProgression.ResetCurrent", "Set to current date"),
+      cancelLabel: qaLocalize("Common.Cancel", "Cancel"),
+      icon: "fas fa-calendar-check"
+    });
+    if (!confirmed || !isActiveQuickAccessGM() || summaryKey(getCalendariaContext() ?? {}) !== summaryKey(context)) return;
+  }
+
   try {
-    await resetActorCalendarMarkerToCurrent(entry.actor, context);
+    await resetCalendarMarker(entry.actor, context, operation);
     updateGMSummaryStatus(state, actorId, {
       state: "done",
       days: 0,
@@ -1530,7 +1464,7 @@ async function resetAllFromGMSummary(state) {
     title: qaLocalize("StateProgression.ResetAllConfirmTitle", "Reset all Calendaria markers?"),
     heading: qaLocalize("StateProgression.ResetAllConfirmHeading", "Set the current date ({date}) for all player characters?", { date: dateLabel }),
     message: qaLocalize("StateProgression.ResetAllConfirmMessage", "All assigned player characters will have their processed-day marker set to the current Calendaria date. Character sheet states will not be changed."),
-    warning: qaLocalize("StateProgression.ResetAllConfirmWarning", "Pending past days will be marked caught up, and markers stuck in the future will be fixed."),
+    warning: qaLocalize("StateProgression.ResetAllConfirmWarning", "Pending past days will be marked caught up. Characters with unfinished days are skipped and must be reviewed individually."),
     confirmLabel: qaLocalize("StateProgression.ResetAllCurrent", "Reset all to current date"),
     cancelLabel: qaLocalize("Common.Cancel", "Cancel"),
     icon: "fas fa-calendar-check",
@@ -1543,8 +1477,13 @@ async function resetAllFromGMSummary(state) {
   const liveDateLabel = formatCalendariaDate(liveContext.date);
 
   try {
-    const { count } = await resetAllCalendarMarkersToCurrent(liveContext);
+    const { count, skippedActorIds } = await resetAllCalendarMarkersToCurrent(liveContext);
     for (const actorId of state.entries.keys()) {
+      if (skippedActorIds.includes(actorId)) {
+        const recovery = calendarOperationSummaryStatus(state.entries.get(actorId).actor, liveContext);
+        if (recovery) updateGMSummaryStatus(state, actorId, recovery);
+        continue;
+      }
       updateGMSummaryStatus(state, actorId, {
         state: "done",
         days: 0,
@@ -1558,6 +1497,7 @@ async function resetAllFromGMSummary(state) {
       date: liveDateLabel,
       count
     }));
+    if (skippedActorIds.length) warnIfCalendarRecoveryNeeded();
   } catch (error) {
     console.error(`${MODULE_ID} | could not reset all Calendaria markers`, error);
     ui.notifications?.error?.(qaLocalize("StateProgression.ResetCurrentFailed", "Could not reset the marker to the current date."));
@@ -1692,15 +1632,21 @@ export async function openStateProgressionManager() {
 }
 
 export async function resetActorCalendarMarkerToCurrent(actor, context = getCalendariaContext()) {
+  return resetCalendarMarker(actor, context);
+}
+
+function resetCalendarMarker(actor, context, approvedOperation = null) {
   const calendarId = String(context?.calendarId ?? "").trim();
   const normalizedDate = normalizeCalendariaDate(context?.date);
   if (!actor || !calendarId || !normalizedDate) {
     throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
   }
   return enqueueStateProgressionOperation(actor, async () => {
+    const operation = getCalendarOperation(actor);
+    if (!plainValuesEqual(operation, approvedOperation)) throw calendarRecoveryError(operation ?? approvedOperation);
     const previousMarker = getActorCalendarMarker(actor);
     const nextContext = { calendarId, date: normalizedDate };
-    const written = await setActorCalendarMarker(actor, nextContext);
+    const written = await writeActorCalendarMarker(actor, nextContext, {}, {}, { reset: true });
     if (!written) {
       throw progressionError("write-not-persisted", "Could not persist Calendaria marker");
     }
@@ -1730,6 +1676,8 @@ export async function rewindActorCalendarMarker(actor, days = 1, context = getCa
   return enqueueStateProgressionOperation(actor, async () => {
     const previousMarker = getActorCalendarMarker(actor);
     const normalizedContext = { ...context, calendarId, date: normalizedCurrentDate };
+    const operation = getCalendarOperation(actor);
+    if (operation) throw calendarRecoveryError(operation);
     let rewoundDate = explicitTargetDate;
     if (!rewoundDate) {
       const status = calculateActorCalendarStatus(previousMarker, normalizedContext, api);
@@ -1770,11 +1718,17 @@ export async function resetAllCalendarMarkersToCurrent(context = getCalendariaCo
   const normalizedContext = { ...context, calendarId, date: normalizedDate };
   const entries = getAssignedPlayerActors();
   let count = 0;
+  const skippedActorIds = [];
   for (const { actor } of entries) {
-    await resetActorCalendarMarkerToCurrent(actor, normalizedContext);
-    count += 1;
+    try {
+      await resetActorCalendarMarkerToCurrent(actor, normalizedContext);
+      count += 1;
+    } catch (error) {
+      if (error?.code !== "calendar-reconciliation-required") throw error;
+      skippedActorIds.push(actor.id);
+    }
   }
-  return { count, date: normalizedDate };
+  return { count, date: normalizedDate, skippedActorIds };
 }
 
 export async function rewindAllCalendarMarkers(days = 1, context = getCalendariaContext(), api = context?.api ?? getCalendariaApi(), options = {}) {
@@ -1857,13 +1811,7 @@ async function baselinePlayerActors(context, { force = false } = {}) {
   let count = 0;
   for (const { actor } of getAssignedPlayerActors()) {
     try {
-      const updated = await enqueueStateProgressionOperation(actor, async () => {
-        const marker = getActorCalendarMarker(actor);
-        if (!force && marker?.calendarId === context.calendarId && marker?.date) return false;
-        const written = await setActorCalendarMarker(actor, context);
-        if (!written) throw progressionError("write-not-persisted", "Could not persist Calendaria baseline marker");
-        return true;
-      });
+      const updated = await ensureActorCalendarBaseline(actor, context, { force });
       if (updated) count += 1;
     } catch (error) {
       console.error(`${MODULE_ID} | failed to baseline Calendaria marker for ${actor?.name ?? actor?.id}`, error);
@@ -1874,6 +1822,18 @@ async function baselinePlayerActors(context, { force = false } = {}) {
 
 async function ensureMissingPlayerBaselines(context) {
   return baselinePlayerActors(context, { force: false });
+}
+
+function ensureActorCalendarBaseline(actor, context, { force = false } = {}) {
+  return enqueueStateProgressionOperation(actor, async () => {
+    if (getCalendarOperation(actor)) return false;
+    const marker = getActorCalendarMarker(actor);
+    if (!force && marker?.calendarId === context.calendarId) return false;
+    if (!await setActorCalendarMarker(actor, context)) {
+      throw progressionError("write-not-persisted", "Could not persist Calendaria baseline marker");
+    }
+    return true;
+  });
 }
 
 function pendingDaysForActor(actor, context) {
@@ -1906,6 +1866,10 @@ export function getActorCalendarMarker(actor) {
 }
 
 export async function setActorCalendarMarker(actor, context, metadata = {}, documentOptions = {}) {
+  return writeActorCalendarMarker(actor, context, metadata, documentOptions);
+}
+
+async function writeActorCalendarMarker(actor, context, metadata, documentOptions, { finish = null, reset = false } = {}) {
   const date = normalizeCalendariaDate(context?.date);
   const calendarId = String(context?.calendarId ?? "").trim();
   if ((!actor?.setFlag && !actor?.update) || !date || !calendarId) return false;
@@ -1918,7 +1882,27 @@ export async function setActorCalendarMarker(actor, context, metadata = {}, docu
     if (previousDate) marker.previousDate = previousDate;
   }
 
-  const written = await setDocumentFlagVerified(
+  const operation = getCalendarOperation(actor);
+  if (operation || finish) {
+    if (!reset && (!finish || !plainValuesEqual(operation, finish))) throw calendarRecoveryError(operation ?? finish);
+    const update = {
+      [flagReplaceUpdatePath(MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR)]: marker,
+      [`flags.${MODULE_ID}.${FLAG_STATE_PROGRESSION_OPERATION}`]: null
+    };
+    const failures = finish?.failures?.length
+      ? calendarFailureHistory(actor, calendarId, finish.date, finish.failures)
+      : null;
+    if (failures) update[`flags.${MODULE_ID}.${FLAG_STATE_PROGRESSION_FAILURES}`] = failures;
+    await actor.update(clonePlainJson(update), documentOptions);
+    if (getCalendarOperation(actor)
+      || !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_STATE_PROGRESSION_CALENDAR), marker)
+      || (failures && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_STATE_PROGRESSION_FAILURES), failures))) {
+      throw progressionError("write-not-persisted", "Could not persist Calendaria marker and operation together");
+    }
+    return true;
+  }
+
+  return setDocumentFlagVerified(
     actor,
     MODULE_ID,
     FLAG_STATE_PROGRESSION_CALENDAR,
@@ -1926,10 +1910,101 @@ export async function setActorCalendarMarker(actor, context, metadata = {}, docu
     documentOptions,
     { replace: true }
   );
-  if (written) {
-    committedUnmarkedDays.delete(committedDayKey(actor?.id, calendarId));
+}
+
+function getCalendarOperation(actor) {
+  return readDocumentFlag(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION) ?? null;
+}
+
+function canFinishCalendarOperation(operation, marker, context, api = context?.api ?? getCalendariaApi()) {
+  if (!context || operation?.phase !== "applied" || !Array.isArray(operation.failures)
+    || operation.calendarId !== context.calendarId || marker?.calendarId !== context.calendarId
+    || !sameCalendariaDay(marker.date, operation.previousDate)
+    || !normalizeCalendariaDate(operation.date) || !normalizeCalendariaDate(operation.through)) return false;
+  try {
+    const firstDay = normalizeCalendariaDate(api.addDays(marker.date, 1));
+    return sameCalendariaDay(firstDay, operation.date)
+      && api.daysBetween(operation.date, operation.through) >= 0
+      && api.daysBetween(operation.through, context.date) >= 0;
+  } catch (_error) {
+    return false;
   }
-  return written;
+}
+
+function calendarRecoveryError(operation) {
+  return progressionError("calendar-reconciliation-required", qaLocalize(
+    "StateProgression.InterruptedDay",
+    "Day processing stopped on {date}. Check the character’s states, then use Set to current date. Nothing was reapplied automatically.",
+    { date: formatCalendariaDate(operation?.date) }
+  ));
+}
+
+function calendarOperationSummaryStatus(actor, context) {
+  const operation = getCalendarOperation(actor);
+  if (!operation) return null;
+  const marker = getActorCalendarMarker(actor);
+  const canFinish = canFinishCalendarOperation(operation, marker, context);
+  return {
+    state: canFinish ? "unmarked" : "recovery",
+    days: pendingDaysForActor(actor, context),
+    detail: canFinish ? qaLocalize("StateProgression.FinishMarker", "Actions for {date} are already applied. Resolve saves the marker without repeating them.", {
+      date: formatCalendariaDate(operation.date)
+    }) : calendarRecoveryError(operation).message
+  };
+}
+
+function warnIfCalendarRecoveryNeeded() {
+  if (!getAssignedPlayerActors().some(({ actor }) => getCalendarOperation(actor))) return;
+  ui.notifications?.warn?.(qaLocalize("StateProgression.ReviewUnfinishedDays", "Some calendar days are unfinished. Open Manage Calendaria days to review them."));
+}
+
+async function resolveCalendarOperationFromSummary(state, actor, context) {
+  try {
+    const operation = await enqueueStateProgressionOperation(actor, async () => {
+      const saved = getCalendarOperation(actor);
+      if (saved) await finishCalendarOperation(actor, context, saved);
+      return saved;
+    });
+    const marker = getActorCalendarMarker(actor);
+    const days = pendingDaysForActor(actor, context);
+    const detail = operation?.failures.length
+      ? qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: operation.failures.length })
+      : "";
+    updateGMSummaryStatus(state, actor.id, {
+      ...summaryStatusForCurrentMarker(marker, context),
+      ...(days ? { state: "pending", days } : {}),
+      ...(detail ? { state: "error", detail } : {})
+    });
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not finish Calendaria marker`, error);
+    ui.notifications?.error?.(String(error.message));
+    const status = calendarOperationSummaryStatus(actor, context);
+    if (status) updateGMSummaryStatus(state, actor.id, status);
+  }
+}
+
+async function finishCalendarOperation(actor, context, operation, documentOptions = {}) {
+  if (!canFinishCalendarOperation(operation, getActorCalendarMarker(actor), context)) throw calendarRecoveryError(operation);
+  await writeActorCalendarMarker(actor, { ...context, date: operation.through }, {}, documentOptions, { finish: operation });
+}
+
+async function applyCalendarDay(actor, context, previousDate, date, through, plan, selectedIds, documentOptions = {}) {
+  const existing = getCalendarOperation(actor);
+  if (existing) throw calendarRecoveryError(existing);
+  const marker = getActorCalendarMarker(actor);
+  if (marker?.calendarId !== context.calendarId || !sameCalendariaDay(marker.date, previousDate)) {
+    throw progressionError("stale-calendar-day", "The character calendar marker changed before processing");
+  }
+
+  const operation = { id: makeSocketRequestId(), phase: "applying", calendarId: context.calendarId, previousDate, date, through };
+  const writeOperation = value => setDocumentFlagVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION,
+    value, { render: false }, { replace: true });
+  await writeOperation(operation);
+  const applied = await applyNewDayPlan(actor, plan, selectedIds, calendarApplyOptions());
+  const finished = { ...operation, phase: "applied", failures: calendarFailureIds(applied.failed) };
+  await writeOperation(finished);
+  await finishCalendarOperation(actor, context, finished, documentOptions);
+  return applied;
 }
 
 export async function markActorCalendariaAbsent(actor, context, api = context?.api ?? getCalendariaApi()) {
@@ -1937,6 +2012,8 @@ export async function markActorCalendariaAbsent(actor, context, api = context?.a
 }
 
 async function markActorCalendariaAbsentUnlocked(actor, context, api) {
+  const operation = getCalendarOperation(actor);
+  if (operation) throw calendarRecoveryError(operation);
   const marker = getActorCalendarMarker(actor);
   const status = calculateActorCalendarStatus(marker, context, api);
   const skippedDays = Math.max(0, Math.floor(Number(status.days) || 0));
@@ -1955,6 +2032,8 @@ export async function undoActorCalendariaAbsent(actor, context) {
 }
 
 async function undoActorCalendariaAbsentUnlocked(actor, context) {
+  const operation = getCalendarOperation(actor);
+  if (operation) throw calendarRecoveryError(operation);
   const marker = getActorCalendarMarker(actor);
   if (!isAbsentMarkerForContext(marker, context) || !marker.previousDate) {
     return { changed: false, restoredMarker: marker };
@@ -2025,34 +2104,6 @@ function summaryStatusForCurrentMarker(marker, context) {
       { days: skippedDays }
     )
   };
-}
-
-function getCalendariaContext(dateOverride = null) {
-  const api = getCalendariaApi();
-  if (!api?.getCurrentDateTime || !api?.getActiveCalendar) return null;
-  try {
-    // Calendaria's public getCurrentDateTime() is already 1-indexed. Only the
-    // raw dayChange hook payload requires calendariaHookComponentToPublicDate().
-    const date = normalizeCalendariaDate(dateOverride ?? api.getCurrentDateTime());
-    const calendar = api.getActiveCalendar();
-    const calendarId = String(calendar?.metadata?.id ?? calendar?.id ?? "").trim();
-    if (!date || !calendarId) return null;
-    return { api, calendar, calendarId, date };
-  } catch (_error) {
-    return null;
-  }
-}
-
-function isCalendariaModuleActive() {
-  const module = globalThis.game?.modules?.get?.(CALENDARIA_MODULE_ID);
-  if (!module) return Boolean(globalThis.CALENDARIA?.api || calendariaReadyApi);
-  return module.active !== false;
-}
-
-function getCalendariaApi() {
-  if (!isCalendariaModuleActive()) return null;
-  const module = globalThis.game?.modules?.get?.(CALENDARIA_MODULE_ID);
-  return globalThis.CALENDARIA?.api ?? calendariaReadyApi ?? module?.api ?? null;
 }
 
 function registerResultSocket() {
@@ -2251,20 +2302,8 @@ function resolveUserCharacter(user, actors) {
   return null;
 }
 
-function sameCalendariaDay(a, b) {
-  const left = normalizeCalendariaDate(a);
-  const right = normalizeCalendariaDate(b);
-  return Boolean(left && right && left.year === right.year && left.month === right.month && left.day === right.day);
-}
-
 function summaryKey(context) {
   return `${String(context?.calendarId ?? "")}:${calendariaDateKey(context?.date)}`;
-}
-
-function formatCalendariaDate(date) {
-  const value = normalizeCalendariaDate(date);
-  if (!value) return "—";
-  return `${value.day}.${value.month}.${value.year}`;
 }
 
 function progressionModeLabel(mode) {
@@ -2283,7 +2322,9 @@ function progressionStatusLabel(state) {
     baseline: "Baseline set",
     blocked: "Needs manual resolution",
     absent: "Absent",
-    ahead: "Marker ahead"
+    ahead: "Marker ahead",
+    unmarked: "Marker not saved",
+    recovery: "Review required"
   }[state] ?? state);
 }
 

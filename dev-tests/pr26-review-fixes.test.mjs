@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -720,7 +721,7 @@ test("PR26: Reputation tracks edit revision during in-flight save so concurrent 
 });
 
 test("PR26: Money transfer persists GM-visible reconciliation record on partial veto and resolves safely without double debit", async () => {
-  const restore = saveGlobals(["game", "ChatMessage", "ui", "Hooks"]);
+  const restore = saveGlobals(["game", "ChatMessage", "ui", "Hooks", "localStorage"]);
   try {
     const worldSettings = new Map();
     const whispers = [];
@@ -768,8 +769,10 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
       create: async (msg) => { whispers.push(msg); return msg; }
     };
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
+    const storage = globalThis.localStorage = createMemoryStorage();
     globalThis.game = {
       user: gm,
+      world: { id: "reconciliation-world" },
       users,
       actors,
       modules: new Map(),
@@ -838,6 +841,12 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
     const gmWhisper = whispers.find((w) => String(w.content).includes(requestId));
     assert.ok(gmWhisper, "GM reconciliation whisper must include requestId");
     assert.deepEqual(gmWhisper.whisper, [gm.id]);
+    assert.doesNotMatch(gmWhisper.content, /Alice|Bob|before|expected|observed/);
+    assert.doesNotMatch(JSON.stringify([emittedPackets, whispers, users]), /"before"|"expected"|"observed"/);
+    assert.equal(worldSettings.size, 0);
+    game.user = senderUser;
+    assert.deepEqual(mt.getPendingMoneyTransferReconciliations(), []);
+    game.user = gm;
 
     // If an intervening wallet edit happens, applyRemaining must refuse with intervening-update
     targetActor.system.currency.gold.value = 99;
@@ -848,6 +857,14 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
     // Restore observed state and clear veto -> applyRemaining credits ONLY recipient without double-debiting sender
     targetActor.system.currency.gold.value = 1;
     FakeActor.vetoTarget = false;
+    const persist = storage.setItem;
+    storage.setItem = () => {};
+    const unclosed = await mt.resolveMoneyTransferReconciliation(requestId, { applyRemaining: true });
+    assert.deepEqual(unclosed, { ok: false, error: "reconciliation-not-persisted" });
+    assert.equal(senderActor.system.currency.gold.value, 3);
+    assert.equal(targetActor.system.currency.gold.value, 3);
+    assert.equal(mt.getPendingMoneyTransferReconciliations()[0].status, "pending");
+    storage.setItem = persist;
     const resolved = await mt.resolveMoneyTransferReconciliation(requestId, { applyRemaining: true });
     assert.equal(resolved.ok, true);
     assert.equal(senderActor.system.currency.gold.value, 3, "sender must not be debited again");
@@ -944,13 +961,18 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
       id: "replay-pc",
       name: "Replay PC",
       items: pcItems,
-      cancelUpdate: true, // Marker write via actor.update will be vetoed!
       _flags: { "fbl-quick-access": { stateProgressionCalendaria: { calendarId: "air", date: { year: 882, month: 4, day: 11 } } } },
       testUserPermission: () => true,
       async updateEmbeddedDocuments(_type, updates) {
         for (const u of updates) await pcItems.get(u._id)?.update(u);
       }
     });
+    const updateActor = replayActor.update;
+    let vetoMarker = true;
+    replayActor.update = function (data, options) {
+      if (vetoMarker && Object.hasOwn(data, "flags.fbl-quick-access.==stateProgressionCalendaria")) return undefined;
+      return updateActor.call(this, data, options);
+    };
     const uR = { id: "ur", name: "UR", isGM: false, active: true, character: replayActor };
     actors.push(replayActor);
     users.push(uR);
@@ -976,7 +998,7 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
     assert.deepEqual(replayActor.getFlag("fbl-quick-access", "stateProgressionCalendaria").date, { year: 882, month: 4, day: 11 });
 
     // Attempt 2 (after marker veto lifts, even with refreshed preview): MUST persist marker ONLY and keep injury at 4 days (NOT 3 days!)
-    replayActor.setCancelUpdate(false);
+    vetoMarker = false;
     const refreshedPlan = await newDay.buildNewDayPlanWithProviders(replayActor);
     const refreshedAction = refreshedPlan.actions.find((a) => a.kind === "injury-healing");
     const retryRes = await executeAsActiveGM("state-progression.apply-calendaria-day", {
