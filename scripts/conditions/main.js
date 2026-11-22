@@ -43,6 +43,7 @@ import {
 import { correctAddictionState, getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
+import { setDocumentFlagVerified } from "../document-writes.js";
 import { decrementFirstInteger } from "../new-day.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
@@ -267,24 +268,25 @@ export async function renderExpandedConditions(app, html) {
     if (!editable) return;
 
     const liveList = getLiveCustomConditions();
-    const rowsById = new Map();
+    const liveById = new Map(liveList.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
 
     html.find(".conditions-rows > .condition-row[data-condition-id]").each((i, el) => {
       const row = $(el);
       const id = String(row.data("condition-id") || "");
-      const previous = foundry.utils.deepClone(liveList.find(condition => condition.id === id) || { id });
-      const order = Number(row.data("order") ?? i * 10);
+      const previous = liveById.get(id);
+      if (!previous) return;
+      const order = Number(row.data("order") ?? previous.order ?? i * 10);
 
       if (row.hasClass("arc-row")) {
         previous.desc = row.find(".condition-desc-input").val() ?? previous.desc ?? "";
-        previous.order = Number.isFinite(order) ? order : i * 10;
-        rowsById.set(id, makeCustomCondition(previous));
+        previous.order = Number.isFinite(order) ? order : previous.order;
+        liveById.set(id, makeCustomCondition(previous));
         return;
       }
 
-      rowsById.set(id, makeCustomCondition({
+      liveById.set(id, makeCustomCondition({
         id,
-        order: Number.isFinite(order) ? order : i * 10,
+        order: Number.isFinite(order) ? order : previous.order,
         name: row.find(".condition-name").val() ?? previous.name ?? "",
         time: row.find(".condition-time").val() ?? previous.time ?? "0",
         notes: row.find(".condition-notes").val() ?? previous.notes ?? "",
@@ -292,7 +294,7 @@ export async function renderExpandedConditions(app, html) {
       }));
     });
 
-    const updated = Array.from(rowsById.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
+    const updated = Array.from(liveById.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
     customConditions = updated;
     await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: updated }, { render: false });
   }
@@ -775,10 +777,20 @@ export async function renderExpandedConditions(app, html) {
     const liveList = getLiveCustomConditions();
     const conditionName = liveList.find(condition => condition.id === id)?.name || row.find(".condition-name").val() || row.find(".condition-name-static").text() || localize("Delete.ConditionFallback", "condition");
     if (!(await confirmStatDelete(conditionName, "condition"))) return;
-    const updated = getLiveCustomConditions().filter(condition => condition.id !== id);
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: updated }, { render: false });
-    customConditions = updated;
-    row.remove();
+    const currentList = getLiveCustomConditions();
+    const updated = currentList.filter(condition => condition.id !== id);
+    if (updated.length === currentList.length) {
+      customConditions = currentList;
+      row.remove();
+      return;
+    }
+    try {
+      await setDocumentFlagVerified(app.actor, MODULE_ID, FLAGS.LIST, updated, { render: false });
+      customConditions = updated;
+      row.remove();
+    } catch (error) {
+      console.error(`${MODULE_ID} | failed to delete custom condition`, error);
+    }
   });
 
   html.find(".conditions-tab").off("change", ".condition-name, .condition-time, .condition-notes, .condition-desc-input")

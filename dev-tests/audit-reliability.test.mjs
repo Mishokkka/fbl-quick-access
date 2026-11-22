@@ -26,7 +26,9 @@ const get = (value, key) => key.split(".").reduce((object, part) => object?.[par
 const set = (value, key, entry) => {
   const parts = key.split("."); const leaf = parts.pop();
   const parent = parts.reduce((object, part) => object[part] ??= {}, value);
-  if (leaf.startsWith("-=")) delete parent[leaf.slice(2)]; else parent[leaf] = structuredClone(entry);
+  if (leaf.startsWith("-=")) delete parent[leaf.slice(2)];
+  else if (leaf.startsWith("==")) parent[leaf.slice(2)] = structuredClone(entry);
+  else parent[leaf] = structuredClone(entry);
 };
 function reset() {
   globalThis.foundry = { utils: { getProperty: get, deepClone: structuredClone,

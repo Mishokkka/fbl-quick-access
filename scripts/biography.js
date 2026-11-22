@@ -4,6 +4,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
 import { findApplicationRoot, findBiographyTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { actorKey, decodeHtmlEntities, escapeHtml, stripHtml } from "./utils.js";
+import { createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 
 const PROFILE_VERSION = 1;
 const QUESTION_FIELDS = Object.freeze([
@@ -136,7 +137,8 @@ export async function savePilgrimCardProfile(actor, value, { render = false } = 
   await actor.update({
     [`flags.${MODULE_ID}.${FLAG_PILGRIM_CARD_PROFILE}`]: profile
   }, { render });
-  return true;
+  const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
+  return plainValuesEqual(persisted ?? null, profile);
 }
 
 export function getBiographyProfile(actor) {
@@ -187,6 +189,27 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
   };
   if (profile.identity.name && profile.identity.name !== actor.name) update.name = profile.identity.name;
   await actor.update(update, { render });
+  return biographyUpdatePersisted(actor, update);
+}
+
+function biographyUpdatePersisted(actor, update) {
+  for (const [path, expected] of Object.entries(update)) {
+    if (path === `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}`) {
+      const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
+      if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+      continue;
+    }
+    const prefix = `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}.`;
+    if (path.startsWith(prefix)) {
+      const stored = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
+      const subPath = path.slice(prefix.length);
+      const persisted = getPathValue(stored, subPath);
+      if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+      continue;
+    }
+    const persisted = getPathValue(actor, path);
+    if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+  }
   return true;
 }
 
@@ -1400,7 +1423,10 @@ function flushProfileSave(key) {
       else setPath(profile, path, value);
     }
     for (const path of [...pending.patches.keys()]) {
-      await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+      const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+      if (!saved) {
+        throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
+      }
       // A later failure must not retry a path that has already committed.
       pending.patches.delete(path);
     }
@@ -1488,7 +1514,7 @@ async function saveBiographyProfilePath(actor, state, path, { render = false } =
   }
 
   await actor.update(update, { render });
-  return true;
+  return biographyUpdatePersisted(actor, update);
 }
 
 function isBiographyRichPath(path) {
@@ -1523,7 +1549,12 @@ function flushPilgrimSave(key) {
   if (!pending) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
   PILGRIM_PENDING.delete(key);
   const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false)
-    .then(() => DELETED_ACTORS.has(pending.actor) ? false : savePilgrimCardProfile(pending.actor, pending.state, { render: false }))
+    .then(async () => {
+      if (DELETED_ACTORS.has(pending.actor)) return false;
+      const saved = await savePilgrimCardProfile(pending.actor, pending.state, { render: false });
+      if (!saved) throw createCodedError("write-not-persisted", "Pilgrim card save was not persisted.");
+      return true;
+    })
     .catch(error => {
       if (DELETED_ACTORS.has(pending.actor)) return false;
       if (!PILGRIM_PENDING.has(key)) PILGRIM_PENDING.set(key, pending);

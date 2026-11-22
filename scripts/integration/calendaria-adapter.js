@@ -126,12 +126,14 @@ export function getCalendariaQuarterInfo() {
     const second = Number.isFinite(Number(dateTime.second)) ? Number(dateTime.second) : 0;
     const timeOfDay = hour + (minute / 60) + (second / 3600);
     const quarterIndex = Math.max(0, Math.min(3, Math.floor(timeOfDay / quarterHours)));
-    const dayPrefix = calendarId
-      ? `calendaria:${calendarId}:${year}:${month}:${day}`
-      : `calendaria:${year}:${month}:${day}`;
+    const legacyKey = `calendaria:${year}:${month}:${day}:q${quarterIndex}`;
+    const key = calendarId
+      ? `calendaria:${calendarId}:${year}:${month}:${day}:q${quarterIndex}`
+      : legacyKey;
 
     return {
-      key: `${dayPrefix}:q${quarterIndex}`,
+      key,
+      legacyKey,
       quarterIndex,
       dateLabel: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
     };

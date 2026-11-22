@@ -26,8 +26,9 @@ export function registerTooltipListeners() {
   });
 
   document.addEventListener("mousemove", (event) => {
+    if (itemTooltipPinned) return;
     itemTooltipPointer = { x: event.clientX, y: event.clientY };
-    if (itemTooltipHovered || itemTooltipPinned) return;
+    if (itemTooltipHovered) return;
     scheduleItemTooltipPosition();
   }, true);
 
@@ -236,7 +237,7 @@ function scheduleItemTooltip(actor, row, anchor, event) {
       scheduleItemTooltipPosition();
     } catch (error) {
       console.error("fbl-quick-access | item tooltip render failed", error);
-      hideItemTooltip();
+      if (request === itemTooltipRequest && itemTooltipAnchor === anchor) hideItemTooltip();
     }
   }, delay);
 }

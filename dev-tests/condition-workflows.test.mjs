@@ -18,6 +18,7 @@ function set(object, path, value) {
   const leaf = keys.pop();
   const parent = keys.reduce((entry, key) => entry[key] ??= {}, object);
   if (leaf.startsWith("-=")) delete parent[leaf.slice(2)];
+  else if (leaf.startsWith("==")) parent[leaf.slice(2)] = structuredClone(value);
   else parent[leaf] = structuredClone(value);
 }
 

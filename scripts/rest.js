@@ -13,6 +13,7 @@ import { createCodedError } from "./document-writes.js";
 import { getCalendariaApi, getCalendariaQuarterInfo as readCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
 const enqueueRestOperation = createObjectOperationQueue();
+const PENDING_EFFECT_CLEANUPS = new WeakMap();
 
 export const REST_ATTRIBUTES = {
   strength: {
@@ -228,7 +229,11 @@ export async function openRestDialog(app, actor, root = null) {
         const element = extractDialogElement(renderedDialog ?? html);
         element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog");
         const resize = () => scheduleRestDialogAutoSize(dialog, element);
-        setupRestDialogInteractivity(renderedDialog?.form ?? renderedDialog ?? element, resize);
+        setupRestDialogInteractivity(
+          renderedDialog?.form ?? renderedDialog ?? element,
+          resize,
+          () => buildRestSnapshot(actor, { root })
+        );
         resize();
       },
       close: () => finish(null)
@@ -359,7 +364,7 @@ function renderLongAttributeRow(actor, snapshot, attribute) {
   `;
 }
 
-function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
+function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null, getLiveSnapshot = null) {
   const element = extractDialogElement(dialogOrElement);
   setupRestDialogHeader(element);
 
@@ -374,6 +379,7 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
       pane.hidden = hidden;
       pane.setAttribute("aria-hidden", String(hidden));
     }
+    if (type === "short") updateShortRecoveryAvailability();
     onLayoutChange?.();
   };
 
@@ -385,9 +391,34 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
 
   const updateShortRecoveryAvailability = () => {
     const status = form.querySelector(".fblqa-rest-short-status");
-    const initiallyUsed = status?.dataset?.shortUsed === "true";
+    let usedThisQuarter = status?.dataset?.shortUsed === "true";
+    if (typeof getLiveSnapshot === "function") {
+      try {
+        const liveSnapshot = getLiveSnapshot();
+        if (liveSnapshot) {
+          usedThisQuarter = Boolean(liveSnapshot.shortRestUse?.usedThisQuarter);
+          if (status) {
+            status.dataset.shortUsed = usedThisQuarter ? "true" : "false";
+            status.classList?.toggle?.("is-used", usedThisQuarter);
+            status.innerHTML = usedThisQuarter
+              ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", {
+                  attribute: escapeHtml(localizeAttribute(REST_ATTRIBUTES[liveSnapshot.shortRestUse.attribute] ?? { fallback: liveSnapshot.shortRestUse.attribute ?? "?" }))
+                })
+              : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+          }
+          const timeSource = form.querySelector(".fblqa-rest-time-source");
+          if (timeSource) {
+            timeSource.innerHTML = qaLocalize("Rest.TimeSource", "Источник четверти дня: {source}", {
+              source: escapeHtml(liveSnapshot.quarterInfo?.label ?? "—")
+            });
+          }
+        }
+      } catch (_error) {
+        // Keep the existing rendered status if a live snapshot cannot be read.
+      }
+    }
     const resetChecked = Boolean(form.querySelector('input[name="resetShortQuarter"]')?.checked);
-    const locked = initiallyUsed && !resetChecked;
+    const locked = usedThisQuarter && !resetChecked;
     const recoveryCheck = form.querySelector('input[name="useShortRecovery"]');
     const attributeSelect = form.querySelector('select[name="shortAttribute"]');
     const consumableInput = form.querySelector('input[name="shortConsumable"]');
@@ -408,6 +439,9 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
       if (event.target?.name === "restType") updatePanes();
       if (event.target?.name === "shortAttribute") updateConsumable();
       if (event.target?.name === "resetShortQuarter") updateShortRecoveryAvailability();
+    });
+    form.addEventListener("focusin", () => {
+      if (form.querySelector('input[name="restType"]:checked')?.value === "short") updateShortRecoveryAvailability();
     });
     form.querySelector('input[name="shortConsumable"]')?.addEventListener("input", (event) => {
       event.currentTarget.dataset.touched = "true";
@@ -500,6 +534,48 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     return null;
   }
 
+  const pendingCleanup = PENDING_EFFECT_CLEANUPS.get(actor);
+  if (pendingCleanup && pendingCleanup.type === options.type) {
+    const currentEffects = actor?.effects ? [...actor.effects] : [];
+    const currentIds = new Set(currentEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
+    const remainingIds = pendingCleanup.effectIds.filter((id) => currentIds.has(id));
+    if (!remainingIds.length) {
+      PENDING_EFFECT_CLEANUPS.delete(actor);
+    } else {
+      const savedResult = pendingCleanup.result;
+      try {
+        await actor.deleteEmbeddedDocuments("ActiveEffect", remainingIds);
+        const afterEffects = actor?.effects ? [...actor.effects] : [];
+        const afterIds = new Set(afterEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
+        const stillRemaining = remainingIds.filter((id) => afterIds.has(id));
+        if (stillRemaining.length) {
+          PENDING_EFFECT_CLEANUPS.set(actor, { ...pendingCleanup, effectIds: stillRemaining });
+          throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
+        }
+        PENDING_EFFECT_CLEANUPS.delete(actor);
+        if (savedResult.changed) {
+          ui.notifications?.info?.(savedResult.notification);
+        } else {
+          ui.notifications?.info?.(qaLocalize("Rest.NoChanges", "Отдых завершён без изменений на листе."));
+        }
+        if (savedResult.changed || shouldPostNoChangeRestCards()) {
+          try {
+            await postRestChatMessage(actor, savedResult, options);
+          } catch (error) {
+            savedResult.notificationError = String(error?.message ?? error);
+            console.error(`${MODULE_ID} | rest applied but chat failed`, error);
+            ui.notifications?.warn?.(qaLocalize("Rest.ChatFailed", "Отдых применен, но сообщение в чат не отправлено."));
+          }
+        }
+        return savedResult;
+      } catch (error) {
+        console.error(`${MODULE_ID} | rest cleanup retry failed`, error);
+        ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+        return { ...savedResult, failed: true, error };
+      }
+    }
+  }
+
   const result = options.type === "short"
     ? calculateShortRestChanges(actor, options, context)
     : calculateLongRestChanges(actor, options, context);
@@ -548,12 +624,23 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       }
     }
     if (effectIds.length) {
+      // Remember that the actor update already persisted so a retry after a
+      // vetoed ActiveEffect deletion finishes only the unfinished cleanup and
+      // never applies attribute recovery a second time.
+      if (hasActorUpdate) {
+        PENDING_EFFECT_CLEANUPS.set(actor, { type: options.type, effectIds: [...effectIds], result });
+      }
       await actor.deleteEmbeddedDocuments("ActiveEffect", effectIds);
       const remainingEffects = actor?.effects ? [...actor.effects] : [];
       const remainingIds = new Set(remainingEffects.map((effect) => effect?.id ?? effect?._id).filter(Boolean));
-      if (effectIds.some((id) => remainingIds.has(id))) {
+      const stillRemaining = effectIds.filter((id) => remainingIds.has(id));
+      if (stillRemaining.length) {
+        if (hasActorUpdate) {
+          PENDING_EFFECT_CLEANUPS.set(actor, { type: options.type, effectIds: stillRemaining, result });
+        }
         throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
       }
+      PENDING_EFFECT_CLEANUPS.delete(actor);
     }
 
     if (result.changed) {
@@ -583,6 +670,12 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
   return result;
 }
 
+function matchesQuarterKey(savedKey, quarterInfo) {
+  if (!savedKey || !quarterInfo?.key) return false;
+  if (savedKey === quarterInfo.key) return true;
+  return Boolean(quarterInfo.legacyKey && savedKey === quarterInfo.legacyKey);
+}
+
 export function buildRestSnapshot(actor, context = {}) {
   const conditions = getRestConditionState(actor, context);
   const blockedBy = getBlockedRestAttributes(conditions);
@@ -597,7 +690,7 @@ export function buildRestSnapshot(actor, context = {}) {
     quarterInfo,
     shortRestUse: {
       ...savedUse,
-      usedThisQuarter: Boolean(savedUse?.quarterKey && savedUse.quarterKey === currentQuarterKey)
+      usedThisQuarter: matchesQuarterKey(savedUse?.quarterKey, quarterInfo)
     }
   };
 }
@@ -860,6 +953,12 @@ function getClearUpdatePathsForValue(path, value) {
   return [path];
 }
 
+function isEffectActive(effect) {
+  if (!effect) return false;
+  if (typeof effect.active === "boolean") return effect.active;
+  return effect.disabled !== true && effect.isSuppressed !== true;
+}
+
 function findConditionEffects(actor, condition) {
   const effects = actor?.effects ? [...actor.effects] : [];
   const aliases = new Set(condition.aliases.map((value) => normalizeAlias(value)));
@@ -868,6 +967,7 @@ function findConditionEffects(actor, condition) {
   const statusIcon = statusEffect?.img ?? statusEffect?.icon ?? null;
 
   return effects.filter((effect) => {
+    if (!isEffectActive(effect)) return false;
     const statusIds = new Set([...(effect.statuses ?? []), ...(effect.flags?.core?.statusId ? [effect.flags.core.statusId] : [])].map(normalizeAlias));
     for (const status of statusIds) if (aliases.has(status)) return true;
 
@@ -955,6 +1055,7 @@ function getCalendariaQuarterInfo() {
   if (!info) return null;
   return {
     key: info.key,
+    legacyKey: info.legacyKey,
     source: "calendaria",
     label: qaLocalize("Rest.TimeSourceCalendaria", "Calendaria: {date}, четверть {quarter}", {
       date: info.dateLabel,

@@ -5,7 +5,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { FLAGS as CONDITION_FLAGS } from "./conditions/constants.js";
-import { isPermanentTime } from "./conditions/utils.js";
+import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
 import {
   getAddictionState,
@@ -24,6 +24,7 @@ import { createObjectOperationQueue } from "./operation-queue.js";
 import {
   clearDocumentFlagNullVerified,
   createCodedError,
+  opaquePreconditionToken,
   setDocumentFlagVerified
 } from "./document-writes.js";
 
@@ -242,17 +243,27 @@ export function buildNewDayPlan(actor, options = {}) {
 }
 
 function actionPrecondition(actor, action) {
-  if (action.providerId) return null;
-  if (action.kind === "short-rest-reset") return JSON.stringify(actor.getFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY) ?? null);
+  if (action.providerId) {
+    return opaquePreconditionToken({
+      providerId: action.providerId,
+      actionId: action.providerActionId ?? action.id,
+      action: action.providerAction ?? action
+    });
+  }
+  if (action.kind === "short-rest-reset") {
+    return opaquePreconditionToken(["short-rest-reset", actor.getFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY) ?? null]);
+  }
   if (action.conditionId) {
     const condition = getCustomConditions(actor).find(entry => entry.id === action.conditionId);
-    return JSON.stringify(condition ? [condition.time, condition.name] : null);
+    return opaquePreconditionToken(["custom-condition", action.conditionId, condition ? [condition.time, condition.name] : null]);
   }
   const item = getActorItem(actor, action.itemId);
-  if (!item) return "missing";
-  if (action.kind === "addiction-day") return JSON.stringify([getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
+  if (!item) return opaquePreconditionToken(["missing", action.itemId ?? null]);
+  if (action.kind === "addiction-day") {
+    return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
+  }
   const value = action.kind === "lethal-limit" ? item.system?.limit : item.system?.healingTime;
-  return JSON.stringify([item.type, item.name, value, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
+  return opaquePreconditionToken([action.kind, item.id, item.type, item.name, value, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
 }
 
 function assertActionCurrent(actor, plan, action) {
@@ -273,6 +284,9 @@ export async function buildNewDayPlanWithProviders(actor, options = {}) {
   if (plan.blockedByAddiction) return plan;
   const providerResult = await buildNewDayProviderActions(actor, options);
   plan.actions.push(...providerResult.actions);
+  for (const action of providerResult.actions) {
+    plan.preconditions[action.id] = actionPrecondition(actor, action);
+  }
   plan.providerErrors = providerResult.errors;
   plan.categories = buildPlanCategories(plan.actions);
   sortNewDayActions(plan.actions, plan.categories);
@@ -1004,7 +1018,7 @@ async function postNewDaySummary(actor, succeeded, failed) {
       ${failedList ? `<p><strong>${escapeHtml(qaLocalize("NewDay.ChatFailed", "Не выполнено"))}:</strong></p>${failedList}` : ""}
     </div>`;
 
-  return globalThis.ChatMessage.create({
+  return createChatMessage({
     speaker: globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined,
     content
   });

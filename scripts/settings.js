@@ -57,6 +57,14 @@ export function registerCoreSettings() {
     default: DEFAULT_PILGRIM_FONT,
     onChange: (font) => applyPilgrimFontToOpenCards(font)
   });
+
+  game.settings.register(MODULE_ID, SETTINGS.MONEY_TRANSFER_RECONCILIATIONS, {
+    name: "Money transfer reconciliations",
+    scope: "world",
+    config: false,
+    type: Object,
+    default: {}
+  });
 }
 
 export function canResetShortRestLimit(actor = null) {

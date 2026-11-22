@@ -65,9 +65,53 @@ export function clonePlainJson(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
-export async function setDocumentFlagVerified(document, scope, key, value, documentOptions = {}) {
+function isPlainObject(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const proto = Object.getPrototypeOf(value);
+  return proto === Object.prototype || proto === null;
+}
+
+export function flagReplaceUpdatePath(scope, key) {
+  const parts = String(key).split(".");
+  const leaf = parts.pop();
+  return ["flags", scope, ...parts, `==${leaf}`].join(".");
+}
+
+/**
+ * Deterministic, opaque revision token for action preconditions.
+ * Avoids transmitting raw actor injury/condition/addiction text over shared
+ * module sockets or storing it in User proof flags while preserving exact
+ * stale-preview detection.
+ */
+export function opaquePreconditionToken(value) {
+  const serialized = canonicalJson(value ?? null) ?? "null";
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193 ^ serialized.length;
+  for (let i = 0; i < serialized.length; i += 1) {
+    const code = serialized.charCodeAt(i);
+    h1 ^= code;
+    h1 = Math.imul(h1, 0x01000193);
+    h2 ^= (code + ((i * 31) & 0xffff));
+    h2 = Math.imul(h2, 0x85ebca6b);
+    h2 = (h2 << 13) | (h2 >>> 19);
+  }
+  h1 ^= h1 >>> 16;
+  h1 = Math.imul(h1, 0x85ebca6b);
+  h1 ^= h1 >>> 13;
+  h2 ^= h2 >>> 16;
+  h2 = Math.imul(h2, 0xc2b2ae35);
+  h2 ^= h2 >>> 16;
+  return `rev:${(h1 >>> 0).toString(16).padStart(8, "0")}${(h2 >>> 0).toString(16).padStart(8, "0")}`;
+}
+
+export async function setDocumentFlagVerified(document, scope, key, value, documentOptions = {}, { replace = false } = {}) {
   const expected = value === undefined ? null : value;
-  if (hasDocumentOptions(documentOptions) && typeof document?.update === "function") {
+  const shouldReplace = Boolean(replace && isPlainObject(expected));
+  if (shouldReplace && typeof document?.update === "function") {
+    const update = { [flagReplaceUpdatePath(scope, key)]: expected };
+    if (hasDocumentOptions(documentOptions)) await document.update(update, documentOptions);
+    else await document.update(update);
+  } else if (hasDocumentOptions(documentOptions) && typeof document?.update === "function") {
     await document.update({ [`flags.${scope}.${key}`]: expected }, documentOptions);
   } else if (typeof document?.setFlag === "function") {
     await document.setFlag(scope, key, expected);

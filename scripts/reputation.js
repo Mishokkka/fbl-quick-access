@@ -214,7 +214,7 @@ export function openReputationDialog(app, actor) {
 
   const queueSave = (rowsRoot, status) => {
     if (!editable || !rowsRoot) return Promise.resolve(false);
-    const localRevision = ++revision;
+    const localRevision = revision;
     const entries = collectRows(rowsRoot).map(({ entry }) => entry);
     const serialized = JSON.stringify(entries);
     if (!dirty && serialized === lastSerialized) return Promise.resolve(true);
@@ -266,6 +266,7 @@ export function openReputationDialog(app, actor) {
           if (!editable || !rowsRoot) return;
           const serialized = JSON.stringify(collectRows(rowsRoot).map(({ entry }) => entry));
           if (serialized === lastSerialized && !dirty) return;
+          revision += 1;
           dirty = true;
           if (saveTimeout) globalThis.clearTimeout?.(saveTimeout);
           setStatus(status, qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");

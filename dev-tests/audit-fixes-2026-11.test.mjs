@@ -96,6 +96,40 @@ function makeFlaggedUser(overrides = {}) {
   };
 }
 
+function mergeFoundryObject(target, source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return structuredClone(source);
+  const base = target && typeof target === "object" && !Array.isArray(target) ? structuredClone(target) : {};
+  for (const [k, v] of Object.entries(source)) {
+    if (v && typeof v === "object" && !Array.isArray(v) && base[k] && typeof base[k] === "object" && !Array.isArray(base[k])) {
+      base[k] = mergeFoundryObject(base[k], v);
+    } else {
+      base[k] = structuredClone(v);
+    }
+  }
+  return base;
+}
+
+function setNestedFoundry(obj, path, value, { forceReplace = false } = {}) {
+  const parts = String(path).split(".");
+  let leaf = parts.pop();
+  let cur = obj;
+  for (const p of parts) {
+    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
+    cur = cur[p];
+  }
+  if (leaf.startsWith("-=")) {
+    delete cur[leaf.slice(2)];
+    return;
+  }
+  const replace = forceReplace || leaf.startsWith("==");
+  if (leaf.startsWith("==")) leaf = leaf.slice(2);
+  if (!replace && value && typeof value === "object" && !Array.isArray(value) && cur[leaf] && typeof cur[leaf] === "object" && !Array.isArray(cur[leaf])) {
+    cur[leaf] = mergeFoundryObject(cur[leaf], value);
+  } else {
+    cur[leaf] = structuredClone(value);
+  }
+}
+
 function makeFlaggedActor(overrides = {}) {
   const flags = overrides._flags ?? {};
   const { _flags, cancelSetFlag, cancelUnsetFlag, cancelUpdate, ...rest } = overrides;
@@ -116,7 +150,7 @@ function makeFlaggedActor(overrides = {}) {
     async setFlag(scope, key, value) {
       if (cancelSetFlag) return undefined;
       flags[scope] ??= {};
-      setNested(flags[scope], key, value);
+      setNestedFoundry(flags[scope], key, value, { forceReplace: false });
       return this;
     },
     async unsetFlag(scope, key) {
@@ -132,10 +166,10 @@ function makeFlaggedActor(overrides = {}) {
           const scope = parts[1];
           const key = parts.slice(2).join(".");
           flags[scope] ??= {};
-          setNested(flags[scope], key, value);
+          setNestedFoundry(flags[scope], key, value);
           continue;
         }
-        setNested(this, path, value);
+        setNestedFoundry(this, path, value);
       }
       return this;
     },
@@ -585,7 +619,7 @@ test("New Day: zero timers are not proposed as expired, Russian суток is pa
 });
 
 test("Multi-addiction New Day on active GM advances both addictions cleanly for a non-GM player", async () => {
-  const restore = saveGlobals(["game", "foundry", "ui", "Roll", "ChatMessage"]);
+  const restore = saveGlobals(["game", "foundry", "ui", "Roll", "ChatMessage", "fromUuid"]);
   try {
     globalThis.Roll = class HighRoll {
       constructor(formula) {
@@ -671,6 +705,50 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
     assert.equal(applied.succeeded.length, 2);
     assert.equal(add1.getFlag("fbl-quick-access", "conditions.addictionState").die, 10);
     assert.equal(add2.getFlag("fbl-quick-access", "conditions.addictionState").die, 10);
+
+    // Delegated case: run as the non-GM player through the active-GM socket delegation flow.
+    const { registerIntegrationSocket } = await import("../scripts/integration/socket-api.js");
+    const { initializeAddictionOperations } = await import("../scripts/conditions/services/addiction-service.js");
+    const socketListeners = [];
+    globalThis.game.socket = {
+      on(_channel, handler) { socketListeners.push(handler); },
+      emit(_channel, payload) {
+        queueMicrotask(() => {
+          const targetUser = payload?.type === "integration-api-request" ? gm : player;
+          globalThis.game.user = targetUser;
+          for (const listener of socketListeners) listener(structuredClone(payload));
+        });
+      }
+    };
+    globalThis.game.user = gm;
+    registerIntegrationSocket();
+    initializeAddictionOperations();
+
+    const delAdd1 = makeAddictionItem("del-add-1", "Зависимость: Лотос 2");
+    const delAdd2 = makeAddictionItem("del-add-2", "Зависимость: Пыль 2");
+    const delItems = [delAdd1, delAdd2];
+    delItems.get = (id) => delItems.find((i) => i.id === id) ?? null;
+    const delActor = makeFlaggedActor({
+      id: "multi-add-delegated-actor",
+      items: delItems,
+      testUserPermission: (u) => u.id === "p-1" || u.isGM
+    });
+    actors.push(delActor);
+    globalThis.fromUuid = async (uuid) => actors.find((a) => a.uuid === uuid) ?? null;
+
+    globalThis.game.user = player;
+    const delPlan = newDay.buildNewDayPlan(delActor);
+    const delActions = delPlan.actions.filter((a) => a.category === "addiction");
+    assert.equal(delActions.length, 2);
+
+    const delApplied = await newDay.applyNewDayPlan(delActor, delPlan, delActions.map((a) => a.id), {
+      postChat: false,
+      suppressNotifications: true
+    });
+    assert.equal(delApplied.failed.length, 0, "delegated multi-addiction New Day must succeed for non-GM player");
+    assert.equal(delApplied.succeeded.length, 2);
+    assert.equal(delAdd1.getFlag("fbl-quick-access", "conditions.addictionState").die, 10);
+    assert.equal(delAdd2.getFlag("fbl-quick-access", "conditions.addictionState").die, 10);
   } finally {
     restore();
   }
@@ -931,7 +1009,7 @@ test("Calendaria day manager fixes +300-year future markers, rewinds processed d
     assert.deepEqual(sp.getActorCalendarMarker(pc2).date, currentDate);
 
     // 5. Cancelled marker write must reject instead of silently succeeding
-    const vetoedActor = makeFlaggedActor({ id: "pc-veto", cancelSetFlag: true });
+    const vetoedActor = makeFlaggedActor({ id: "pc-veto", cancelSetFlag: true, cancelUpdate: true });
     await assert.rejects(
       sp.setActorCalendarMarker(vetoedActor, context),
       (err) => err?.code === "write-not-persisted"

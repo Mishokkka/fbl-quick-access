@@ -226,6 +226,21 @@ async function handleApplyProviderAction(payload, context) {
     const { suppressChat: _suppressChat, ...buildContext } = providerContext;
     const freshActions = await provider.buildActions(actor, Object.freeze(buildContext)) ?? [];
     if (!Array.isArray(freshActions)) throw new TypeError("Provider actions must be an array");
+    const seenIds = new Set();
+    for (let index = 0; index < freshActions.length; index += 1) {
+      const candidate = freshActions[index];
+      if (!candidate || typeof candidate !== "object") {
+        throw new TypeError(`New-day provider ${provider.id} returned a non-object action at index ${index}`);
+      }
+      const candidateId = normalizeProviderActionId(candidate.id, index);
+      if (seenIds.has(candidateId)) {
+        throw Object.assign(
+          new Error(`New-day provider ${provider.id} returned duplicate action id: ${candidateId}`),
+          { code: "duplicate-provider-action" }
+        );
+      }
+      seenIds.add(candidateId);
+    }
     const actionId = normalizeProviderActionId(payload?.actionId ?? payload?.action?.id, 0);
     const action = freshActions.find((candidate, index) => normalizeProviderActionId(candidate?.id, index) === actionId);
     if (!action || canonicalJson(action) !== canonicalJson(payload.action)) {

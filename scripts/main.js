@@ -8,7 +8,12 @@ import { hideItemTooltip, registerTooltipListeners, setupCombatItemTooltips, set
 import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findPrimaryTabNavigation, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
 import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
-import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
+import {
+  getPendingMoneyTransferReconciliations,
+  openMoneyTransferDialog,
+  registerMoneyTransferSocket,
+  resolveMoneyTransferReconciliation
+} from "./money-transfer.js";
 import { applyDecorativeBorderMode, applyItemSheetNoBorders, compactMainTab, compactSheetHeader, isDecorativeBordersCompact, setupDecorativeBorderToggle } from "./main-tab.js";
 import { closeWillpowerTalentPopover, getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
 import { openRestDialog, setupRestButton } from "./rest.js";
@@ -99,6 +104,8 @@ Hooks.once("init", () => {
       resetAllCalendarMarkersToCurrent,
       rewindAllCalendarMarkers,
       openMoneyTransferDialog,
+      getPendingMoneyTransferReconciliations,
+      resolveMoneyTransferReconciliation,
       getReputationEntries,
       saveReputationEntries,
       openReputationDialog,

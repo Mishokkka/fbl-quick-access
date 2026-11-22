@@ -1,7 +1,7 @@
 import { MODULE_ID, SETTINGS } from "./constants.js";
 import { canModifyActor } from "../permissions.js";
 import { getActorAttributeState } from "../actor-data.js";
-import { createCodedError } from "../document-writes.js";
+import { createCodedError, opaquePreconditionToken } from "../document-writes.js";
 import { escapeHtml } from "../utils.js";
 
 export function localize(key, fallbackOrData = undefined, data = undefined) {
@@ -78,11 +78,27 @@ export function makeCustomCondition(data = {}, fallbackOrder = 0) {
   };
 }
 
+function deterministicLegacyConditionId(entry, index) {
+  const token = opaquePreconditionToken([
+    index,
+    entry?.name ?? "",
+    entry?.time ?? "0",
+    entry?.notes ?? "",
+    entry?.desc ?? "",
+    entry?.order ?? null
+  ]).slice(4);
+  return `legacy-${index}-${token}`;
+}
+
 export function normalizeCustomConditionList(list) {
   let changed = false;
   const normalized = (Array.isArray(list) ? list : []).map((entry, index) => {
-    const condition = makeCustomCondition(entry, index * 10);
-    if (!entry?.id || entry?.order === undefined) changed = true;
+    const missingId = !entry?.id;
+    const condition = makeCustomCondition(
+      missingId ? { ...(entry ?? {}), id: deterministicLegacyConditionId(entry, index) } : entry,
+      index * 10
+    );
+    if (missingId || entry?.order === undefined) changed = true;
     return condition;
   });
   return { list: normalized, changed };
@@ -146,7 +162,13 @@ export function canUserEditActor(actor) {
 }
 
 export function shouldPostChatMessages() {
-  return Boolean(game.settings.get(MODULE_ID, SETTINGS.CHAT_MESSAGES));
+  try {
+    if (typeof globalThis.game?.settings?.get !== "function") return true;
+    const value = globalThis.game.settings.get(MODULE_ID, SETTINGS.CHAT_MESSAGES);
+    return value === undefined ? true : Boolean(value);
+  } catch (_error) {
+    return true;
+  }
 }
 
 export async function createChatMessage(data) {
