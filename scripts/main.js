@@ -11,8 +11,8 @@ import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
 import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
 import { applyDecorativeBorderMode, applyItemSheetNoBorders, compactMainTab, compactSheetHeader, isDecorativeBordersCompact, setupDecorativeBorderToggle } from "./main-tab.js";
 import { closeWillpowerTalentPopover, getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
-import { openRestDialog, setupRestButton } from "./rest.js";
-import { buildNewDayPlan, buildNewDayPlanWithProviders, openNewDayDialog } from "./new-day.js";
+import { initializeRestOperations, openRestDialog, setupRestButton } from "./rest.js";
+import { buildNewDayPlan, buildNewDayPlanWithProviders, initializeNewDayOperations, openNewDayDialog } from "./new-day.js";
 import { removeChargenButton } from "./header-controls.js";
 import { handleExpandedConditionsCreateItem, initExpandedConditions, invalidateExpandedConditionsRender, readyExpandedConditions, renderExpandedConditions } from "./conditions/main.js";
 import { getStoredSlots, saveSlots } from "./quick-access.js";
@@ -25,7 +25,7 @@ import { closeReputationDialog, getReputationEntries, openReputationDialog, save
 import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
 import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
-import { getStateProgressionMode, initializeStateProgression, readyStateProgression } from "./state-progression.js";
+import { getStateProgressionMode, handleStateProgressionActorDeleted, initializeStateProgression, openStateProgressionManager, readyStateProgression } from "./state-progression.js";
 import { EQUIPMENT_API_VERSION, getEquipmentState, getEquipmentReceipt, previewEquipmentAction, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
 import { getHeldItemPresentation } from "./integration/weapon-presentation.js";
 
@@ -38,6 +38,8 @@ Hooks.once("init", () => {
   registerTooltipListeners();
   initExpandedConditions();
   initializeNewDayProviderBridge();
+  initializeRestOperations();
+  initializeNewDayOperations();
   initializeStateProgression();
   registerEquipmentHooks();
 
@@ -83,6 +85,7 @@ Hooks.once("init", () => {
       buildNewDayPlan,
       buildNewDayPlanWithProviders,
       getStateProgressionMode,
+      openStateProgressionManager,
       openMoneyTransferDialog,
       getReputationEntries,
       saveReputationEntries,
@@ -403,5 +406,6 @@ function handleDeletedActor(actor) {
   closeWillpowerTalentPopover(actor);
   closeReputationDialog(actor);
   handleStatProviderActorDeleted(actor);
+  handleStateProgressionActorDeleted(actor);
   releaseBiographyState(actor);
 }

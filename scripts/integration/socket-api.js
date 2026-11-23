@@ -19,6 +19,7 @@ const PROOF_GRACE_MS = 60_000;
 const OPERATION_PATTERN = /^[a-z0-9][a-z0-9._:-]*$/i;
 
 const handlers = new Map();
+const addressedOperations = new Set();
 const pendingRequests = new Map();
 let socketRegistered = false;
 
@@ -36,8 +37,8 @@ export function getActiveGM(users = globalThis.game?.users) {
 /** Register the single generic integration socket listener. */
 export function registerIntegrationSocket() {
   if (socketRegistered || !globalThis.game?.socket?.on) return false;
-  game.socket.on(SOCKET_CHANNEL, (message) => {
-    void handleSocketMessage(message);
+  game.socket.on(SOCKET_CHANNEL, (message, senderId) => {
+    void handleSocketMessage(message, senderId);
   });
   socketRegistered = true;
   return true;
@@ -48,14 +49,18 @@ export function registerIntegrationSocket() {
  * Returns an unregister callback. Duplicate operation ids are rejected rather
  * than silently replacing another module's handler.
  */
-export function registerSocketHandler(operation, handler) {
+export function registerSocketHandler(operation, handler, { addressed = false } = {}) {
   const key = normalizeOperation(operation);
   if (typeof handler !== "function") throw new TypeError(`Socket handler for ${key} must be a function`);
   if (handlers.has(key)) throw new Error(`Quick Access socket operation is already registered: ${key}`);
 
   handlers.set(key, handler);
+  if (addressed) addressedOperations.add(key);
   return () => {
-    if (handlers.get(key) === handler) handlers.delete(key);
+    if (handlers.get(key) === handler) {
+      handlers.delete(key);
+      addressedOperations.delete(key);
+    }
   };
 }
 
@@ -86,6 +91,9 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
   registerIntegrationSocket();
 
   const requestId = makeSocketRequestId();
+  const addressed = addressedOperations.has(key);
+  const socket = game.socket;
+  if (addressed && socket.connected === false) throw integrationError("socket-unavailable", "Foundry socket is disconnected");
   const timeoutMs = Math.max(1_000, Number(options?.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const message = {
     type: REQUEST_TYPE,
@@ -97,40 +105,46 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
     createdAt: Date.now()
   };
 
-  try {
-    await createSocketProof(REQUEST_PROOF_KIND, requestId, message, game.user);
-  } catch (error) {
-    throw integrationError(error?.code ?? "identity-proof-failed", `Could not authorize Quick Access GM operation: ${error?.message ?? error}`);
+  if (!addressed) {
+    try {
+      await createSocketProof(REQUEST_PROOF_KIND, requestId, message, game.user);
+    } catch (error) {
+      throw integrationError(error?.code ?? "identity-proof-failed", `Could not authorize Quick Access GM operation: ${error?.message ?? error}`);
+    }
   }
 
   const response = new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
-      pendingRequests.delete(requestId);
-      void clearSocketProof(game.user, REQUEST_PROOF_KIND, requestId);
-      reject(integrationError("timeout", `Quick Access GM operation timed out: ${key}`));
+      finishPendingRequest(requestId)?.reject(integrationError("timeout", `Quick Access GM operation timed out: ${key}`));
     }, timeoutMs);
+    const onDisconnect = addressed && typeof socket.on === "function" && typeof socket.off === "function"
+      ? () => finishPendingRequest(requestId)?.reject(integrationError("outcome-unknown", `Foundry disconnected during ${key}`))
+      : null;
     pendingRequests.set(requestId, {
-      resolve,
-      reject,
-      timeout,
-      operation: key,
-      activeGMId: activeGM.id
+      resolve, reject, timeout, addressed, socket, onDisconnect,
+      operation: key, activeGMId: activeGM.id, requester: game.user
     });
+    if (onDisconnect) socket.on("disconnect", onDisconnect);
   });
 
   try {
-    game.socket.emit(SOCKET_CHANNEL, message);
+    if (addressed) socket.emit(SOCKET_CHANNEL, message, { recipients: [activeGM.id] });
+    else socket.emit(SOCKET_CHANNEL, message);
   } catch (error) {
-    const pending = pendingRequests.get(requestId);
-    pendingRequests.delete(requestId);
-    void clearSocketProof(game.user, REQUEST_PROOF_KIND, requestId);
-    if (pending) {
-      globalThis.clearTimeout(pending.timeout);
-      pending.reject(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
-    }
+    finishPendingRequest(requestId)?.reject(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
   }
 
   return response;
+}
+
+function finishPendingRequest(requestId) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return null;
+  pendingRequests.delete(requestId);
+  globalThis.clearTimeout(pending.timeout);
+  if (pending.onDisconnect) pending.socket.off("disconnect", pending.onDisconnect);
+  if (!pending.addressed) void clearSocketProof(pending.requester, REQUEST_PROOF_KIND, requestId);
+  return pending;
 }
 
 export function hasSocketHandler(operation) {
@@ -152,8 +166,9 @@ export async function executeActorOperation(actor, operation, payload, apply) {
     const reroute = Symbol("active GM changed");
     const result = await enqueueActorMutation(actor, () => {
       if (remoteGM()) return reroute;
-      const worldActor = actor.isToken ? null : game.actors?.get?.(actor.id);
-      const live = worldActor && (!actor.uuid || worldActor.uuid === actor.uuid) ? worldActor : actor;
+      const isWorldActor = !actor.isToken && (!actor.uuid || actor.uuid === `Actor.${actor.id}`);
+      const live = isWorldActor && game.actors?.get ? game.actors.get(actor.id) : actor;
+      if (!live) throw integrationError("missing-actor", "The Actor was removed");
       if (live.pack || (!game.user?.isGM && !live.isOwner)) throw integrationError("no-actor-permission", "Actor changes require ownership");
       return apply(live, payload, game.user);
     });
@@ -167,7 +182,10 @@ export function handleActorOperation(payload, context, apply) {
   const reference = payload?.actorUuid || payload?.actorId;
   if (typeof reference !== "string" || !reference) throw new TypeError("Missing Actor reference");
   return enqueueActorMutation(reference, async () => {
-    const actor = payload.actorUuid ? await globalThis.fromUuid?.(reference) : game.actors?.get?.(reference);
+    const worldActorId = payload.actorUuid ? /^Actor\.([^.]+)$/.exec(reference)?.[1] : reference;
+    const actor = worldActorId && game.actors?.get
+      ? game.actors.get(worldActorId)
+      : await globalThis.fromUuid?.(reference);
     const user = context.requestUser;
     if (!actor || actor.pack || actor.documentName !== "Actor" || actor.type !== "character" || !user
       || user.active === false || (!user.isGM && !actor.testUserPermission?.(user, "OWNER"))) {
@@ -180,11 +198,11 @@ export function handleActorOperation(payload, context, apply) {
   });
 }
 
-async function handleSocketMessage(message) {
+async function handleSocketMessage(message, senderId) {
   if (!message || typeof message !== "object") return;
 
   if (message.type === RESPONSE_TYPE) {
-    await handleResponse(message);
+    await handleResponse(message, senderId);
     return;
   }
 
@@ -200,12 +218,18 @@ async function handleSocketMessage(message) {
   const requester = findGameUser(message.requesterId);
   if (!requester?.active) return;
 
-  const proof = await verifySocketProofWithRetry(requester, REQUEST_PROOF_KIND, message.requestId, message, {
-    ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
-  });
-  if (!proof.ok) return;
+  const addressed = addressedOperations.has(message.operation);
+  if (addressed) {
+    // Foundry v13 appends the sender id on the server, outside the payload.
+    if (senderId !== requester.id) return;
+  } else {
+    const proof = await verifySocketProofWithRetry(requester, REQUEST_PROOF_KIND, message.requestId, message, {
+      ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
+    });
+    if (!proof.ok) return;
+  }
   if (!consumeSocketProof(requester.id, REQUEST_PROOF_KIND, message.requestId)) return;
-  await clearSocketProof(requester, REQUEST_PROOF_KIND, message.requestId);
+  if (!addressed) await clearSocketProof(requester, REQUEST_PROOF_KIND, message.requestId);
 
   let response;
   try {
@@ -239,15 +263,18 @@ async function handleSocketMessage(message) {
   };
 
   try {
-    await createSocketProof(RESPONSE_PROOF_KIND, message.requestId, responseMessage, game.user);
-    scheduleSocketProofCleanup(game.user, RESPONSE_PROOF_KIND, message.requestId, PROOF_GRACE_MS);
-    game.socket.emit(SOCKET_CHANNEL, responseMessage);
+    if (addressed) game.socket.emit(SOCKET_CHANNEL, responseMessage, { recipients: [requester.id] });
+    else {
+      await createSocketProof(RESPONSE_PROOF_KIND, message.requestId, responseMessage, game.user);
+      scheduleSocketProofCleanup(game.user, RESPONSE_PROOF_KIND, message.requestId, PROOF_GRACE_MS);
+      game.socket.emit(SOCKET_CHANNEL, responseMessage);
+    }
   } catch (error) {
     console.error(`${MODULE_ID} | integration socket response could not be authenticated`, message.operation, error);
   }
 }
 
-async function handleResponse(message) {
+async function handleResponse(message, senderId) {
   if (!isValidResponseMessage(message)) return;
   if (message.recipientId !== globalThis.game?.user?.id) return;
   const pending = pendingRequests.get(message.requestId);
@@ -255,15 +282,17 @@ async function handleResponse(message) {
 
   const activeGM = findGameUser(message.activeGMId);
   if (!activeGM?.isGM || !activeGM.active) return;
-  const proof = await verifySocketProofWithRetry(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
-    ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
-  });
-  if (!proof.ok) return;
+  if (pending.addressed) {
+    if (senderId !== activeGM.id) return;
+  } else {
+    const proof = await verifySocketProofWithRetry(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
+      ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
+    });
+    if (!proof.ok) return;
+  }
   if (!consumeSocketProof(activeGM.id, RESPONSE_PROOF_KIND, message.requestId)) return;
 
-  pendingRequests.delete(message.requestId);
-  globalThis.clearTimeout(pending.timeout);
-  void clearSocketProof(game.user, REQUEST_PROOF_KIND, message.requestId);
+  if (!finishPendingRequest(message.requestId)) return;
 
   if (message.ok) {
     pending.resolve(message.result);

@@ -5,11 +5,12 @@ import { buildAddictionFlatMessage, buildAddictionRollMessage } from "./chat-ser
 import { makeSocketRequestId } from "../../socket-utils.js";
 import { executeActorOperation, handleActorOperation, registerSocketHandler } from "../../integration/socket-api.js";
 import { getConditionItem, verifyConditionWrite } from "./condition-writes.js";
+import { getCalendariaContext } from "../../integration/calendaria-adapter.js";
+import { isUnknownWriteOutcome, runDocumentWrite, whisperToGM } from "../../document-writes.js";
 
 const ADDICTION_DICE_STEPS = Object.freeze([6, 8, 10, 12]);
 const MORNING_OPERATION = "conditions.addiction-morning";
 let operationsInitialized = false;
-let calendariaReadyApi = null;
 
 export function handleAddictionOperation(payload, context) {
   return handleActorOperation(payload, context, async (actor, command, user) => {
@@ -20,14 +21,6 @@ export function handleAddictionOperation(payload, context) {
       morningId: submitted.morningId, postChat: submitted.postChat !== false, notify: submitted.notify !== false,
       state: submitted.state, delta: submitted.delta, severity: submitted.severity,
       documentOptions: submitted.render === false ? { render: false } : {} };
-    if (command.kind === "morning" && options.dayKey) {
-      const expected = getAddictionDayKey(actor, { newDay: options.newDay });
-      const current = getAddictionDayKey(actor);
-      const sameMorning = options.newDay && options.dayKey === current;
-      if (options.dayKey !== expected && options.dayKey !== getAddictionMorning(item)?.dayKey && !sameMorning) {
-        throw new Error("The addiction day changed; refresh the preview");
-      }
-    }
     const result = await applyAddictionOperation(actor, item, command.kind, options, command.outcome, user);
     return { ...result, roll: null };
   });
@@ -36,7 +29,6 @@ export function handleAddictionOperation(payload, context) {
 export function initializeAddictionOperations() {
   if (operationsInitialized) return;
   registerSocketHandler(MORNING_OPERATION, handleAddictionOperation);
-  globalThis.Hooks?.on?.("calendaria.ready", data => { calendariaReadyApi = data?.api ?? null; });
   operationsInitialized = true;
 }
 
@@ -60,12 +52,23 @@ function applyAddictionOperation(actor, item, kind, options, outcome, user) {
     throw new Error("STAT editing is disabled");
   }
   switch (kind) {
-    case "morning": return performAddictionMorningInternal(actor, item, options);
+    case "morning": {
+      assertMorningDayCurrent(actor, options);
+      return performAddictionMorningInternal(actor, item, options);
+    }
     case "resolve": return resolveAddictionMorningInternal(actor, item, outcome, options);
     case "dose": return relapseAddictionInternal(actor, item, options);
     case "adjust": return correctAddictionStateInternal(actor, item, options);
     default: throw new TypeError("Invalid addiction action");
   }
+}
+
+function assertMorningDayCurrent(actor, { dayKey, newDay }) {
+  if (dayKey === undefined) return;
+  const current = getAddictionDayKey(actor);
+  const expected = getAddictionDayKey(actor, { newDay });
+  if (dayKey === expected || (newDay && dayKey === current)) return;
+  throw Object.assign(new Error("The addiction day changed; refresh the preview"), { code: "stale-plan" });
 }
 
 export function getAddictionMorning(item) {
@@ -85,11 +88,8 @@ export function addictionCalendarDayKey(calendarId, date) {
 export function getAddictionDayKey(actor, { dayKey, newDay = false } = {}) {
   if (dayKey) return String(dayKey);
   if (globalThis.game?.settings?.get?.(MODULE_ID, "stateProgressionMode") === "calendaria") {
-    const api = globalThis.CALENDARIA?.api ?? calendariaReadyApi ?? game.modules?.get?.("calendaria")?.api;
-    const date = api?.getCurrentDateTime?.();
-    const calendar = api?.getActiveCalendar?.();
-    const calendarId = calendar?.metadata?.id ?? calendar?.id;
-    if (date && calendarId) return addictionCalendarDayKey(calendarId, date);
+    const context = getCalendariaContext();
+    if (context) return addictionCalendarDayKey(context.calendarId, context.date);
   }
   // Long Rest need not advance world time. Its explicit New Day action starts
   // the next numbered morning; STAT reuses the currently started morning.
@@ -109,9 +109,29 @@ async function rememberManualDay(actor, dayKey, documentOptions) {
   if (!dayKey.startsWith("manual:")) return;
   const number = Number(dayKey.slice(7));
   if (!(number > Number(actor?.getFlag?.(MODULE_ID, FLAGS.ADDICTION_DAY) || 0))) return;
-  if (actor?.update) await actor.update({ [flagUpdatePath(FLAGS.ADDICTION_DAY)]: number }, documentOptions);
-  else if (actor?.setFlag) await actor.setFlag(MODULE_ID, FLAGS.ADDICTION_DAY, number);
+  await runDocumentWrite(() => actor.update
+    ? actor.update({ [flagUpdatePath(FLAGS.ADDICTION_DAY)]: number }, documentOptions)
+    : actor.setFlag(MODULE_ID, FLAGS.ADDICTION_DAY, number));
   if (actor.getFlag(MODULE_ID, FLAGS.ADDICTION_DAY) !== number) throw new Error("Addiction day was not persisted");
+}
+
+async function rememberCommittedMorning(actor, item, morning, options) {
+  try {
+    await rememberManualDay(actor, morning.dayKey, options.documentOptions ?? {});
+  } catch (cause) {
+    const outcomeUnknown = isUnknownWriteOutcome(cause);
+    const details = {
+      actor: actor.name, item: item.name, id: item.id, day: morning.dayKey.slice(7),
+      change: morning.cured
+        ? localize("Notifications.AddictionMorningCureSaved", "recovery removed the Item")
+        : localize("Notifications.AddictionMorningSaved", "the morning was saved on the Item")
+    };
+    const message = localize("Notifications.AddictionDayWriteFailed",
+      "{actor} — {item} ({id}): {change}. Actor day {day} is unconfirmed. Check the sheet before repeating.", details);
+    if (options.reportFailure !== false) whisperToGM(message);
+    throw Object.assign(new Error(message, { cause }), { partiallyApplied: true,
+      code: outcomeUnknown ? "condition-outcome-unknown" : "condition-partial-failure" });
+  }
 }
 
 function morningResult(morning, { changed = false, reused = false } = {}) {
@@ -125,7 +145,7 @@ function morningResult(morning, { changed = false, reused = false } = {}) {
 
 async function commitMorning(actor, item, morning, nextState, options) {
   if (morning.cured) {
-    await item.delete(options.documentOptions ?? {});
+    await runDocumentWrite(() => item.delete(options.documentOptions ?? {}));
     if (getConditionItem(actor, item.id)) throw new Error("Addiction cure was not persisted");
     if (options.notify !== false) {
       try { ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
@@ -158,10 +178,10 @@ export async function performAddictionMorningInternal(actor, item, options = {})
     if (options.newDay && previous.dayKey === dayKey) {
       if (!previous.startedByNewDay) {
         const update = { [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...previous, startedByNewDay: true } };
-        await item.update(update, options.documentOptions ?? {});
+        await runDocumentWrite(() => item.update(structuredClone(update), options.documentOptions ?? {}));
         verifyConditionWrite(getConditionItem(actor, item.id), update);
       }
-      await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
+      await rememberCommittedMorning(actor, item, previous, options);
     }
     return morningResult(previous, { reused: true });
   }
@@ -178,20 +198,25 @@ export async function performAddictionMorningInternal(actor, item, options = {})
     outcome: controlled ? "controlled" : null
   };
   await commitMorning(actor, item, morning, progression.state, options);
-  if (options.newDay) await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
+  if (options.newDay) await rememberCommittedMorning(actor, item, morning, options);
 
   // Presentation is secondary to the persisted morning. A chat failure must
   // not invite another craving roll or repeat a completed cycle transition.
   if (options.postChat !== false) {
-    try {
-      const speaker = globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined;
-      if (roll) await rollToMessage(roll, { speaker, flavor: buildAddictionRollMessage(actor.name, item.name, state, roll.total, {
-        autoAdvanced: controlled, cured: progression.cured
-      }) });
-      else await createChatMessage({ speaker, content: buildAddictionFlatMessage(actor.name, item.name, state) });
-    } catch (error) { console.error(`${MODULE_ID} | addiction morning chat failed`, error); }
+    const chat = postAddictionMorning(actor, item, morning, roll);
+    if (!options.deferChat) await chat;
   }
   return { ...morningResult(morning, { changed: true }), roll };
+}
+
+async function postAddictionMorning(actor, item, morning, roll) {
+  try {
+    const speaker = globalThis.ChatMessage?.getSpeaker?.({ actor });
+    if (roll) await rollToMessage(roll, { speaker, flavor: buildAddictionRollMessage(actor.name, item.name, morning.state, morning.total, {
+      autoAdvanced: morning.advanced, cured: morning.cured
+    }) });
+    else await createChatMessage({ speaker, content: buildAddictionFlatMessage(actor.name, item.name, morning.state) });
+  } catch (error) { console.error(`${MODULE_ID} | addiction morning chat failed`, error); }
 }
 
 export async function processAddictionNewDay(actor, item, options = {}) {
@@ -202,6 +227,7 @@ export async function processAddictionNewDay(actor, item, options = {}) {
 }
 
 export function processAddictionNewDayInternal(actor, item, options = {}) {
+  // Calendaria passes its validated date, which may be before today's date.
   return performAddictionMorningInternal(actor, item, { ...options, newDay: true });
 }
 

@@ -655,9 +655,35 @@
   gap: 6px;
 }
 
+.application.fblqa-state-progression-summary .fblqa-progression-summary-head,
+.application.fblqa-state-progression-summary .fblqa-progression-summary-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 12px;
+}
+
+.application.fblqa-state-progression-summary .fblqa-progression-summary-head {
+  justify-content: space-between;
+}
+
+.application.fblqa-state-progression-summary .fblqa-progression-summary-toolbar[hidden] {
+  display: none;
+}
+
+.application.fblqa-state-progression-summary .fblqa-progression-summary-toolbar button {
+  width: auto;
+  margin: 0;
+}
+
+.application.fblqa-state-progression-summary .fblqa-progression-summary-character > *,
+.application.fblqa-state-progression-summary .fblqa-progression-summary-head strong {
+  display: block;
+}
+
 .application.fblqa-state-progression-summary .fblqa-progression-summary-row {
   display: grid;
-  grid-template-columns: minmax(150px, 1.2fr) minmax(170px, 1.6fr) auto;
+  grid-template-columns: minmax(0, 1.15fr) minmax(0, 1.4fr) minmax(0, 1.35fr);
   align-items: center;
   gap: 8px;
   padding: 7px 8px;
@@ -667,6 +693,11 @@
 
 .application.fblqa-state-progression-summary .fblqa-progression-summary-row .fblqa-progression-summary-status {
   font-weight: 700;
+}
+
+.application.fblqa-state-progression-summary .fblqa-progression-summary-character,
+.application.fblqa-state-progression-summary .fblqa-progression-summary-status {
+  overflow-wrap: anywhere;
 }
 
 .application.fblqa-state-progression-summary .fblqa-progression-summary-row.is-error .fblqa-progression-status,

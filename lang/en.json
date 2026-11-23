@@ -257,7 +257,12 @@
       "StartsNewDay": "This rest starts a new day",
       "StartsNewDayHint": "After Long Rest, open a separate window for daily injury, wash-state, condition, and addiction progression.",
       "StateProgressionCalendaria": "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode.",
-      "ChatFailed": "Rest was applied, but its chat message could not be posted."
+      "ChatFailed": "Rest was applied, but its chat message could not be posted.",
+      "StepRequest": "Rest request",
+      "StepActorUpdate": "attributes, condition flags and Short Rest limit",
+      "StepEffectRemoval": "condition ActiveEffect removal",
+      "OutcomeUnknown": "{type} for {actor}: the outcome of {step} is unknown. Confirmed steps: {completed}. Check the sheet before trying again.",
+      "PartialFailure": "{type} was partially applied to {actor}. Saved: {completed}. Failed step: {step}. Check the sheet before trying again."
     },
     "Dialog": {
       "ConfirmTitle": "Confirm",
@@ -284,6 +289,11 @@
         "Hint": "Choose whether daily injuries, conditions, wash states, addictions and connected new-day effects advance after Long Rest or when Calendaria registers a new day.",
         "ChoiceLongRest": "Long Rest",
         "ChoiceCalendaria": "Calendaria — new day"
+      },
+      "StateProgressionManager": {
+        "Name": "Calendaria processed days",
+        "Label": "Manage Calendaria days",
+        "Hint": "Inspect, reset or rewind each character’s processed-day marker."
       }
     },
     "NewDay": {
@@ -339,13 +349,17 @@
       "AddictionRollResult": "Craving roll: {total}; {outcome}. {from} → {to}",
       "UnknownError": "Unknown error",
       "DelegatedStale": "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.",
-      "DelegatedFailed": "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.",
-      "StalePlan": "Data changed. Refresh the preview before applying.",
+      "DelegatedFailed": "Could not apply the selected New Day changes.",
+      "StalePlan": "Data changed. Open a new preview before applying.",
       "AddictionPendingFlat": "Withdrawal: manual Endurance is required. Record Success or Failure in STAT; the cycle and penalties are unchanged.",
       "AddictionPendingRoll": "Craving: {total}. Manual Endurance is required. Record Success or Failure in STAT; the cycle is unchanged.",
       "ManualChecksPending": "Manual Endurance is still required for {count} addictions. Record the outcomes in STAT.",
       "PendingBlocked": "Resolve the pending addiction Endurance in STAT before advancing another day. Other timers will not change.",
-      "AddictionAlreadyProcessed": "This morning was already processed; no repeat roll or step was performed. Current state: {state}."
+      "AddictionAlreadyProcessed": "This morning was already processed; no repeat roll or step was performed. Current state: {state}.",
+      "WriteNotPersisted": "The requested Item change did not persist.",
+      "PartialFailure": "New Day was partially applied. Check the sheet before trying again.",
+      "WriteOutcomeUnknown": "{actor}: New Day stopped with an unknown outcome. Confirmed actions: {done}. Unconfirmed: {failures}. Check the sheet before trying again.",
+      "WriteStopped": "{actor}: New Day stopped. Confirmed actions: {done}. Failed: {failures}. Check the sheet before trying again."
     },
     "Reputation": {
       "OpenTitle": "Open reputation ledger",
@@ -483,7 +497,7 @@
       "CompletedWithErrors": "Processed with {count} failed daily actions.",
       "GMSummaryHeading": "Player states",
       "GMSummaryHint": "Only characters assigned to non-GM users are included. Player results are kept out of chat.",
-      "GMSummaryTitle": "New day — player state summary",
+      "GMSummaryTitle": "Player state progression — {date}",
       "ModeConfirmApply": "Change mode",
       "ModeConfirmCalendaria": "State progression will be triggered by Calendaria. The current date becomes the starting point; earlier calendar days will not be processed.",
       "ModeConfirmHeading": "Use {mode}?",
@@ -507,9 +521,9 @@
       "RewindIgnored": "Calendaria moved backwards. Player states were not reversed and already processed days will not be processed again.",
       "StalePlayerDialog": "The calendar changed while this window was open. The GM summary now holds the pending progression.",
       "TimeSkipApply": "Process time skip",
-      "TimeSkipHeading": "Advance player states by {days} days?",
+      "TimeSkipHeading": "Process pending days after the calendar jump?",
       "TimeSkipLater": "Leave pending",
-      "TimeSkipMessage": "Calendaria moved from {from} to {to}. Quick Access can process the missing days sequentially for all assigned player characters.",
+      "TimeSkipMessage": "Calendaria moved from {from} to {to}.",
       "TimeSkipTitle": "Calendaria time skip",
       "TimeSkipWarning": "This can resolve injuries, wash states, addictions and other daily conditions. Moving the calendar backwards will not undo these changes.",
       "TooManyDays": "The time skip is too large for automatic processing.",
@@ -519,10 +533,11 @@
         "offline": "Player offline",
         "processing": "Processing",
         "done": "Done",
-        "error": "Completed with errors",
+        "error": "Stopped with errors",
         "baseline": "Baseline set",
         "blocked": "Needs manual resolution",
-        "absent": "Absent"
+        "absent": "Absent",
+        "ahead": "Marker ahead"
       },
       "GMChanges": "Changes: {count}",
       "GMChangesWithErrors": "Changes: {count}; errors: {failed}",
@@ -535,7 +550,44 @@
       "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent.",
       "AutomaticDaysLimited": "Processed {processed} calendar days; {remaining} days remain pending.",
       "AddictionPending": "Manual addiction Endurance is required. Record Success or Failure in STAT, then resume the remaining days from the GM summary.",
-      "OpenStat": "Open STAT"
+      "OpenStat": "Open STAT",
+      "MarkerChangedDuringDay": "{actor} ({date}): the Calendaria marker changed during New Day. Confirmed actions: {completed}. Check the sheet before trying again.",
+      "TimeSkipBacklog": "{actor}: up to {process} of {pending} pending days",
+      "DayStopped": "The day stopped. Its marker remains pending.",
+      "InvalidDateCalculation": "Calendaria could not calculate a valid date for {actor} in calendar {calendar}. The operation stopped.",
+      "ProviderBuildFailed": "{actor} ({date}): could not build New Day actions for {providers}. The date remains pending.",
+      "ReviewBeforeRetry": "Check the sheet and the GM whisper, then adjust the marker in Manage Calendaria days before trying again.",
+      "NoAssignedActors": "No characters assigned to non-GM players were found.",
+      "CurrentDateLabel": "Current date: {date}",
+      "ResetAllCurrent": "Reset all to current date",
+      "RewindAll": "Rewind all…",
+      "MarkerDate": "Marker: {date}",
+      "MarkerMissing": "Marker: not set",
+      "ResetCurrent": "Set to current date",
+      "Rewind": "Rewind days…",
+      "ResetAllConfirmTitle": "Reset all Calendaria markers?",
+      "ResetAllConfirmHeading": "Set the current date ({date}) for all player characters?",
+      "ResetAllConfirmMessage": "Set the marker for each displayed character. Pending days will be marked caught up.",
+      "ResetAllConfirmWarning": "The character sheets will stay as they are.",
+      "RewindDone": "Marker rewound by {days} day(s) (to {date}). Days are pending again.",
+      "ResetCurrentDone": "Marker reset to the current date ({date}).",
+      "RewindHeading": "Rewind Calendaria marker for {actor}",
+      "RewindAllHeading": "Rewind Calendaria marker for all player characters",
+      "RewindDaysLabel": "Days to rewind",
+      "RewindWarning": "Rewinding the marker makes those days pending again. The changes already made to character sheets stay in place.",
+      "RewindTitle": "Rewind Calendaria processed days",
+      "RewindApply": "Rewind",
+      "InvalidRewindDays": "Enter a whole number between 1 and {max}.",
+      "ManagerGmOnly": "Only the active GM can manage Calendaria processed days.",
+      "ManagerUnavailable": "Calendaria day management requires an active calendar.",
+      "PendingChanged": "The calendar date or pending days changed. Review the current summary before confirming again.",
+      "MarkerOutcomeUnknown": "{actor}: the outcome of saving the Calendaria marker {date} ({calendar}) is unknown. Confirmed actions: {completed}. Check the sheet before trying again.",
+      "MarkerWriteFailed": "{actor}: Calendaria marker {date} ({calendar}) was not confirmed. Actual marker: {actual}. Confirmed actions: {completed}. Check the sheet before trying again.",
+      "AheadDetail": "Marker ({marker}) is {days} days ahead of the current date. Reset it to the current date so daily progression can resume.",
+      "AheadDetectedWarning": "{count} player characters have a Calendaria marker ahead of the current date. Open “Manage Calendaria days” in module settings to reset them."
+    },
+    "Writes": {
+      "Unknown": "The outcome is unknown. Check the sheet before trying again."
     }
   },
   "FBLEC": {
@@ -744,7 +796,12 @@
       "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry.",
       "ConditionOutcomeUnknown": "The outcome is unknown. Check the sheet manually before repeating.",
       "ConditionDamageUnknown": "{actor} — {item}: damage was recorded ({attributes}), but the condition update is unconfirmed. Check the sheet manually before repeating.",
-      "ConditionDamagePartial": "{actor} — {item}: damage was recorded ({attributes}), but the condition update failed. Check the sheet manually before repeating."
+      "ConditionDamagePartial": "{actor} — {item}: damage was recorded ({attributes}), but the condition update failed. Check the sheet manually before repeating.",
+      "WashOutcomeUnknown": "{actor}: the outcome of changing Wash from {previous} to {next} is unknown. Check the sheet before trying again.",
+      "WashPartialFailure": "{actor}: Wash replacement {replacement} is on the sheet, but the transition from {previous} to {next} failed. Check both stages before trying again.",
+      "AddictionMorningCureSaved": "recovery removed the Item",
+      "AddictionMorningSaved": "the morning was saved on the Item",
+      "AddictionDayWriteFailed": "{actor} — {item} ({id}): {change}. Actor day {day} is unconfirmed. Check the sheet before trying again."
     },
     "Chat": {
       "Addiction": {

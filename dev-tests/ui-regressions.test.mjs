@@ -79,7 +79,7 @@ test("Rest switching is state-driven, keeps circular radios, and reads the Dialo
   assert.match(css, /fblqa-rest-dialog \.window-header \[data-action="close"\][\s\S]*?color:\s*#111/);
 });
 
-test("Rest Apply consumes the native DialogV2 button.form and performs the actor update", async () => {
+test("Rest Apply reads DialogV2 button.form and opens New Day after a successful manual Long Rest", async () => {
   const previous = {
     game: globalThis.game,
     foundry: globalThis.foundry,
@@ -89,6 +89,7 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
   };
   let dialogConfig = null;
   const updates = [];
+  const lifecycle = [];
 
   class FakeElement {
     matches(selector) { return selector === "form"; }
@@ -118,6 +119,7 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
   class FakeDialogV2 {
     constructor(config) {
       dialogConfig = config;
+      lifecycle.push(config.classes.includes("fblqa-new-day-dialog") ? "open-new-day" : "open-rest");
       this.element = new FakeElement();
       this.form = new FakeForm();
       this.listeners = new Map();
@@ -155,7 +157,10 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
       },
       effects: [],
       getFlag: () => null,
-      async update(update) { updates.push(update); },
+      async update(update) {
+        updates.push(update);
+        this.system.attribute.strength.value = update["system.attribute.strength.value"];
+      },
       async deleteEmbeddedDocuments() {},
       async setFlag() {},
       async unsetFlag() {}
@@ -168,11 +173,17 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
     assert.ok(apply, "Rest Apply button must exist");
 
     const fakeButton = { form: new FakeForm() };
-    await apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => {} });
+    fakeButton.form.controls.startsNewDay.checked = true;
+    const restSubmission = apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => { lifecycle.push("close-rest"); } });
     const result = await completion;
+    await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(result?.type, "long");
     assert.deepEqual(updates, [{ "system.attribute.strength.value": 3 }]);
+    assert.deepEqual(lifecycle, ["open-rest", "close-rest", "open-new-day"]);
+    const cancel = dialogConfig.buttons.find(button => button.action === "cancel");
+    await cancel.callback({}, {}, { element: new FakeElement(), close: async () => {} });
+    await restSubmission;
   } finally {
     globalThis.game = previous.game;
     globalThis.foundry = previous.foundry;
@@ -417,7 +428,7 @@ test("New Day Apply consumes DialogV2 button.form and advances a selected injury
     system: { healingTime: "2 days", lethal: "no", limit: "0" },
     updates: [],
     getFlag() { return undefined; },
-    async update(data) { this.updates.push(data); }
+    async update(data) { this.updates.push(data); this.system.healingTime = data["system.healingTime"]; }
   };
   const actor = {
     id: "new-day-dialog-actor",

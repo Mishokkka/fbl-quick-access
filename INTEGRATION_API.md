@@ -265,15 +265,15 @@ Contract:
 
 - `id`, `category`, `order`, `buildActions`, `applyAction`, `describeAction`, and `icon` are required.
 - `categoryLabel` is optional and can be a string or synchronous function.
-- `buildActions` and `applyAction` are executed on the deterministic active GM through the Quick Access socket bridge.
+- The deterministic active GM runs `buildActions` and `applyAction`. Provider writes run inside the Actor's mutation queue. A provider callback should write its own updates directly and must avoid calling and awaiting another Quick Access operation on the same Actor.
 - The requesting player must be a GM or have OWNER permission for the actor.
 - `buildActions` must return public-safe, serializable action data. Do not include the true diagnosis, secret rolls, or other GM-only state.
 - Action ids are automatically namespaced as `provider:<providerId>:<actionId>`.
 - `applyAction` receives the original action object returned by `buildActions`.
 - `applyAction` context includes `suppressChat`. It is `true` for Calendaria-driven progression, so providers should avoid creating chat messages or other duplicate presentation and return structured `summary` data instead.
 - `summary` is included in the public New Day chat card.
-- `privateSummary` is normally whispered to GMs by the active GM. Only a local call on that active GM may suppress the whisper and receive the private summary directly. Remote callers, including a second GM, receive public-safe results; their private summary uses the GM whisper. It never enters the broadcast response or its User proof.
-- Provider failures are isolated. One failed provider or action does not stop native or other provider actions.
+- `privateSummary` is normally whispered to GMs by the active GM. Only a local call on that active GM may suppress the whisper and receive the private summary directly. Remote callers, including a second GM, receive public-safe results. Their private summary goes to the GM whisper.
+- A provider build failure leaves a Calendaria day pending. A failed selected action stops that day's remaining writes. Report write failures by throwing from `applyAction` after verifying any changes the provider made.
 - The registration call returns an unregister function.
 
 The complete provider-aware plan is available through:
@@ -331,9 +331,10 @@ Rules:
 - Operation ids must match `^[a-z0-9][a-z0-9._:-]*$` (case-insensitive).
 - Duplicate operation ids throw instead of replacing another module's handler.
 - Payloads and results must be JSON-serializable plain data.
-- Quick Access authenticates the claimed requester and active-GM response with a one-time proof on the sending User document. Handlers receive that authenticated User as `context.requestUser`; they must not replace it with an id taken from `payload`.
+- Public integration operations use a one-time proof on the sending User document by default. Handlers receive the authenticated User as `context.requestUser` and should use that identity when checking permissions.
 - Registered handlers are privileged code. Each handler must validate the authenticated requesting user, document permission, ids, and expected payload shape before reading hidden data or changing documents.
-- Foundry module sockets are broadcast transport, not a private channel. Identity proofs prevent sender spoofing but do not encrypt or conceal packets. Every request payload and every returned result must be safe for every connected client to receive. Keep GM-only details on the active GM and return only public-safe summaries.
+- The default integration transport broadcasts packets. Use public-safe payloads and results and keep GM-only details on the active GM.
+- Rest, New Day, Calendaria and New Day provider requests use Foundry's addressed module socket delivery and server-supplied sender ID. Only the active GM receives the request and only the requester receives the response. Calendaria sends GM-initiated results to the assigned online players. These addressed packets leave no payload or result on User flags.
 - The active GM is selected deterministically from active GM users by id, so every client addresses the same GM.
 
 
@@ -491,7 +492,13 @@ Condition Items use `flags.fbl-quick-access.conditions.kind` (`heat`, `mor`, `ad
 
 From 1.7.32, Addiction stores its daily craving and outcome in `conditions.addictionMorning` on the Item. Long Rest also records the numbered day in the Actor's `conditions.addictionDay`. Pending Endurance is resolved manually in STAT. A pending morning blocks future native and provider daily plans. New Day results include `pending` action entries, and `serializeNewDayResult` includes `pendingCount` and each entry's `pending` boolean. These indicate required player action, separately from failed document writes. Calendaria completes the started day's writes once, then pauses later days until the manual outcome. STAT edits and Heat, Mor, Wash and Addiction operations share one queue per Actor. The active GM performs the queued writes when available, and character owners can perform them locally without a GM. Migration synchronizes level-4 Heat modifiers without applying damage. Only a final recorded Endurance failure applies Heat threshold or overcap damage.
 
-Calendar provider build failures leave the day pending. Partial apply failures retain the existing consumed-day policy to avoid rerunning successful actions; `stateProgressionFailures` retains at most 100 date/calendar/action-ID records for manual diagnosis. It does not contain private provider text and is not an automatic retry queue. A page reload during an uncommitted cross-document operation is still outside a database transaction.
+### Rest, New Day and Calendaria writes
+
+Rest, manual New Day and Calendaria serialize writes with the existing STAT queue for each Actor. The active GM handles remote requests. An owner can apply Rest and native manual New Day in the same local queue when no GM is online. Calendaria and New Day provider writes require the active GM. The queue rechecks current document data, permissions and selected New Day actions before applying changes.
+
+New Day verifies saved timer values and Item deletions. Calendaria verifies the resulting date and calendar ID before counting a day as processed. An invalid date calculation stops the batch. A failed write stops that day's remaining steps and leaves its marker pending. The started day can finish all selected actions before pausing subsequent dates for an Addiction Endurance check. Dates processed within a confirmed batch can supply historical Addiction day keys.
+
+On a write failure, the module attempts a GM whisper with the confirmed changes and failing step. A disconnected or timed-out client should treat the outcome as unknown and verify the sheet before retrying. For a partial Calendaria day, the GM can reconcile the sheet and use `qa.openStateProgressionManager()` or **Manage Calendaria days** in settings to set the next marker. Failure metadata lives in chat. No recovery journal or automatic replay is used, and chat delivery does not determine whether gameplay writes succeeded.
 
 BIO retry removes committed paths from the pending map immediately; failed and unsent paths alone remain retryable. Finite reputation amounts above the 1,000-point cap are preserved when read for display, including oversized legacy/imported values. Validation still rejects them on save and before random/dice allocation. Reading a profile never clamps existing reputation to the cap.
 
