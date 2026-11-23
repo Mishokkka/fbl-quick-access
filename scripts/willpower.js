@@ -1,7 +1,7 @@
 import { MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
-import { escapeHtml, rerenderSheet } from "./utils.js";
+import { actorKey, escapeHtml, readNumericValue, rerenderSheet } from "./utils.js";
 
 const WP_PATH = "system.bio.willpower.value";
 export const WP_TALENTS_FLAG = "willpowerTalents";
@@ -28,18 +28,18 @@ export function setupStartWillpowerButton(app, actor, root) {
   for (const existing of root.querySelectorAll(".fblqa-start-wp-button")) existing.remove();
   for (const existing of root.querySelectorAll(".fblqa-wp-label-anchor")) unwrapElement(existing);
 
-  const anchorNode = findWillpowerTextNode(root);
+  const anchorNode = findWillpowerAnchorNode(root);
   if (!anchorNode?.parentElement) return;
 
-  const label = wrapWillpowerWord(anchorNode);
+  const label = wrapWillpowerAnchor(anchorNode);
   if (!label) return;
 
-  label.title = qaLocalize("Willpower.ConfigureTalents", "Настроить таланты для расчёта Willpower");
-  label.setAttribute("role", "button");
-  label.setAttribute("tabindex", canModifyActor(actor) ? "0" : "-1");
-  label.setAttribute("aria-label", qaLocalize("Willpower.ConfigureTalents", "Настроить таланты для расчёта Willpower"));
-
-  if (canModifyActor(actor)) {
+  const editable = canModifyActor(actor);
+  if (editable) {
+    label.title = qaLocalize("Willpower.ConfigureTalents", "Настроить таланты для расчёта Willpower");
+    label.setAttribute("role", "button");
+    label.setAttribute("tabindex", "0");
+    label.setAttribute("aria-label", qaLocalize("Willpower.ConfigureTalents", "Настроить таланты для расчёта Willpower"));
     label.addEventListener("click", (event) => {
       event.preventDefault();
       event.stopPropagation();
@@ -60,19 +60,23 @@ export function setupStartWillpowerButton(app, actor, root) {
   button.title = qaLocalize("Willpower.ApplyStartRule", "Выровнять Willpower по правилу начала партии");
   button.setAttribute("aria-label", qaLocalize("Willpower.ApplyStartRule", "Выровнять Willpower по правилу начала партии"));
   button.innerHTML = `<i class="fas fa-scale-balanced" aria-hidden="true"></i>`;
-  button.disabled = !canModifyActor(actor);
+  button.disabled = !editable;
 
+  let applying = false;
   button.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (applying) return;
 
     if (!canModifyActor(actor)) {
       warnCannotModifyActor();
       return;
     }
 
-    const result = calculateStartWillpower(actor);
+    applying = true;
+    button.disabled = true;
     try {
+      const result = calculateStartWillpower(actor);
       await actor.update({ [WP_PATH]: result.value });
       ui.notifications?.info?.(
         qaLocalize("Willpower.Result", "Willpower на начало партии: {currentWp} → {value} (EMP {empathyMax}, проф. талант {professionalRank}, талант народа {kinRank}).", result)
@@ -81,8 +85,10 @@ export function setupStartWillpowerButton(app, actor, root) {
     } catch (error) {
       console.error(`${MODULE_ID} | failed to update session Willpower`, error);
       ui.notifications?.error?.(qaLocalize("Willpower.UpdateFailed", "Не удалось обновить Willpower. Проверь права на лист персонажа."));
+    } finally {
+      applying = false;
+      button.disabled = !canModifyActor(actor);
     }
-
   });
 
   label.insertAdjacentElement("afterend", button);
@@ -102,8 +108,16 @@ export function calculateStartWillpower(actor) {
   const wpMax = readNumber(actor.system?.bio?.willpower?.max, Number.POSITIVE_INFINITY);
 
   const selected = getWillpowerTalents(actor);
-  const professional = readSelectedTalentRank(actor, selected.professionalTalentId, "Professional Talent");
-  const kin = readSelectedTalentRank(actor, selected.kinTalentId, "Kin Talent");
+  const professional = readSelectedTalentRank(
+    actor,
+    selected.professionalTalentId,
+    qaLocalize("Willpower.ProfessionalTalent", "Professional Talent")
+  );
+  const kin = readSelectedTalentRank(
+    actor,
+    selected.kinTalentId,
+    qaLocalize("Willpower.KinTalent", "Kin Talent")
+  );
 
   const base = (empathyMax + professional.rank + kin.rank) / 2;
   const raw = (base + currentWp) / 2;
@@ -123,7 +137,7 @@ export function calculateStartWillpower(actor) {
 }
 
 function toggleWillpowerTalentPopover(app, actor, anchor) {
-  if (activePopover?.dataset.actorId === actor.id) {
+  if (activePopover?.dataset.actorKey === actorKey(actor)) {
     closeWillpowerTalentPopover();
     return;
   }
@@ -138,26 +152,27 @@ function openWillpowerTalentPopover(app, actor, anchor) {
   const talents = getActorTalents(actor);
   const popover = document.createElement("div");
   popover.classList.add("fblqa-wp-popover");
-  popover.dataset.actorId = actor.id;
+  popover.dataset.actorId = actor.id ?? "";
+  popover.dataset.actorKey = actorKey(actor);
 
   popover.innerHTML = `
-    <div class="fblqa-wp-popover-title">${qaLocalize("Willpower.Title", "Willpower")}</div>
+    <div class="fblqa-wp-popover-title">${escapeHtml(qaLocalize("Willpower.Title", "Willpower"))}</div>
     <label class="fblqa-wp-popover-row">
-      <span>${qaLocalize("Willpower.KinTalent", "Kin Talent")}</span>
+      <span>${escapeHtml(qaLocalize("Willpower.KinTalent", "Kin Talent"))}</span>
       <select name="kinTalentId">
         ${buildTalentOptions(talents, saved.kinTalentId)}
       </select>
     </label>
     <label class="fblqa-wp-popover-row">
-      <span>${qaLocalize("Willpower.ProfessionalTalent", "Professional Talent")}</span>
+      <span>${escapeHtml(qaLocalize("Willpower.ProfessionalTalent", "Professional Talent"))}</span>
       <select name="professionalTalentId">
         ${buildTalentOptions(talents, saved.professionalTalentId)}
       </select>
     </label>
-    <div class="fblqa-wp-popover-note">${qaLocalize("Willpower.DefaultRankNote", "Если талант не выбран, его ранг считается как {rank}.", { rank: DEFAULT_TALENT_RANK })}</div>
+    <div class="fblqa-wp-popover-note">${escapeHtml(qaLocalize("Willpower.DefaultRankNote", "Если талант не выбран, его ранг считается как {rank}.", { rank: DEFAULT_TALENT_RANK }))}</div>
     <div class="fblqa-wp-popover-actions">
-      <button type="button" data-action="close">${qaLocalize("Common.Cancel", "Отмена")}</button>
-      <button type="button" data-action="save">${qaLocalize("Common.Save", "Сохранить")}</button>
+      <button type="button" data-action="close">${escapeHtml(qaLocalize("Common.Cancel", "Отмена"))}</button>
+      <button type="button" data-action="save">${escapeHtml(qaLocalize("Common.Save", "Сохранить"))}</button>
     </div>
   `;
 
@@ -169,9 +184,12 @@ function openWillpowerTalentPopover(app, actor, anchor) {
     closeWillpowerTalentPopover();
   });
 
-  popover.querySelector('[data-action="save"]')?.addEventListener("click", async (event) => {
+  const saveButton = popover.querySelector('[data-action="save"]');
+  let saving = false;
+  saveButton?.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
+    if (saving) return;
 
     if (!canModifyActor(actor)) {
       warnCannotModifyActor();
@@ -186,6 +204,8 @@ function openWillpowerTalentPopover(app, actor, anchor) {
       return;
     }
 
+    saving = true;
+    saveButton.disabled = true;
     try {
       await saveWillpowerTalents(actor, { kinTalentId, professionalTalentId }, { render: false });
       ui.notifications?.info?.(qaLocalize("Willpower.TalentsSaved", "Таланты для расчёта Willpower сохранены."));
@@ -194,6 +214,9 @@ function openWillpowerTalentPopover(app, actor, anchor) {
     } catch (error) {
       console.error(`${MODULE_ID} | failed to save Willpower talent settings`, error);
       ui.notifications?.error?.(qaLocalize("Willpower.SaveFailed", "Не удалось сохранить таланты для Willpower."));
+    } finally {
+      saving = false;
+      if (saveButton.isConnected) saveButton.disabled = false;
     }
   });
 
@@ -210,14 +233,18 @@ function openWillpowerTalentPopover(app, actor, anchor) {
   activeKeydownHandler = keydownHandler;
 
   // Delay registration so the click that opened the popover cannot also close it.
-  setTimeout(() => {
+  globalThis.setTimeout?.(() => {
     if (activePopover !== popover) return;
     document.addEventListener("mousedown", outsideHandler, true);
     document.addEventListener("keydown", keydownHandler, true);
   }, 0);
 }
 
-function closeWillpowerTalentPopover() {
+export function closeWillpowerTalentPopover(actorOrKey = null) {
+  if (actorOrKey && activePopover) {
+    const key = typeof actorOrKey === "string" ? actorOrKey : actorKey(actorOrKey);
+    if (activePopover.dataset.actorKey !== key && activePopover.dataset.actorId !== key) return;
+  }
   if (activeOutsideClickHandler) document.removeEventListener("mousedown", activeOutsideClickHandler, true);
   if (activeKeydownHandler) document.removeEventListener("keydown", activeKeydownHandler, true);
   activeOutsideClickHandler = null;
@@ -227,13 +254,14 @@ function closeWillpowerTalentPopover() {
 }
 
 function buildTalentOptions(talents, selectedId) {
-  const options = [`<option value="">${qaLocalize("Willpower.NotSelectedRank", "Не выбрано (ранг {rank})", { rank: DEFAULT_TALENT_RANK })}</option>`];
+  const options = [`<option value="">${escapeHtml(qaLocalize("Willpower.NotSelectedRank", "Не выбрано (ранг {rank})", { rank: DEFAULT_TALENT_RANK }))}</option>`];
   for (const talent of talents) {
     const id = String(talent.id ?? talent._id ?? "");
     const selected = id && id === selectedId ? " selected" : "";
     const rank = readTalentRank(talent);
-    const name = escapeHtml(talent.name ?? qaLocalize("Common.Untitled", "Без названия"));
-    options.push(`<option value="${escapeHtml(id)}"${selected}>${qaLocalize("Willpower.OptionRank", "{name} — ранг {rank}", { name, rank })}</option>`);
+    const name = talent.name ?? qaLocalize("Common.Untitled", "Без названия");
+    const label = escapeHtml(qaLocalize("Willpower.OptionRank", "{name} — ранг {rank}", { name, rank }));
+    options.push(`<option value="${escapeHtml(id)}"${selected}>${label}</option>`);
   }
   return options.join("");
 }
@@ -301,7 +329,7 @@ function normalizeWillpowerTalents(value) {
 function getActorTalents(actor) {
   return getActorItems(actor)
     .filter((item) => String(item.type ?? "").toLowerCase() === "talent")
-    .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), game.i18n?.lang ?? undefined));
+    .sort((a, b) => String(a.name ?? "").localeCompare(String(b.name ?? ""), globalThis.game?.i18n?.lang ?? undefined));
 }
 
 function getActorItems(actor) {
@@ -349,7 +377,7 @@ function readTalentRank(item, fallback = DEFAULT_TALENT_RANK) {
 }
 
 function readNumber(value, fallback = 0) {
-  const number = Number(value);
+  const number = readNumericValue(value);
   return Number.isFinite(number) ? number : fallback;
 }
 
@@ -389,14 +417,16 @@ function positionPopover(popover, anchor) {
   popover.style.top = `${top}px`;
 }
 
-function wrapWillpowerWord(textNode) {
+function wrapWillpowerAnchor(textNode) {
   const text = String(textNode.textContent ?? "");
   const match = text.match(WILLPOWER_LABEL_PATTERN);
-  if (!match) return null;
+  const start = match ? match.index : text.search(/\S/);
+  const length = match ? match[0].length : text.trim().length;
+  if (start < 0 || length < 1) return null;
 
-  const before = text.slice(0, match.index);
-  const word = text.slice(match.index, match.index + match[0].length);
-  const after = text.slice(match.index + match[0].length);
+  const before = text.slice(0, start);
+  const word = text.slice(start, start + length);
+  const after = text.slice(start + length);
 
   const fragment = document.createDocumentFragment();
   if (before) fragment.append(document.createTextNode(before));
@@ -413,6 +443,33 @@ function wrapWillpowerWord(textNode) {
 
 function unwrapElement(element) {
   element.replaceWith(document.createTextNode(element.textContent ?? ""));
+}
+
+function findWillpowerAnchorNode(root) {
+  const wpInput = root?.querySelector?.(`input[name="${WP_PATH}"]`);
+  const container = wpInput?.closest?.("tr, .bio-stat, .willpower, .form-group, div");
+  if (container && !container.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
+    const labelEl = container.querySelector?.("label, th, td:first-child, h3, h4, span");
+    if (labelEl) {
+      const textNode = firstSafeTextNode(labelEl);
+      if (textNode) return textNode;
+    }
+  }
+  return findWillpowerTextNode(root);
+}
+
+function firstSafeTextNode(container) {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT, {
+    acceptNode(node) {
+      return String(node.textContent ?? "").trim() ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+    }
+  });
+  let node = walker.nextNode();
+  while (node) {
+    if (isSafeWillpowerAnchor(node)) return node;
+    node = walker.nextNode();
+  }
+  return null;
 }
 
 function findWillpowerTextNode(root) {

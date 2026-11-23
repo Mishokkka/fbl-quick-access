@@ -30,6 +30,7 @@ test("native reputation migrates into one anonymous ledger row", () => {
   };
 
   const entries = reputation.getReputationEntries(actor);
+  assert.deepEqual(reputation.getReputationEntries(actor), entries);
   assert.equal(entries.length, 1);
   assert.equal(entries[0].amount, 4);
   assert.equal(entries[0].description, "");

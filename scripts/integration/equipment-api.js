@@ -9,6 +9,7 @@ export const EQUIPMENT_API_VERSION = 1;
 const HANDS_FLAG = "equipmentHands";
 const RECEIPTS_FLAG = "equipmentReceipts";
 const enqueue = createObjectOperationQueue();
+let equipmentHooksRegistered = false;
 
 function assertActor(actor) {
   if (actor?.documentName !== "Actor" || actor.type !== "character" ||
@@ -160,7 +161,7 @@ function planCommand(actor, state, command) {
         const current = key === "hands" ? state.hands : getStoredSlots(actor);
         if (JSON.stringify(current) !== JSON.stringify(receipt.after[key])) throw new Error("Equipment changed since the operation; undo is unsafe.");
         const ids = key === "hands" ? Object.values(receipt.before[key]) : receipt.before[key];
-        if (ids.some(id => typeof id === "string" && !actor.items.get(id))) throw new Error("An item was removed; undo is unsafe.");
+        if (ids.some(id => typeof id === "string" && id && !actor.items.get(id))) throw new Error("An item was removed; undo is unsafe.");
         if (key === "hands") Object.assign(hands, receipt.before.hands);
         else slots.splice(0, slots.length, ...receipt.before.slots);
       }
@@ -228,6 +229,8 @@ export async function performEquipmentAction(actor, action, { expectedRevision, 
 
 /** Document hooks cover sheet/API/external edits, including render-suppressed writes. */
 export function registerEquipmentHooks() {
+  if (equipmentHooksRegistered) return;
+  equipmentHooksRegistered = true;
   const notify = (actor) => {
     if (actor?.documentName === "Actor" && actor.type === "character") {
       Hooks.callAll("fblQuickAccess.equipmentChanged", actor);

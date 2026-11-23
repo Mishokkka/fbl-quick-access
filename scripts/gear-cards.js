@@ -11,7 +11,11 @@ import { formatNumber, rerenderSheet } from "./utils.js";
  * card/table layout is a UI choice, not character data.
  */
 export function isGearCardView(actor) {
-  return localStorage.getItem(getStorageKey(actor)) === "cards";
+  try {
+    return localStorage.getItem(getStorageKey(actor)) === "cards";
+  } catch (_error) {
+    return false;
+  }
 }
 
 /**
@@ -59,7 +63,11 @@ function buildGearViewCheckbox(app, actor, gearTab) {
 
   input.addEventListener("change", (event) => {
     const enabled = event.currentTarget.checked;
-    localStorage.setItem(getStorageKey(actor), enabled ? "cards" : "table");
+    try {
+      localStorage.setItem(getStorageKey(actor), enabled ? "cards" : "table");
+    } catch (_error) {
+      // Ignore restricted storage environments.
+    }
 
     const refreshed = game.modules
       ?.get?.(MODULE_ID)
@@ -160,19 +168,6 @@ function buildGearCard(app, actor, sourceRow) {
 
   const canModify = canModifyActor(actor);
   card.draggable = canModify;
-
-  if (canModify) {
-    card.addEventListener("dragstart", (event) => {
-      event.dataTransfer?.setData("text/plain", JSON.stringify({
-        type: "Item",
-        id: item.id,
-        itemId: item.id,
-        uuid: item.uuid,
-        actorUuid: actor.uuid
-      }));
-      if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
-    });
-  }
 
   const iconWrap = document.createElement("div");
   iconWrap.classList.add("fblqa-gear-card-icon-wrap");
