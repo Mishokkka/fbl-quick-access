@@ -3,9 +3,13 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import {
   getAddictionMorning, getAddictionDayKey, performAddictionMorning,
-  processAddictionNewDay, resolveAddictionMorning, relapseAddiction, handleAddictionOperation, correctAddictionState
+  processAddictionNewDay, processAddictionNewDayInternal, resolveAddictionMorning, relapseAddiction, handleAddictionOperation, correctAddictionState
 } from "../scripts/conditions/services/addiction-service.js";
-import { applyHeatFailure, getAddictionState, parseHeatValue, saveAddictionState, updateHeatItem } from "../scripts/conditions/features/special-counters.js";
+import { applyHeatFailure, changeMor, getAddictionState, getMorState, parseHeatValue, saveAddictionState, updateHeatItem } from "../scripts/conditions/features/special-counters.js";
+import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
+import { applyStatOperation, runStatOperation } from "../scripts/conditions/services/stat-operations.js";
+import { enqueueActorMutation } from "../scripts/operation-queue.js";
+import { LEGACY_MODULE_ID, MIGRATION_VERSION } from "../scripts/conditions/constants.js";
 import { applyNewDayPlan, buildNewDayPlan, serializeNewDayResult } from "../scripts/new-day.js";
 import { migrateActorData, runWorldMigration } from "../scripts/conditions/migrations.js";
 import { renderConditionItemRow } from "../scripts/conditions/render/stat-tab-renderer.js";
@@ -28,7 +32,7 @@ function setup(totals = []) {
   globalThis.game = { user: { id: "gm", isGM: true }, modules: new Map(),
     settings: { get: (_scope, key) => key === "stateProgressionMode" ? "long-rest" : true },
     i18n: { localize: key => key, format: key => key } };
-  globalThis.ui = { notifications: { info() {}, warn() {} } };
+  globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
   globalThis.ChatMessage = { getSpeaker: () => ({}), create: async () => null };
   globalThis.Roll = class {
     constructor(formula) { this.formula = formula; rolls.push(formula); }
@@ -326,6 +330,22 @@ test("a remote final outcome cannot bypass disabled STAT editing with a New Day 
   assert.equal(getAddictionMorning(dependency).status, "pending");
 });
 
+test("two separate GM Addiction actions can use the same manual morning", async () => {
+  const rolls = setup([3, 4]);
+  const first = item("Addiction A", decline()), second = item("Addiction B", decline());
+  const owner = actor(first, second);
+  game.actors = new Map([[owner.id, owner]]);
+  const options = { ...quiet, newDay: true, dayKey: getAddictionDayKey(owner, { newDay: true }) };
+  const context = { requestUser: { id: "owner", active: true } };
+  const results = await Promise.all([first, second].map(entry => handleAddictionOperation({
+    actorId: owner.id, itemId: entry.id, kind: "morning", options
+  }, context)));
+  assert.deepEqual(results.map(result => result.dayKey), [options.dayKey, options.dayKey]);
+  assert.deepEqual([first, second].map(entry => getAddictionState(entry).die), [10, 10]);
+  assert.equal(owner.getFlag(scope, "conditions.addictionDay"), 1);
+  assert.deepEqual(rolls, ["1d12", "1d12"]);
+});
+
 for (const [level, expected] of [[0, {}], [1, {}], [2, { strength: 1 }], [3, { strength: 1, wits: 1 }], [4, { strength: 1, wits: 1, agility: 1 }]]) {
   test(`final Endurance failure at Heat ${level} applies the correct level and damage`, async () => {
     setup(); const heat = item("Жара"); set(heat, `flags.${scope}.conditions.heatValue`, level); const owner = actor(heat);
@@ -357,17 +377,81 @@ test("manual Heat correction and cooling never damage or heal attributes, and pr
   assert.deepEqual(owner.system.attribute, values);
 });
 
-test("retrying failed Heat finalization does not repeat damage or omit the level-4 penalties", async () => {
-  setup(); const heat = item("Жара"); const owner = actor(heat); set(heat, `flags.${scope}.conditions.heatValue`, 3);
-  const update = heat.update.bind(heat); let fail = true;
-  heat.update = async data => { if (fail && data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failed"); return update(data); };
-  await assert.rejects(applyHeatFailure(owner, heat), /finalize failed/);
+for (const failure of ["chat", "Mor write"]) {
+  test(`Mor applies damage and writes the counter before chat even when ${failure} fails`, { timeout: 1_000 }, async t => {
+    setup();
+    t.mock.method(console, "error", () => {});
+    const mor = item("Mor");
+    const owner = actor(mor);
+    const steps = [], whispers = [], notices = [];
+    let releaseChat;
+    const chat = new Promise(resolve => { releaseChat = resolve; });
+    const updateActor = owner.update.bind(owner), updateItem = mor.update.bind(mor);
+    owner.update = async patch => { steps.push("damage"); await updateActor(patch); };
+    mor.update = async patch => {
+      steps.push("Mor");
+      if (failure !== "Mor write") await updateItem(patch);
+    };
+    ui.notifications.error = message => notices.push(message);
+    ChatMessage.create = async message => { steps.push("whisper"); whispers.push(message); };
+    globalThis.Roll = class {
+      async evaluate() { this.terms = [{ results: [{ result: 1 }] }]; return this; }
+      async toMessage() { steps.push("roll chat"); await chat; throw new Error("chat is unavailable"); }
+    };
+
+    const change = changeMor(owner, mor, "current", 1);
+    if (failure === "Mor write") {
+      await assert.rejects(change, { code: "condition-partial-failure" });
+      assert.deepEqual(steps, ["damage", "Mor", "whisper"]);
+      assert.equal(getMorState(mor).current, 0);
+      assert.deepEqual(whispers[0].whisper, [game.user.id]);
+      assert.match(notices[0], /Tester.*Mor.*strength 6 → 5.*check the sheet manually/i);
+    } else {
+      assert.equal((await change).changed, true);
+      assert.deepEqual(steps, ["damage", "Mor", "roll chat"]);
+      assert.equal(getMorState(mor).current, 1);
+      assert.equal(await enqueueActorMutation(owner, () => "ready"), "ready");
+    }
+    assert.equal(owner.system.attribute.strength.value, 5);
+    releaseChat();
+    await new Promise(resolve => setImmediate(resolve));
+  });
+}
+
+test("Mor reports an unknown outcome if the socket drops after verified damage", { timeout: 1_000 }, async () => {
+  setup();
+  const mor = item("Mor"), owner = actor(mor);
+  const listeners = new Set(), notices = [];
+  game.socket = { connected: true,
+    on(_event, handle) { listeners.add(handle); }, off(_event, handle) { listeners.delete(handle); }
+  };
+  ui.notifications.error = text => notices.push(text);
+  globalThis.Roll = class { async evaluate() { this.terms = [{ results: [{ result: 1 }] }]; return this; } };
+  let start;
+  const started = new Promise(resolve => { start = resolve; });
+  mor.update = () => { start(); return new Promise(() => {}); };
+  const result = assert.rejects(changeMor(owner, mor, "current", 1), { code: "condition-outcome-unknown" });
+  await started;
+  game.socket.connected = false;
+  for (const disconnect of listeners) disconnect();
+  await result;
+  assert.equal(listeners.size, 0);
   assert.equal(owner.system.attribute.strength.value, 5);
-  assert.equal(parseHeatValue(heat), 3);
-  await assert.rejects(updateHeatItem(owner, heat, 2, "rest"));
-  fail = false; await applyHeatFailure(owner, heat);
-  assert.equal(owner.system.attribute.strength.value, 5); assert.equal(parseHeatValue(heat), 4);
-  assert.equal(heat.system.rollModifiers.fblecHeatMove.value, "-1");
+  assert.match(notices[0], /strength 6 → 5.*unconfirmed.*check the sheet manually/i);
+  assert.equal(await enqueueActorMutation(owner, () => "ready"), "ready");
+});
+
+test("an owner can edit STAT locally when no GM is active", async () => {
+  setup();
+  const owner = actor();
+  owner.isOwner = true;
+  game.user = { id: "owner", active: true };
+  game.users = [game.user];
+  assert.equal((await runStatOperation(owner, { kind: "layout", columns: 2 })).changed, true);
+  assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);
+  owner.isOwner = false;
+  await assert.rejects(runStatOperation(owner, { kind: "layout", columns: 1 }), { code: "no-actor-permission" });
+  assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);
 });
 
 test("migration adds level-4 penalties without damage and is idempotent", async () => {
@@ -379,14 +463,138 @@ test("migration adds level-4 penalties without damage and is idempotent", async 
   assert.equal(await migrateActorData(owner), false);
 });
 
-test("upgrading migration 7 to 8 preserves current world preferences", async () => {
+test("upgrading migration 7 preserves current world preferences", async () => {
   setup(); game.user.active = true; game.users = [game.user]; game.actors = [];
   const writes = [];
   game.settings.get = (_scope, key) => key === "expandedConditionsMigrationVersion" ? 7 : true;
   game.settings.storage = new Map([["world", new Map([["forbidden-lands-expanded-conditions.featureHeat", { value: false }]])]]);
   game.settings.set = async (_scope, key, value) => { writes.push({ key, value }); };
   await runWorldMigration();
-  assert.deepEqual(writes, [{ key: "expandedConditionsMigrationVersion", value: 8 }]);
+  assert.deepEqual(writes, [{ key: "expandedConditionsMigrationVersion", value: MIGRATION_VERSION }]);
+});
+
+test("migration keeps legacy Actor flags and version after a veto and retries on the next pass", async t => {
+  setup(); t.mock.method(console, "warn", () => {});
+  const owner = actor();
+  const legacy = [{ id: "old", name: "Legacy", time: "2 days", notes: "", desc: "", order: 0 }];
+  owner.flags[LEGACY_MODULE_ID] = { list: legacy };
+  game.user.active = true; game.users = [game.user]; game.actors = [owner];
+  let version = MIGRATION_VERSION - 1;
+  game.settings.get = () => version;
+  game.settings.set = async (_scope, _key, value) => { version = value; };
+  const update = owner.update;
+  owner.update = async () => undefined;
+  await runWorldMigration();
+  assert.equal(version, MIGRATION_VERSION - 1);
+  assert.deepEqual(owner.flags[LEGACY_MODULE_ID].list, legacy);
+  owner.update = update;
+  await runWorldMigration();
+  assert.equal(version, MIGRATION_VERSION);
+  assert.deepEqual(owner.getFlag(scope, "conditions.list"), legacy);
+  assert.equal(owner.flags[LEGACY_MODULE_ID], undefined);
+});
+
+test("legacy Item migration checks the actual copied value before removing its source", async () => {
+  setup();
+  const injury = item("Injury"), owner = actor(injury);
+  injury.flags[LEGACY_MODULE_ID] = { notes: "original" };
+  const update = injury.update.bind(injury);
+  const path = `flags.${scope}.conditions.notes`;
+  injury.update = async patch => update(Object.hasOwn(patch, path) ? { [path]: "altered" } : patch);
+  await assert.rejects(migrateActorData(owner), /conditions\.notes/);
+  assert.equal(injury.flags[LEGACY_MODULE_ID].notes, "original");
+  assert.equal(injury.getFlag(scope, "conditions.notes"), "altered");
+});
+
+for (const [name, oldValue, key, expected] of [
+  ["Heat", "3/4", "heatValue", 3], ["Mor", "2/3", "morState", { current: 2, permanent: 3 }]
+]) {
+  test(`${name} migration verifies its flags while keeping the source timer until cleanup`, async () => {
+    setup();
+    const counter = item(name), owner = actor(counter);
+    counter.system.healingTime = oldValue;
+    const path = `flags.${scope}.conditions.${key}`;
+    const update = counter.update.bind(counter);
+    counter.update = async patch => { if (!Object.hasOwn(patch, path)) await update(patch); };
+    await assert.rejects(migrateActorData(owner), /Condition write was not persisted/);
+    assert.equal(counter.system.healingTime, oldValue);
+    counter.update = update;
+    assert.equal(await migrateActorData(owner), true);
+    const steps = counter.updates.slice(1, 3);
+    assert.deepEqual(steps, [{ [path]: expected }, { "system.healingTime": "" }]);
+    assert.deepEqual(counter.getFlag(scope, `conditions.${key}`), expected);
+    assert.equal(counter.system.healingTime, "");
+  });
+}
+
+function washActor(...extraItems) {
+  const old = item("Помытый");
+  old.system.healingTime = "1 day";
+  const owner = actor(old, ...extraItems);
+  const create = async (_type, [data]) => {
+    const created = item(data.name);
+    created.flags = structuredClone(data.flags);
+    created.parent = owner;
+    owner.items.set(created.id, created);
+    return [created];
+  };
+  owner.createEmbeddedDocuments = create;
+  owner.deleteEmbeddedDocuments = async (_type, ids) => { for (const id of ids) owner.items.delete(id); };
+  game.items = [{ name: "Немытый", type: "criticalInjury", toObject: () => ({ name: "Немытый", type: "criticalInjury" }) }];
+  game.packs = [];
+  return { owner, old, create };
+}
+
+for (const failure of ["missing", "missing flags", "incorrect stage"]) {
+  test(`Wash leaves the old stage when the replacement has ${failure}`, async () => {
+    setup();
+    const { owner, old, create } = washActor();
+    owner.createEmbeddedDocuments = async (...args) => {
+      const [replacement] = await create(...args);
+      if (failure === "missing") owner.items.delete(replacement.id);
+      if (failure === "missing flags") replacement.flags = {};
+      if (failure === "incorrect stage") replacement.flags[scope].conditions.washStage = "Вонючка";
+      return [replacement];
+    };
+    const result = await transitionWashLevel(owner, old.name);
+    assert.equal(result.reason, "create-failed");
+    assert.equal(owner.items.get(old.id), old);
+  });
+}
+
+test("STAT can call Wash and Addiction directly inside an Actor operation", { timeout: 1_000 }, async () => {
+  setup([4]);
+  const dependency = item("Addiction", decline());
+  const { owner, old } = washActor(dependency);
+  await enqueueActorMutation(owner, async () => {
+    const wash = await applyStatOperation(owner, { kind: "healing-time", itemId: old.id, delta: -1 });
+    assert.equal(wash.changed, true);
+    const addiction = await processAddictionNewDayInternal(owner, dependency, quiet);
+    assert.equal(addiction.advanced, true);
+  });
+  assert.equal(owner.items.has(old.id), false);
+  assert.ok([...owner.items.values()].some(entry => entry.getFlag(scope, "conditions.washStage") === "Немытый"));
+  assert.equal(getAddictionState(dependency).die, 10);
+});
+
+test("queued STAT edits use live fields and leave unresolved durations for manual resolution", async () => {
+  setup();
+  const injury = item("Injury"), owner = actor(injury);
+  const range = "2 to 4 days";
+  injury.system.healingTime = range;
+  injury.system.limit = range;
+  set(owner, `flags.${scope}.conditions.list`, [{ id: "custom", name: "Condition", time: range, order: 0 }]);
+  await Promise.all([
+    runStatOperation(owner, { kind: "custom-edit", id: "custom", field: "name", value: "Changed" }),
+    runStatOperation(owner, { kind: "custom-edit", id: "custom", field: "notes", value: "Kept" })
+  ]);
+  for (const command of [{ kind: "healing-time", itemId: injury.id }, { kind: "lethal-limit", itemId: injury.id }, { kind: "custom-time", id: "custom" }]) {
+    assert.equal((await runStatOperation(owner, { ...command, delta: -1 })).reason, "unresolved-duration");
+  }
+  const [condition] = owner.getFlag(scope, "conditions.list");
+  assert.deepEqual([condition.name, condition.notes, condition.time], ["Changed", "Kept", range]);
+  assert.deepEqual([injury.system.healingTime, injury.system.limit], [range, range]);
+  assert.equal(injury.updates.length, 0);
 });
 
 test("STAT renders the phase, pending result and disabled morning until resolution", async () => {

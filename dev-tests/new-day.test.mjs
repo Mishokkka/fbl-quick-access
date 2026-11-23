@@ -120,9 +120,9 @@ test("automatic addiction progression happens only after a controlled craving ro
     };
 
     const blockedItem = makeAddictionItem({ phase: "down", die: 12, daysLeft: 0, severity: 5 });
-    const blocked = await addiction.processAddictionNewDay({ name: "Tester" }, blockedItem);
+    const blocked = await addiction.processAddictionNewDay(blockedItem.parent, blockedItem);
     assert.equal(blocked.advanced, false);
-    assert.equal(blockedItem.savedState.die, 12);
+    assert.equal(blockedItem.getFlag("fbl-quick-access", "conditions.addictionState").die, 12);
 
     globalThis.Roll = class MockRoll {
       constructor() {}
@@ -133,9 +133,9 @@ test("automatic addiction progression happens only after a controlled craving ro
     };
 
     const advancedItem = makeAddictionItem({ phase: "down", die: 12, daysLeft: 0, severity: 5 });
-    const advanced = await addiction.processAddictionNewDay({ name: "Tester" }, advancedItem);
+    const advanced = await addiction.processAddictionNewDay(advancedItem.parent, advancedItem);
     assert.equal(advanced.advanced, true);
-    assert.equal(advancedItem.savedState.die, 10);
+    assert.equal(advancedItem.getFlag("fbl-quick-access", "conditions.addictionState").die, 10);
   } finally {
     globalThis.Roll = originalRoll;
   }
@@ -157,7 +157,7 @@ test("Calendaria-style addiction processing can roll without creating chat outpu
     };
 
     const item = makeAddictionItem({ phase: "down", die: 12, daysLeft: 0, severity: 5 });
-    const result = await addiction.processAddictionNewDay({ name: "Tester" }, item, { postChat: false, notify: false });
+    const result = await addiction.processAddictionNewDay(item.parent, item, { postChat: false, notify: false });
     assert.equal(result.total, 2);
     assert.equal(result.advanced, false);
   } finally {
@@ -334,31 +334,30 @@ function makeItem(id, name, system, addictionState = null) {
 }
 
 function makeAddictionItem(initialState) {
-  return {
+  const get = (object, path) => path.split(".").reduce((entry, key) => entry?.[key], object);
+  const apply = (document, update) => {
+    for (const [path, value] of Object.entries(update)) {
+      const parts = path.split(".");
+      const key = parts.pop();
+      const parent = parts.reduce((entry, part) => entry[part] ??= {}, document);
+      if (key.startsWith("-=")) delete parent[key.slice(2)];
+      else parent[key] = structuredClone(value);
+    }
+  };
+  const documentMethods = {
+    getFlag(scope, key) { return get(this.flags[scope], key); },
+    async update(data) { apply(this, data); }
+  };
+  const item = {
+    ...documentMethods,
     id: "addiction-test",
     name: "Addiction",
     type: "criticalInjury",
     system: { rollModifiers: {} },
-    savedState: structuredClone(initialState),
-    modifierKeys: [],
-    getFlag(_moduleId, key) {
-      if (key === "conditions.addictionState") return this.savedState;
-      if (key === "conditions.addictionModifierKeys") return this.modifierKeys;
-      return undefined;
-    },
-    async setFlag(_moduleId, key, value) {
-      if (key === "conditions.addictionState") this.savedState = structuredClone(value);
-    },
-    async update(data) {
-      const addictionStatePath = "flags.fbl-quick-access.conditions.addictionState";
-      const modifierKeysPath = "flags.fbl-quick-access.conditions.addictionModifierKeys";
-      if (data[addictionStatePath]) this.savedState = structuredClone(data[addictionStatePath]);
-      if (Array.isArray(data[modifierKeysPath])) this.modifierKeys = [...data[modifierKeysPath]];
-    },
-    async delete() {
-      this.deleted = true;
-    }
+    flags: { "fbl-quick-access": { conditions: { addictionState: structuredClone(initialState) } } }
   };
+  item.parent = { ...documentMethods, name: "Tester", flags: {}, items: new Map([[item.id, item]]) };
+  return item;
 }
 
 test("New Day combines contiguous simple Item updates into one Foundry bulk write", async () => {

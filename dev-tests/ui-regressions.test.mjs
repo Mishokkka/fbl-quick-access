@@ -185,8 +185,10 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
 test("STAT edits suppress full sheet renders and persist stable row order", () => {
   const main = readFileSync(join(root, "scripts", "conditions", "main.js"), "utf8");
   const migrations = readFileSync(join(root, "scripts", "conditions", "migrations.js"), "utf8");
+  const operations = readFileSync(join(root, "scripts", "conditions", "services", "stat-operations.js"), "utf8");
 
-  assert.match(main, /item\.update\(update, \{ render: false \}\)/);
+  assert.match(operations, /const OPTIONS = \{ render: false \}/);
+  assert.match(operations, /updateConditionDocument\(item, update, OPTIONS/);
   assert.match(main, /renderConditionItemRow/);
   assert.match(main, /refreshItemRow/);
   assert.match(migrations, /ensureConditionItemOrders/);

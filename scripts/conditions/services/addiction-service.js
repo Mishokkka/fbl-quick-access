@@ -1,46 +1,36 @@
 import { MODULE_ID, FLAGS, flagUpdatePath } from "../constants.js";
 import { createChatMessage, escapeHTML, localize, rollToMessage } from "../utils.js";
-import { getAddictionState, isAddictionCondition, saveAddictionState } from "../features/special-counters.js";
+import { getAddictionState, isAddictionCondition, normalizeAddictionSeverityChange, saveAddictionState } from "../features/special-counters.js";
 import { buildAddictionFlatMessage, buildAddictionRollMessage } from "./chat-service.js";
-import { createObjectOperationQueue } from "../../operation-queue.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
-import { executeAsActiveGM, getActiveGM, registerSocketHandler } from "../../integration/socket-api.js";
+import { executeActorOperation, handleActorOperation, registerSocketHandler } from "../../integration/socket-api.js";
+import { getConditionItem, verifyConditionWrite } from "./condition-writes.js";
 
 const ADDICTION_DICE_STEPS = Object.freeze([6, 8, 10, 12]);
-const enqueueMorning = createObjectOperationQueue();
 const MORNING_OPERATION = "conditions.addiction-morning";
 let operationsInitialized = false;
 let calendariaReadyApi = null;
 
-export async function handleAddictionOperation(payload, context) {
-  const actor = payload?.actorUuid ? await globalThis.fromUuid?.(payload.actorUuid) : game.actors?.get?.(payload?.actorId);
-  const item = actor?.items?.get?.(payload?.itemId);
-  if (!actor || actor.documentName !== "Actor" || actor.type !== "character" || item?.type !== "criticalInjury" || !isAddictionCondition(item)
-    || context.requestUser?.active === false
-    || (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER"))) {
-    throw new Error("Addiction changes require ownership of a character");
-  }
-  const submitted = payload.options ?? {};
-  const dayAction = payload.kind === "morning" && submitted.newDay === true;
-  if (!context.requestUser?.isGM && !dayAction && !game.settings.get(MODULE_ID, "playersCanEdit")) {
-    throw new Error("STAT editing is disabled");
-  }
-  const options = { dayKey: submitted.dayKey, newDay: submitted.newDay === true,
-    morningId: submitted.morningId, postChat: submitted.postChat !== false, notify: submitted.notify !== false,
-    state: submitted.state, delta: submitted.delta,
-    documentOptions: submitted.render === false ? { render: false } : {} };
-  if (payload.kind === "morning") {
-    const expected = getAddictionDayKey(actor, { newDay: options.newDay });
-    if (options.dayKey && options.dayKey !== expected && options.dayKey !== getAddictionMorning(item)?.dayKey) {
-      throw new Error("The addiction day changed; refresh the preview");
+export function handleAddictionOperation(payload, context) {
+  return handleActorOperation(payload, context, async (actor, command, user) => {
+    const item = getConditionItem(actor, command.itemId);
+    if (item?.type !== "criticalInjury" || !isAddictionCondition(item)) throw new Error("Invalid Addiction item");
+    const submitted = command.options ?? {};
+    const options = { dayKey: submitted.dayKey, newDay: submitted.newDay === true,
+      morningId: submitted.morningId, postChat: submitted.postChat !== false, notify: submitted.notify !== false,
+      state: submitted.state, delta: submitted.delta, severity: submitted.severity,
+      documentOptions: submitted.render === false ? { render: false } : {} };
+    if (command.kind === "morning" && options.dayKey) {
+      const expected = getAddictionDayKey(actor, { newDay: options.newDay });
+      const current = getAddictionDayKey(actor);
+      const sameMorning = options.newDay && options.dayKey === current;
+      if (options.dayKey !== expected && options.dayKey !== getAddictionMorning(item)?.dayKey && !sameMorning) {
+        throw new Error("The addiction day changed; refresh the preview");
+      }
     }
-  }
-  const result = payload.kind === "morning" ? await performAddictionMorning(actor, item, options)
-    : payload.kind === "resolve" ? await resolveAddictionMorning(actor, item, payload.outcome, options)
-      : payload.kind === "dose" ? await relapseAddiction(actor, item, options)
-        : payload.kind === "adjust" ? await correctAddictionState(actor, item, options) : null;
-  if (!result) throw new TypeError("Invalid addiction action");
-  return { ...result, roll: null };
+    const result = await applyAddictionOperation(actor, item, command.kind, options, command.outcome, user);
+    return { ...result, roll: null };
+  });
 }
 
 export function initializeAddictionOperations() {
@@ -50,15 +40,32 @@ export function initializeAddictionOperations() {
   operationsInitialized = true;
 }
 
-function remoteMorningOperation(actor, item, kind, options, outcome) {
-  const activeGM = getActiveGM();
-  if (!activeGM || activeGM.id === game.user?.id) return null;
-  return executeAsActiveGM(MORNING_OPERATION, {
-    actorUuid: actor.uuid, actorId: actor.id, itemId: item.id, kind, outcome,
+function runAddictionOperation(actor, item, kind, options, outcome) {
+  if (!actor || !item) return { changed: false, skipped: true };
+  return executeActorOperation(actor, MORNING_OPERATION, {
+    itemId: item.id, kind, outcome,
     options: { dayKey: options.dayKey, newDay: options.newDay === true, morningId: options.morningId,
-      state: options.state, delta: options.delta,
+      state: options.state, delta: options.delta, severity: options.severity,
       postChat: options.postChat !== false, notify: options.notify !== false, render: options.documentOptions?.render }
+  }, (liveActor, _command, user) => {
+    const liveItem = getConditionItem(liveActor, item.id);
+    if (liveItem?.type !== "criticalInjury" || !isAddictionCondition(liveItem)) return { changed: false, skipped: true };
+    return applyAddictionOperation(liveActor, liveItem, kind, options, outcome, user);
   });
+}
+
+function applyAddictionOperation(actor, item, kind, options, outcome, user) {
+  const newDay = kind === "morning" && options.newDay === true;
+  if (!user?.isGM && !newDay && !game.settings.get(MODULE_ID, "playersCanEdit")) {
+    throw new Error("STAT editing is disabled");
+  }
+  switch (kind) {
+    case "morning": return performAddictionMorningInternal(actor, item, options);
+    case "resolve": return resolveAddictionMorningInternal(actor, item, outcome, options);
+    case "dose": return relapseAddictionInternal(actor, item, options);
+    case "adjust": return correctAddictionStateInternal(actor, item, options);
+    default: throw new TypeError("Invalid addiction action");
+  }
 }
 
 export function getAddictionMorning(item) {
@@ -104,6 +111,7 @@ async function rememberManualDay(actor, dayKey, documentOptions) {
   if (!(number > Number(actor?.getFlag?.(MODULE_ID, FLAGS.ADDICTION_DAY) || 0))) return;
   if (actor?.update) await actor.update({ [flagUpdatePath(FLAGS.ADDICTION_DAY)]: number }, documentOptions);
   else if (actor?.setFlag) await actor.setFlag(MODULE_ID, FLAGS.ADDICTION_DAY, number);
+  if (actor.getFlag(MODULE_ID, FLAGS.ADDICTION_DAY) !== number) throw new Error("Addiction day was not persisted");
 }
 
 function morningResult(morning, { changed = false, reused = false } = {}) {
@@ -118,6 +126,7 @@ function morningResult(morning, { changed = false, reused = false } = {}) {
 async function commitMorning(actor, item, morning, nextState, options) {
   if (morning.cured) {
     await item.delete(options.documentOptions ?? {});
+    if (getConditionItem(actor, item.id)) throw new Error("Addiction cure was not persisted");
     if (options.notify !== false) {
       try { ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
         actor: escapeHTML(actor.name), condition: escapeHTML(item.name)
@@ -136,48 +145,53 @@ export function shouldAdvanceAddictionAfterRoll(total) {
 }
 
 export async function performAddictionMorning(actor, item, options = {}) {
-  if (!actor || !item) return { changed: false, skipped: true };
-  const remote = remoteMorningOperation(actor, item, "morning", options);
-  if (remote) return remote;
-  return enqueueMorning(item, async () => {
-    if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
-    const dayKey = getAddictionDayKey(actor, options);
-    const previous = getAddictionMorning(item);
-    if (previous?.status === "pending" || previous?.dayKey === dayKey) {
-      if (options.newDay && previous.dayKey === dayKey) {
-        if (!previous.startedByNewDay) await item.update({ [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...previous, startedByNewDay: true } }, options.documentOptions ?? {});
-        await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
+  return runAddictionOperation(actor, item, "morning", options);
+}
+
+/** Execute inside an existing Actor operation. */
+export async function performAddictionMorningInternal(actor, item, options = {}) {
+  item = getConditionItem(actor, item?.id);
+  if (!item) return { changed: false, skipped: true };
+  const dayKey = getAddictionDayKey(actor, options);
+  const previous = getAddictionMorning(item);
+  if (previous?.status === "pending" || previous?.dayKey === dayKey) {
+    if (options.newDay && previous.dayKey === dayKey) {
+      if (!previous.startedByNewDay) {
+        const update = { [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...previous, startedByNewDay: true } };
+        await item.update(update, options.documentOptions ?? {});
+        verifyConditionWrite(getConditionItem(actor, item.id), update);
       }
-      return morningResult(previous, { reused: true });
+      await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
     }
+    return morningResult(previous, { reused: true });
+  }
 
-    const state = getAddictionState(item);
-    const roll = state.phase === "flat" ? null : await new Roll(`1d${state.die}`).evaluate();
-    const controlled = Boolean(roll && shouldAdvanceAddictionAfterRoll(roll.total));
-    const progression = controlled ? calculateNextAddictionState(state) : { state, cured: false };
-    const morning = {
-      id: makeSocketRequestId(), dayKey, status: controlled ? "resolved" : "pending",
-      startedByNewDay: Boolean(options.newDay),
-      state, nextState: progression.cured ? null : progression.state,
-      total: roll?.total ?? null, advanced: controlled, cured: progression.cured,
-      outcome: controlled ? "controlled" : null
-    };
-    await commitMorning(actor, item, morning, progression.state, options);
-    if (options.newDay) await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
+  const state = getAddictionState(item);
+  const roll = state.phase === "flat" ? null : await new Roll(`1d${state.die}`).evaluate();
+  const controlled = Boolean(roll && shouldAdvanceAddictionAfterRoll(roll.total));
+  const progression = controlled ? calculateNextAddictionState(state) : { state, cured: false };
+  const morning = {
+    id: makeSocketRequestId(), dayKey, status: controlled ? "resolved" : "pending",
+    startedByNewDay: Boolean(options.newDay),
+    state, nextState: progression.cured ? null : progression.state,
+    total: roll?.total ?? null, advanced: controlled, cured: progression.cured,
+    outcome: controlled ? "controlled" : null
+  };
+  await commitMorning(actor, item, morning, progression.state, options);
+  if (options.newDay) await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
 
-    // Presentation is secondary to the persisted morning. A chat failure must
-    // not invite another craving roll or repeat a completed cycle transition.
-    if (options.postChat !== false) {
-      try {
-        const speaker = globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined;
-        if (roll) await rollToMessage(roll, { speaker, flavor: buildAddictionRollMessage(actor.name, item.name, state, roll.total, {
-          autoAdvanced: controlled, cured: progression.cured
-        }) });
-        else await createChatMessage({ speaker, content: buildAddictionFlatMessage(actor.name, item.name, state) });
-      } catch (error) { console.error(`${MODULE_ID} | addiction morning chat failed`, error); }
-    }
-    return { ...morningResult(morning, { changed: true }), roll };
-  });
+  // Presentation is secondary to the persisted morning. A chat failure must
+  // not invite another craving roll or repeat a completed cycle transition.
+  if (options.postChat !== false) {
+    try {
+      const speaker = globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined;
+      if (roll) await rollToMessage(roll, { speaker, flavor: buildAddictionRollMessage(actor.name, item.name, state, roll.total, {
+        autoAdvanced: controlled, cured: progression.cured
+      }) });
+      else await createChatMessage({ speaker, content: buildAddictionFlatMessage(actor.name, item.name, state) });
+    } catch (error) { console.error(`${MODULE_ID} | addiction morning chat failed`, error); }
+  }
+  return { ...morningResult(morning, { changed: true }), roll };
 }
 
 export async function processAddictionNewDay(actor, item, options = {}) {
@@ -187,68 +201,79 @@ export async function processAddictionNewDay(actor, item, options = {}) {
   });
 }
 
+export function processAddictionNewDayInternal(actor, item, options = {}) {
+  return performAddictionMorningInternal(actor, item, { ...options, newDay: true });
+}
+
 export async function resolveAddictionMorning(actor, item, outcome, options = {}) {
+  return runAddictionOperation(actor, item, "resolve", options, outcome);
+}
+
+/** Execute inside an existing Actor operation. */
+export async function resolveAddictionMorningInternal(actor, item, outcome, options = {}) {
   if (!["success", "failure-dose", "failure-no-dose"].includes(outcome)) throw new TypeError("Invalid addiction outcome");
-  const remote = remoteMorningOperation(actor, item, "resolve", options, outcome);
-  if (remote) return remote;
-  return enqueueMorning(item, async () => {
-    if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
-    const morning = getAddictionMorning(item);
-    if (morning?.status !== "pending" || (options.morningId && options.morningId !== morning.id)) {
-      return { changed: false, skipped: true };
-    }
-    const state = getAddictionState(item);
-    const relapse = outcome === "failure-dose";
-    const progression = relapse
-      ? { state: { ...state, phase: "down", die: 12, daysLeft: 0 }, cured: false }
-      : calculateNextAddictionState(state);
-    const resolved = { ...morning, status: "resolved", outcome, advanced: !relapse,
-      nextState: progression.cured ? null : progression.state, cured: progression.cured };
-    await commitMorning(actor, item, resolved, progression.state, options);
-    if (options.postChat !== false) {
-      try {
-        const label = localize(`Addiction.Outcome.${outcome}`, outcome);
-        await createChatMessage({ speaker: globalThis.ChatMessage?.getSpeaker?.({ actor }),
-          content: `<b>${escapeHTML(actor.name)} — ${escapeHTML(item.name)}</b>: ${escapeHTML(label)}.` });
-      } catch (error) { console.error(`${MODULE_ID} | addiction result chat failed`, error); }
-    }
-    return morningResult(resolved, { changed: true });
-  });
+  item = getConditionItem(actor, item?.id);
+  if (!item) return { changed: false, skipped: true };
+  const morning = getAddictionMorning(item);
+  if (morning?.status !== "pending" || (options.morningId && options.morningId !== morning.id)) {
+    return { changed: false, skipped: true };
+  }
+  const state = getAddictionState(item);
+  const relapse = outcome === "failure-dose";
+  const progression = relapse
+    ? { state: { ...state, phase: "down", die: 12, daysLeft: 0 }, cured: false }
+    : calculateNextAddictionState(state);
+  const resolved = { ...morning, status: "resolved", outcome, advanced: !relapse,
+    nextState: progression.cured ? null : progression.state, cured: progression.cured };
+  await commitMorning(actor, item, resolved, progression.state, options);
+  if (options.postChat !== false) {
+    try {
+      const label = localize(`Addiction.Outcome.${outcome}`, outcome);
+      await createChatMessage({ speaker: globalThis.ChatMessage?.getSpeaker?.({ actor }),
+        content: `<b>${escapeHTML(actor.name)} — ${escapeHTML(item.name)}</b>: ${escapeHTML(label)}.` });
+    } catch (error) { console.error(`${MODULE_ID} | addiction result chat failed`, error); }
+  }
+  return morningResult(resolved, { changed: true });
 }
 
 export async function relapseAddiction(actor, item, options = {}) {
-  const remote = remoteMorningOperation(actor, item, "dose", options);
-  if (remote) return remote;
-  return enqueueMorning(item, async () => {
-    if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
-    const state = { ...getAddictionState(item), phase: "down", die: 12, daysLeft: 0 };
-    const morning = getAddictionMorning(item);
-    await saveAddictionState(item, state, options.documentOptions ?? {}, morning ? {
-      [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...morning, status: "resolved", outcome: "dose", advanced: false, cured: false, nextState: state }
-    } : {});
-    return { changed: true, state };
-  });
+  return runAddictionOperation(actor, item, "dose", options);
+}
+
+/** Execute inside an existing Actor operation. */
+export async function relapseAddictionInternal(actor, item, options = {}) {
+  item = getConditionItem(actor, item?.id);
+  if (!item) return { changed: false, skipped: true };
+  const state = { ...getAddictionState(item), phase: "down", die: 12, daysLeft: 0 };
+  const morning = getAddictionMorning(item);
+  await saveAddictionState(item, state, options.documentOptions ?? {}, morning ? {
+    [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...morning, status: "resolved", outcome: "dose", advanced: false, cured: false, nextState: state }
+  } : {});
+  return { changed: true, state };
 }
 
 /** Adjust the cycle without a roll, dose, chat message, or automatic recovery. */
 export async function correctAddictionState(actor, item, options = {}) {
-  if (!actor || !item) return { changed: false, skipped: true };
-  const remote = remoteMorningOperation(actor, item, "adjust", options);
-  if (remote) return remote;
-  return enqueueMorning(item, async () => {
-    if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
-    const previous = getAddictionState(item);
-    const state = options.delta === 1 || options.delta === -1
-      ? shiftAddictionState(previous, options.delta)
-      : normalizeManualAddictionState(options.state, previous);
-    if (Object.keys(state).every(key => state[key] === previous[key])) return { changed: false, state };
-    const morning = getAddictionMorning(item);
-    await saveAddictionState(item, state, options.documentOptions ?? {}, morning ? {
-      [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...morning, status: "resolved", outcome: "manual",
-        advanced: false, cured: false, nextState: state }
-    } : {});
-    return { changed: true, state };
-  });
+  return runAddictionOperation(actor, item, "adjust", options);
+}
+
+/** Execute inside an existing Actor operation. */
+export async function correctAddictionStateInternal(actor, item, options = {}) {
+  item = getConditionItem(actor, item?.id);
+  if (!item) return { changed: false, skipped: true };
+  const previous = getAddictionState(item);
+  if (options.severity !== undefined && ![1, 5, 10].includes(options.severity)) throw new TypeError("Invalid Addiction severity");
+  const state = options.severity !== undefined ? normalizeAddictionSeverityChange(previous, options.severity)
+    : options.delta === 1 || options.delta === -1
+    ? shiftAddictionState(previous, options.delta)
+    : normalizeManualAddictionState(options.state, previous);
+  if (Object.keys(state).every(key => state[key] === previous[key])) return { changed: false, state };
+  const morning = getAddictionMorning(item);
+  await saveAddictionState(item, state, options.documentOptions ?? {}, morning ? {
+    [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...morning, status: "resolved", outcome: "manual",
+      advanced: false, cured: false, nextState: state }
+  } : {});
+  return { changed: true, state };
 }
 
 function normalizeManualAddictionState(input, previous) {
@@ -321,24 +346,4 @@ export function calculateNextAddictionState(inputState = {}) {
   state.die = 12;
   state.daysLeft = 0;
   return { state, cured: false };
-}
-
-export async function advanceAddictionCycle(actor, item, options = {}) {
-  if (!actor || !item) return { changed: false, skipped: true };
-
-  const documentOptions = options.documentOptions ?? {};
-  const previousState = getAddictionState(item);
-  const result = calculateNextAddictionState(previousState);
-
-  if (result.cured) {
-    if (options.notify !== false) ui.notifications?.info?.(localize("Notifications.AddictionCured", "{actor} recovered from {condition}.", {
-      actor: escapeHTML(actor.name),
-      condition: escapeHTML(item.name)
-    }));
-    await item.delete(documentOptions);
-    return { changed: true, cured: true, previousState, state: null };
-  }
-
-  await saveAddictionState(item, result.state, documentOptions);
-  return { changed: true, cured: false, previousState, state: result.state };
 }

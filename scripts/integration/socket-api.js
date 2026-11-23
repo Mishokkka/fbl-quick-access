@@ -7,6 +7,7 @@ import {
   verifySocketProofWithRetry
 } from "../socket-auth.js";
 import { findGameUser, makeSocketRequestId, normalizeSocketRequestId } from "../socket-utils.js";
+import { enqueueActorMutation } from "../operation-queue.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const REQUEST_TYPE = "integration-api-request";
@@ -138,6 +139,45 @@ export function hasSocketHandler(operation) {
   } catch (_error) {
     return false;
   }
+}
+
+/** Route an Actor operation to the active GM or serialize it locally for an owner. */
+export async function executeActorOperation(actor, operation, payload, apply) {
+  const remoteGM = () => {
+    const gm = getActiveGM();
+    return gm && gm.id !== game.user?.id;
+  };
+  const request = { ...payload, actorUuid: actor.uuid, actorId: actor.id };
+  if (!remoteGM()) {
+    const reroute = Symbol("active GM changed");
+    const result = await enqueueActorMutation(actor, () => {
+      if (remoteGM()) return reroute;
+      const worldActor = actor.isToken ? null : game.actors?.get?.(actor.id);
+      const live = worldActor && (!actor.uuid || worldActor.uuid === actor.uuid) ? worldActor : actor;
+      if (live.pack || (!game.user?.isGM && !live.isOwner)) throw integrationError("no-actor-permission", "Actor changes require ownership");
+      return apply(live, payload, game.user);
+    });
+    if (result !== reroute) return result;
+  }
+  return executeAsActiveGM(operation, request);
+}
+
+/** Authenticate and resolve the live document once the Actor's turn begins. */
+export function handleActorOperation(payload, context, apply) {
+  const reference = payload?.actorUuid || payload?.actorId;
+  if (typeof reference !== "string" || !reference) throw new TypeError("Missing Actor reference");
+  return enqueueActorMutation(reference, async () => {
+    const actor = payload.actorUuid ? await globalThis.fromUuid?.(reference) : game.actors?.get?.(reference);
+    const user = context.requestUser;
+    if (!actor || actor.pack || actor.documentName !== "Actor" || actor.type !== "character" || !user
+      || user.active === false || (!user.isGM && !actor.testUserPermission?.(user, "OWNER"))) {
+      throw integrationError("no-actor-permission", "Actor changes require ownership of a character");
+    }
+    if (context.activeGM && getActiveGM()?.id !== game.user?.id) {
+      throw integrationError("no-active-gm", "The active GM changed");
+    }
+    return apply(actor, payload, user);
+  });
 }
 
 async function handleSocketMessage(message) {

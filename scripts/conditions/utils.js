@@ -90,32 +90,6 @@ export function getActorAttributePath(actor, attributeName) {
   return state.hasValue ? state.valuePath : null;
 }
 
-export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}, extraUpdate = null) {
-  if (!actor || !damages || typeof damages !== "object") return [];
-
-  const update = {};
-  const applied = [];
-
-  for (const [attributeName, amountRaw] of Object.entries(damages)) {
-    const amount = Math.max(0, parseFirstInteger(amountRaw, 0));
-    if (!amount) continue;
-
-    const path = getActorAttributePath(actor, attributeName);
-    if (!path) continue;
-
-    const previous = Number(foundry.utils.getProperty(actor, path));
-    if (!Number.isFinite(previous)) continue;
-
-    const value = Math.max(0, previous - amount);
-    update[path] = value;
-    applied.push({ attribute: attributeName, path, amount, previous, value });
-  }
-
-  if (extraUpdate) Object.assign(update, typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate);
-  if (Object.keys(update).length) await actor.update(update, documentOptions);
-  return applied;
-}
-
 export function canUserEditActor(actor) {
   if (game.user.isGM) return true;
   const playersCanEdit = game.settings.get(MODULE_ID, SETTINGS.PLAYERS_CAN_EDIT);

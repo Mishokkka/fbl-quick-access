@@ -15,6 +15,7 @@ import {
   parseHeatValue
 } from "../features/special-counters.js";
 import { getAddictionDayKey, getAddictionMorning } from "../services/addiction-service.js";
+import { decrementFirstInteger } from "../../new-day.js";
 
 function toUpperTitle(name) {
   return String(name || "").toUpperCase();
@@ -40,12 +41,13 @@ function buildLethalHtml(item, editable) {
   }
 
   const itemId = escapeHTML(item.id);
+  const adjustable = Boolean(decrementFirstInteger(sys.limit || "0", 0));
   return `
     <div class="injury-lethal-wrapper">
       <div class="injury-lethal">${escapeHTML(localize("Injury.Lethal", "LETHAL"))}:</div>
-      <button type="button" class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>
+      ${adjustable ? `<button type="button" class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>` : ""}
       <input class="lethal-limit-input" value="${limit}" readonly>
-      <button type="button" class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>
+      ${adjustable ? `<button type="button" class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>` : ""}
       <span class="lethal-limit-caption">${escapeHTML(localize("Injury.RemainingShort", "left"))}</span>
       <button type="button" class="toggle-lethal-btn" data-item-id="${itemId}" title="${escapeHTML(localize("Injury.StabilizeTitle", "Stabilize injury"))}">
         <i class="fas fa-heartbeat"></i> ${escapeHTML(localize("Injury.Stabilize", "Stabilize"))}
@@ -59,7 +61,7 @@ function buildTimeControlsHtml(item, editable) {
   const permanentClass = permanent ? "is-permanent" : "";
   const value = escapeHTML(timeStr || "0");
 
-  if (permanent || !editable) {
+  if (permanent || !editable || !decrementFirstInteger(timeStr || "0", 0)) {
     return `<input type="text" value="${value}" class="healing-time-input ${permanentClass}" readonly>`;
   }
 
@@ -135,7 +137,7 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
     notes: condition.notes || "",
     desc: condition.desc || "",
     permanentClass: isPermanentTime(time) ? "is-permanent" : "",
-    showTimeButtons: !isPermanentTime(time),
+    showTimeButtons: Boolean(decrementFirstInteger(time, 0)),
     editable
   });
 }

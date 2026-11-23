@@ -3,6 +3,14 @@ import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind, getWashStage } from "../condition-kind.js";
 import { isFeatureEnabled } from "../settings.js";
 import { escapeHTML, localize, namesIncludeCondition, normalizeConditionName } from "../utils.js";
+import { executeActorOperation, handleActorOperation, hasSocketHandler, registerSocketHandler } from "../../integration/socket-api.js";
+import { getConditionItem } from "../services/condition-writes.js";
+
+const WASH_OPERATION = "conditions.wash-transition";
+
+function washItems(actor) {
+  return Array.from(actor.items?.values?.() ?? actor.items ?? []).filter(item => item.type === "criticalInjury" && isWashCondition(item));
+}
 
 export function getWashDefinition() {
   return CONDITION_DEFINITIONS.wash || {
@@ -68,18 +76,43 @@ export async function findWashConditionSource(name) {
 
 export async function removeOtherWashStates(actor, activeItem) {
   if (!actor || !activeItem || activeItem.type !== "criticalInjury" || !isWashCondition(activeItem)) return;
+  if (!isPersistedWashStage(getConditionItem(actor, activeItem.id), getWashStage(activeItem))) return;
 
-  const idsToDelete = actor.items
-    .filter(item => item.type === "criticalInjury" && item.id !== activeItem.id && isWashCondition(item))
+  const idsToDelete = washItems(actor)
+    .filter(item => item.id !== activeItem.id)
     .map(item => item.id);
 
   if (!idsToDelete.length) return;
 
   await actor.deleteEmbeddedDocuments("Item", idsToDelete);
+  if (idsToDelete.some(id => getConditionItem(actor, id))) throw new Error("Previous Wash state was not removed");
   ui.notifications.info(localize("Notifications.WashExclusive", "Wash state updated: “{name}” kept and older states removed.", { name: escapeHTML(activeItem.name) }));
 }
 
 export async function transitionWashLevel(actor, currentName, documentOptions = {}) {
+  return executeActorOperation(actor, WASH_OPERATION, { currentName, documentOptions }, applyWashOperation);
+}
+
+export function initializeWashOperations() {
+  if (hasSocketHandler(WASH_OPERATION)) return;
+  registerSocketHandler(WASH_OPERATION, (payload, context) => handleActorOperation(payload, context, applyWashOperation));
+}
+
+function applyWashOperation(actor, { currentName, documentOptions }) {
+  return transitionWashLevelInternal(actor, currentName, {
+    render: documentOptions?.render,
+    fblqaSuppressNotifications: documentOptions?.fblqaSuppressNotifications === true
+  });
+}
+
+function isPersistedWashStage(item, stage) {
+  return Boolean(stage && item?.type === "criticalInjury"
+    && item.getFlag?.(MODULE_ID, "conditions.kind") === "wash"
+    && item.getFlag?.(MODULE_ID, "conditions.washStage") === stage);
+}
+
+/** Execute a Wash step inside an existing Actor operation. */
+export async function transitionWashLevelInternal(actor, currentName, documentOptions = {}) {
   const suppressNotifications = Boolean(documentOptions?.fblqaSuppressNotifications);
   const safeDocumentOptions = { ...(documentOptions ?? {}) };
   delete safeDocumentOptions.fblqaSuppressNotifications;
@@ -87,8 +120,12 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
 
   const nextName = getNextWashName(currentName);
   if (!nextName) return { changed: false, reason: "no-next-state" };
+  const previousName = getWashDisplayName(currentName);
+  if (!washItems(actor).some(item => getWashStage(item) === previousName)) {
+    return { changed: false, reason: "stale-stage", previousName, nextName };
+  }
 
-  const existing = actor.items.find(item => item.type === "criticalInjury" && getConditionKind(item) === "wash" && getWashStage(item) === nextName);
+  const existing = washItems(actor).find(item => getWashStage(item) === nextName);
   let createdItems = existing ? [existing] : null;
   // A retry only needs to finish cleanup if the replacement already exists.
   if (!existing) {
@@ -120,14 +157,19 @@ export async function transitionWashLevel(actor, currentName, documentOptions = 
     }
   }
 
-  const createdIds = new Set((createdItems ?? []).map((item) => item.id));
-  const staleIds = actor.items
-    .filter((item) => item.type === "criticalInjury" && isWashCondition(item) && !createdIds.has(item.id))
+  const replacement = getConditionItem(actor, createdItems?.[0]?.id);
+  if (!isPersistedWashStage(replacement, nextName)) {
+    if (!suppressNotifications) ui.notifications.error(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: escapeHTML(nextName) }));
+    return { changed: false, reason: "create-failed", previousName, nextName };
+  }
+  const staleIds = washItems(actor)
+    .filter(item => item.id !== replacement.id)
     .map((item) => item.id);
 
   if (staleIds.length) {
     try {
       await actor.deleteEmbeddedDocuments("Item", staleIds, safeDocumentOptions);
+      if (staleIds.some(id => getConditionItem(actor, id))) throw new Error("Previous Wash state was not removed");
     } catch (error) {
       console.error(`${MODULE_ID} | could not remove stale wash states`, error);
       if (!suppressNotifications) ui.notifications.warn(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
