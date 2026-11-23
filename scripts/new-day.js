@@ -18,7 +18,8 @@ import {
   describeNewDayProviderAction,
   getNewDayProviderCategory,
   getNewDayProviderIcon,
-  getNewDayProviders
+  getNewDayProviders,
+  wasProviderActionRejected
 } from "./integration/new-day-providers.js";
 import { createObjectOperationQueue, enqueueActorMutationOperation } from "./operation-queue.js";
 import {
@@ -89,7 +90,8 @@ export function buildNewDayPlan(actor, options = {}) {
     const conditionKind = getConditionKind(item);
 
     if (isAddictionCondition(item)) {
-      const morning = getPendingAddictionTransition(item) ?? getAddictionMorning(item);
+      const interrupted = getPendingAddictionTransition(item);
+      const morning = interrupted ?? getAddictionMorning(item);
       actions.push({
         id: `addiction:${item.id}:day`,
         kind: "addiction-day",
@@ -98,7 +100,8 @@ export function buildNewDayPlan(actor, options = {}) {
         itemName,
         checked: true,
         dayKey: blockedByAddiction ? morning.dayKey : dayKey,
-        pending: blockedByAddiction,
+        pending: morning?.status === "pending" && !interrupted,
+        interrupted: Boolean(interrupted),
         state: getAddictionState(item)
       });
       continue;
@@ -302,13 +305,14 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     // A morning started by this day pauses subsequent days.
     if (!dispatched) pendingAtStart ||= getPendingAddictions(actor).length > 0;
     if (pendingAtStart && (options.pauseForPendingAddiction || action.providerId || action.kind !== "addiction-day")) {
-      throw createCodedError("awaiting-endurance", qaLocalize("NewDay.PendingBlocked", "Resolve pending Addiction checks in STAT before advancing other timers."));
+      const interrupted = getPendingAddictions(actor).some(getPendingAddictionTransition);
+      throw createCodedError("awaiting-endurance", addictionPauseDetail(interrupted));
     }
     assertActionCurrent(actor, plan, action, preconditions);
   };
   const pausedForAddiction = () => !dispatched && pendingAtStart;
   const stalePlan = () => !dispatched && results.length > 0
-    && results.every(entry => ["stale-plan", "stale-provider-action"].includes(entry.code));
+    && results.every(entry => entry.code === "stale-plan" || wasProviderActionRejected(entry));
   const actions = selectedActions.filter(action => {
     try { assertCurrent(action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
@@ -352,6 +356,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
 
   let pendingKind = "";
   let pendingActions = [];
+  const appliedHealing = new Map();
 
   const flushPending = async () => {
     if (!pendingActions.length) return;
@@ -361,11 +366,11 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     pendingKind = "";
 
     const current = batch.filter(action => {
-      try { assertCurrent(action); return true; }
+      try { assertCurrent(action, { appliedHealing: appliedHealing.get(action.itemId) }); return true; }
       catch (error) { results.push(failureResult(action, error)); return false; }
     });
     dispatched ||= current.length > 0;
-    if (kind === "update") await applyItemUpdateBatch(actor, plan, current, results, documentOptions);
+    if (kind === "update") await applyItemUpdateBatch(actor, plan, current, results, documentOptions, appliedHealing);
     else if (kind === "delete") await applyItemDeleteBatch(actor, plan, current, results, documentOptions);
   };
 
@@ -389,7 +394,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
         try {
           providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
         } catch (error) {
-          if (error?.code !== "stale-provider-action") dispatched = true;
+          if (!wasProviderActionRejected(error)) dispatched = true;
           throw error;
         }
         dispatched = true;
@@ -493,7 +498,7 @@ function isItemDeletedOnActor(actor, itemId, itemRef = null) {
   return Boolean(live.deleted === true || itemRef?.deleted === true);
 }
 
-async function applyItemUpdateBatch(actor, plan, actions, results, documentOptions) {
+async function applyItemUpdateBatch(actor, plan, actions, results, documentOptions, appliedHealing) {
   const valid = [];
   for (const action of actions) {
     const item = getActorItem(actor, action.itemId);
@@ -507,7 +512,6 @@ async function applyItemUpdateBatch(actor, plan, actions, results, documentOptio
   }
   if (!valid.length) return;
 
-  const appliedHealing = new Map();
   const remaining = typeof actor.updateEmbeddedDocuments === "function" ? await applyBulkUpdates() : valid;
   for (const entry of remaining) {
     const { action } = entry;
@@ -869,9 +873,15 @@ function buildNewDayDialogContent(plan) {
       </div>
       <div class="fblqa-new-day-groups">${groups}</div>
       <p class="fblqa-rest-note">${escapeHtml(plan.blockedByAddiction
-        ? qaLocalize("NewDay.PendingBlocked", "Resolve the pending addiction Endurance in STAT before advancing another day. Other timers will not change.")
+        ? addictionPauseDetail(plan.actions.some(action => action.interrupted))
         : qaLocalize("NewDay.Note", "Таймеры уменьшаются на один день. Непостоянные травмы и состояния, достигшие нуля, удаляются. Помытость и зависимость используют текущие правила STAT."))}</p>
     </form>`;
+}
+
+export function addictionPauseDetail(interrupted) {
+  return interrupted
+    ? qaLocalize("NewDay.PendingSave", "Finish saving the previous Addiction outcome in STAT before advancing another day.")
+    : qaLocalize("NewDay.PendingBlocked", "Resolve the pending addiction Endurance in STAT before advancing another day. Other timers will not change.");
 }
 
 function renderNewDayAction(action) {
@@ -917,6 +927,7 @@ function actionDetail(action) {
     return qaLocalize("NewDay.ConditionTimer", "Срок состояния: {beforeText} → {afterText}", action);
   }
   if (action.kind === "addiction-day") {
+    if (action.interrupted) return addictionPauseDetail(true);
     if (action.pending) return qaLocalize("NewDay.AddictionPendingFlat", "Manual Endurance is required. Record the result in STAT before advancing another day.");
     return action.state?.phase === "flat"
       ? qaLocalize("NewDay.AddictionDayFlat", "Ручная Endurance: отметьте результат в STAT. До этого дни ломки и штрафы не меняются.")

@@ -530,7 +530,7 @@ test("PR26: BIO retains pending draft on cancelled Actor.update and ownership lo
 });
 
 test("PR26: Reputation keeps the newest failed edit visible after reopening", async testContext => {
-  const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement", "document"]);
+  const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement", "document", "Roll"]);
   try {
     testContext.mock.method(console, "error", () => {});
     const savedSnapshots = [];
@@ -660,7 +660,9 @@ test("PR26: Reputation keeps the newest failed edit visible after reopening", as
         this.rowsRoot.classList.add("fblqa-reputation-rows");
         const status = new FakeDomNode("span");
         status.dataset.role = "save-status";
-        this.element.append(this.rowsRoot, status);
+        this.rollButton = new FakeDomNode("button");
+        this.rollButton.dataset.action = "roll-selected";
+        this.element.append(this.rowsRoot, status, this.rollButton);
         this._listeners = new Map();
       }
       addEventListener(t, fn) { this._listeners.set(t, fn); }
@@ -750,6 +752,11 @@ test("PR26: Reputation keeps the newest failed edit visible after reopening", as
     await nextTurn();
     assert.equal(rep.getReputationEntries(actor)[0].amount, 4);
     await rep.saveReputationEntries(actor, [{ ...rep.getReputationEntries(actor)[0], amount: 5 }]);
+    let rolls = 0;
+    globalThis.Roll = class { constructor() { rolls++; } };
+    reader.rollButton.dispatch("click", {});
+    await nextTurn();
+    assert.equal(rolls, 0, "a superseded snapshot cannot be used for a roll");
     await reader.close();
     await nextTurn();
     assert.equal(rep.getReputationEntries(actor)[0].amount, 5, "closing an untouched reopened dialog must not save its borrowed draft");

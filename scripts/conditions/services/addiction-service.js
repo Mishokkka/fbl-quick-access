@@ -1,4 +1,4 @@
-import { MODULE_ID, FLAGS, flagUpdatePath } from "../constants.js";
+import { MODULE_ID, FLAGS } from "../constants.js";
 import { createChatMessage, escapeHTML, localize, rollToMessage } from "../utils.js";
 import { getAddictionState, isAddictionCondition, saveAddictionState } from "../features/special-counters.js";
 import { buildAddictionFlatMessage, buildAddictionRollMessage } from "./chat-service.js";
@@ -109,8 +109,9 @@ async function rememberManualDay(actor, dayKey, documentOptions) {
   if (!dayKey.startsWith("manual:")) return;
   const number = Number(dayKey.slice(7));
   if (!(number > Number(actor?.getFlag?.(MODULE_ID, FLAGS.ADDICTION_DAY) || 0))) return;
-  if (actor?.update) await actor.update({ [flagUpdatePath(FLAGS.ADDICTION_DAY)]: number }, documentOptions);
-  else if (actor?.setFlag) await actor.setFlag(MODULE_ID, FLAGS.ADDICTION_DAY, number);
+  if (actor?.update || actor?.setFlag) {
+    await setDocumentFlagVerified(actor, MODULE_ID, FLAGS.ADDICTION_DAY, number, { render: false, ...documentOptions });
+  }
 }
 
 function morningResult(morning, { changed = false, reused = false } = {}) {
@@ -130,6 +131,7 @@ async function commitMorning(actor, item, morning, options) {
 async function finishMorningTransition(actor, item, morning, options) {
   const documentOptions = options.documentOptions ?? {};
   if (morning.cured) {
+    if (morning.startedByNewDay) await rememberManualDay(actor, morning.dayKey, documentOptions);
     await item.delete(documentOptions);
     if (hasActorItem(actor, item.id)) {
       throw createCodedError("write-not-persisted", "Addiction cure deletion was not persisted.");
@@ -150,8 +152,8 @@ async function finishMorningTransition(actor, item, morning, options) {
 
 async function resumeMorningTransition(actor, item, morning, options) {
   await finishMorningTransition(actor, item, morning, options);
-  if (morning.startedByNewDay) await rememberManualDay(actor, morning.dayKey, options.documentOptions ?? {});
-  return morningResult(morning, { changed: true });
+  if (options.newDay && !morning.cured) await rememberManualDay(actor, morning.dayKey, options.documentOptions);
+  return { ...morningResult(morning, { changed: true }), resumed: true };
 }
 
 function assertRequestedDayCurrent(actor, dayKey, itemDay, options) {
@@ -176,9 +178,10 @@ export async function performAddictionMorning(actor, item, options = {}) {
   if (remote) return remote;
   return enqueueMorning(item, async () => {
     if (actor.items?.get && actor.items.get(item.id) !== item) return { changed: false, skipped: true };
+    const interrupted = getPendingAddictionTransition(item);
+    if (interrupted && !options.dayKey) return resumeMorningTransition(actor, item, interrupted, options);
     const dayKey = getAddictionDayKey(actor, options);
     const previous = getAddictionMorning(item);
-    const interrupted = getPendingAddictionTransition(item);
     assertRequestedDayCurrent(actor, dayKey, interrupted?.dayKey ?? previous?.dayKey, options);
     if (interrupted) return resumeMorningTransition(actor, item, interrupted, options);
     if (previous?.status === "pending" || previous?.dayKey === dayKey) {
@@ -204,7 +207,7 @@ export async function performAddictionMorning(actor, item, options = {}) {
       outcome: controlled ? "controlled" : null
     };
     await commitMorning(actor, item, morning, options);
-    if (options.newDay) await rememberManualDay(actor, dayKey, options.documentOptions ?? {});
+    if (options.newDay && !morning.cured) await rememberManualDay(actor, dayKey, options.documentOptions);
 
     // Presentation is secondary to the persisted morning. A chat failure must
     // not invite another craving roll or repeat a completed cycle transition.

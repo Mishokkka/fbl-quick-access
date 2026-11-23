@@ -2,6 +2,7 @@
  * Unified Calendaria integration adapter shared across State Progression,
  * Rest quarter-day tracking, and Addiction calendar day keys.
  */
+import { readNumericValue } from "../document-writes.js";
 
 let calendariaReadySeen = false;
 let calendariaReadyApi = null;
@@ -63,9 +64,9 @@ export function calendariaHookComponentToPublicDate(components) {
 
 export function normalizeCalendariaDate(date) {
   if (!date || typeof date !== "object") return null;
-  const year = Number(date.year);
-  const month = Number(date.month);
-  const day = Number(date.day);
+  const year = readNumericValue(date.year);
+  const month = readNumericValue(date.month);
+  const day = readNumericValue(date.day);
   if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) return null;
   if (month < 1 || day < 1) return null;
   return { year, month, day };

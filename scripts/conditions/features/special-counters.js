@@ -6,19 +6,14 @@ import { makeSocketRequestId } from "../../socket-utils.js";
 import { clearDocumentFlagNullVerified, createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
 
 import { isFeatureEnabled } from "../settings.js";
-import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger, planActorAttributeDamage } from "../utils.js";
+import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger, planActorAttributeDamage, remainingActorAttributeDamage } from "../utils.js";
 
-const enqueueHeatChange = createObjectOperationQueue();
-const enqueueMorOperation = createObjectOperationQueue();
+const enqueueCounterItem = createObjectOperationQueue();
 const HEAT_PENDING_CHANGE = "conditions.heatPendingChange";
 const MOR_PENDING_GAIN = "conditions.morPendingGain";
 
-function enqueueMorChange(actor, item, operation) {
-  return actor ? enqueueActorMutationOperation(actor, operation) : enqueueMorOperation(item, operation);
-}
-
-function enqueueHeatMutation(actor, item, operation) {
-  return actor ? enqueueActorMutationOperation(actor, operation) : enqueueHeatChange(item, operation);
+function enqueueCounterChange(actor, item, operation) {
+  return actor ? enqueueActorMutationOperation(actor, operation) : enqueueCounterItem(item, operation);
 }
 
 export function getHeatDefinition() {
@@ -271,12 +266,12 @@ function getHeatThresholdDamage(previousValue, value, overcap = false) {
 
 export async function updateHeatItem(actor, item, newValue, reason = "manual", documentOptions = {}) {
   if (!item) return null;
-  return enqueueHeatMutation(actor, item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
+  return enqueueCounterChange(actor, item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
 }
 
 export async function applyHeatFailure(actor, item, documentOptions = {}) {
   if (!item) return null;
-  return enqueueHeatMutation(actor, item, () => {
+  return enqueueCounterChange(actor, item, () => {
     const pending = readDocumentFlag(item, MODULE_ID, HEAT_PENDING_CHANGE);
     return applyHeatChange(actor, item, pending?.value ?? parseHeatValue(item) + 1, "failure", documentOptions);
   });
@@ -359,25 +354,52 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 }
 
 async function applyCounterDamage(actor, item, pendingKey, pending, receiptName, legacyDamages, documentOptions) {
-  const receiptKey = `conditions.${receiptName}.${item.id}`;
-  const receipt = readDocumentFlag(actor, MODULE_ID, receiptKey);
-  let { damagePlan } = pending;
-  if (!Array.isArray(damagePlan)) {
-    // Older interrupted operations stored the exact values in the Actor receipt.
-    damagePlan = receipt?.id === pending.id && Array.isArray(receipt.appliedDamage)
-      ? receipt.appliedDamage : planActorAttributeDamage(actor, legacyDamages);
-    await setDocumentFlagVerified(item, MODULE_ID, pendingKey, { ...pending, damagePlan }, documentOptions);
+  const legacyReceipt = readDocumentFlag(actor, MODULE_ID, `conditions.${receiptName}.${item.id}`);
+  const receipt = legacyReceipt?.id === pending.id ? legacyReceipt : null;
+  const damagePlan = pending.damagePlan ?? receipt?.appliedDamage ?? planActorAttributeDamage(actor, legacyDamages);
+  const remaining = pending.remainingDamage ?? damagePlan;
+  if (!remaining.length || receipt?.applied === true) return damagePlan;
+  const checkpoint = (damageInFlight, remainingDamage) => setDocumentFlagVerified(item, MODULE_ID, pendingKey,
+    { ...pending, damagePlan, damageInFlight, remainingDamage }, documentOptions, { replace: true });
+
+  if (pending.damageInFlight) {
+    const uncertain = remainingActorAttributeDamage(actor, remaining);
+    if (uncertain.length) {
+      const targets = uncertain.map(({ attribute, value }) => `${attribute}: ${value}`).join(", ");
+      const message = localize("Notifications.DamageRecoveryRequired",
+        "The damage write was interrupted. Check the current attributes against the intended values: {targets}.", { targets });
+      throw Object.assign(createCodedError("damage-recovery-required", message), { fblqaUserMessage: message, damageId: pending.id });
+    }
+    await checkpoint(false, []);
+    return damagePlan;
   }
-  if (!damagePlan.length || (receipt?.id === pending.id && receipt.applied === true)) return damagePlan;
-  await applyActorAttributeDamage(actor, damagePlan, documentOptions);
-  // Record completion only after verifying the attributes. A later edit may
-  // intentionally bring an attribute back to its pre-damage value.
-  await setDocumentFlagVerified(actor, MODULE_ID, receiptKey, { id: pending.id, applied: true }, documentOptions, { replace: true });
+
+  // Keep the Item record through both the Actor update and its readback.
+  // Without a verified readback, a restored attribute is ambiguous on retry.
+  await checkpoint(true, remaining);
+  let writeError;
+  try { await applyActorAttributeDamage(actor, remaining, documentOptions); }
+  catch (error) { writeError = error; }
+  const missing = remainingActorAttributeDamage(actor, remaining);
+  await checkpoint(false, missing);
+  if (missing.length) throw writeError ?? createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
   return damagePlan;
 }
 
+export function acknowledgeCounterDamage(actor, item, damageId, documentOptions) {
+  return enqueueActorMutationOperation(actor, async () => {
+    const key = isHeatCondition(item) ? HEAT_PENDING_CHANGE : MOR_PENDING_GAIN;
+    const pending = readDocumentFlag(item, MODULE_ID, key);
+    if (!pending?.damageInFlight || pending.id !== damageId) {
+      throw createCodedError("stale-counter-damage", "The pending counter damage changed while awaiting confirmation.");
+    }
+    return setDocumentFlagVerified(item, MODULE_ID, key,
+      { ...pending, damageInFlight: false, remainingDamage: [] }, documentOptions, { replace: true });
+  });
+}
+
 export function changePermanentMor(item, delta, documentOptions = {}) {
-  return enqueueMorChange(item?.parent, item, () => {
+  return enqueueCounterChange(item?.parent, item, () => {
     assertMorChangeAvailable(item);
     const { current, permanent } = getMorState(item);
     return writeMorState(item, current, permanent + delta, documentOptions);
@@ -385,7 +407,7 @@ export function changePermanentMor(item, delta, documentOptions = {}) {
 }
 
 export function removeCurrentMor(item, documentOptions = {}) {
-  return enqueueMorChange(item?.parent, item, async () => {
+  return enqueueCounterChange(item?.parent, item, async () => {
     assertMorChangeAvailable(item);
     const before = getMorState(item);
     if (before.current <= 0) return null;
@@ -429,7 +451,7 @@ function assertPendingMorGainCurrent(item, pending, allowApplied = false) {
 }
 
 export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
-  return enqueueMorChange(item?.parent, item, async () => {
+  return enqueueCounterChange(item?.parent, item, async () => {
     const pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
     if (!pending || pending.id !== pendingGainId || sameMorState(getMorState(item), pending.before)) {
       throw createCodedError("stale-mor-state", "The pending Mor gain changed while awaiting confirmation.");
@@ -439,7 +461,7 @@ export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
 }
 
 export function applyMorGain(actor, item, documentOptions = {}) {
-  return enqueueMorChange(actor, item, async () => {
+  return enqueueCounterChange(actor, item, async () => {
     let pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
     let roll;
     if (pending == null) {
@@ -487,14 +509,14 @@ export function buildSpecialCounterMigrationUpdate(item) {
   if (isNamedSpecialCondition(item, getHeatDefinition())) {
     return {
       _id: item.id,
-      ...(item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) === undefined && { [flagUpdatePath(FLAGS.HEAT_VALUE)]: parseHeatValue(item) })
+      ...(item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) == null && { [flagUpdatePath(FLAGS.HEAT_VALUE)]: parseHeatValue(item) })
     };
   }
 
   if (["мор", "mor"].includes(normalizeConditionName(item.name))) {
     return {
       _id: item.id,
-      ...(item.getFlag(MODULE_ID, FLAGS.MOR_STATE) === undefined && { [flagUpdatePath(FLAGS.MOR_STATE)]: getMorState(item) })
+      ...(item.getFlag(MODULE_ID, FLAGS.MOR_STATE) == null && { [flagUpdatePath(FLAGS.MOR_STATE)]: getMorState(item) })
     };
   }
 

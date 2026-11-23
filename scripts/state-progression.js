@@ -7,6 +7,7 @@ import {
 } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import {
+  addictionPauseDetail,
   applyNewDayPlan,
   buildNewDayPlanWithProviders,
   openNewDayDialog,
@@ -37,7 +38,7 @@ import {
   normalizeSocketRequestId
 } from "./socket-utils.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
-import { clearDocumentFlagNullVerified, clonePlainJson, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag, setDocumentFlagVerified } from "./document-writes.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag, readNumericValue, setDocumentFlagVerified } from "./document-writes.js";
 import {
   calendariaDateKey,
   calendariaHookComponentToPublicDate,
@@ -50,7 +51,7 @@ import {
   registerCalendariaReadyHook,
   sameCalendariaDay
 } from "./integration/calendaria-adapter.js";
-import { addictionCalendarDayKey, getPendingAddictions } from "./conditions/services/addiction-service.js";
+import { addictionCalendarDayKey, getPendingAddictions, getPendingAddictionTransition } from "./conditions/services/addiction-service.js";
 
 export { calendariaDateKey, calendariaHookComponentToPublicDate, normalizeCalendariaDate } from "./integration/calendaria-adapter.js";
 
@@ -515,6 +516,7 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
     try {
       const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
         approvedMarker: marker,
+        requireAssignment: true,
         maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
       });
       updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
@@ -552,6 +554,8 @@ async function processActorAutomaticDays(actor, startDate, context, requestedDay
 
 async function processActorAutomaticDaysUnlocked(actor, startDate, context, requestedDays, options = {}) {
   assertCalendarApplyContext(context);
+  const assertAssignment = options.requireAssignment ? () => assertAssignedCalendarActor(actor) : null;
+  assertAssignment?.();
   const api = context.api ?? getCalendariaApi();
   const dayResults = [];
   // Requests target a date. Another queued request may already have advanced
@@ -602,6 +606,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
 
     const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, nextDate) });
     assertCalendarApplyContext(context);
+    assertAssignment?.();
     pendingManual = getPendingAddictions(actor).length;
     if (pendingManual || plan.blockedByAddiction) break;
     const selectedIds = plan.actions.filter((action) => action.checked !== false).map((action) => action.id);
@@ -621,7 +626,7 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
     const daysInPlan = plan.actions.some(action => action.kind !== "short-rest-reset") ? 1 : remaining;
     const through = daysInPlan === 1 ? nextDate : normalizeCalendariaDate(api?.addDays?.(cursor, daysInPlan)) ?? context.date;
     const applied = await applyCalendarDay(actor, context, cursor, nextDate, through, plan, selectedIds,
-      daysInPlan < remaining ? { render: false } : {});
+      daysInPlan < remaining ? { render: false } : {}, assertAssignment);
     if (applied.pausedForAddiction) {
       pendingManual = getPendingAddictions(actor).length;
       break;
@@ -784,8 +789,7 @@ async function handleCalendariaApplyRequest(payload, context) {
   const targetDate = normalizeCalendariaDate(payload?.targetDate);
   const assertLiveAssignment = () => {
     assertCalendariaMode();
-    const live = resolveAssignedActorEntry(actor.id);
-    if (live.actor !== actor) throw progressionError("actor-not-assigned", "The assigned actor changed");
+    const live = assertAssignedCalendarActor(actor);
     const requesterId = context.requestUser.id;
     const requester = game.user?.id === requesterId ? game.user : findGameUser(requesterId);
     assertRequesterAssignedToActor(live, requester);
@@ -1082,17 +1086,16 @@ function buildGMSummaryContent(state) {
           </div>
           <span class="fblqa-progression-current-date">${escapeHtml(qaLocalize("StateProgression.CurrentDateLabel", "Current date: {date}", { date: formatCalendariaDate(state.context?.date) }))}</span>
         </div>
-        ${hasActors ? `
           <div class="fblqa-progression-summary-toolbar">
-            <button type="button" data-action="reset-all-current">
+            <button type="button" data-action="reset-all-current"${hasActors ? "" : " disabled"}>
               <i class="fas fa-calendar-check" aria-hidden="true"></i>
               ${escapeHtml(qaLocalize("StateProgression.ResetAllCurrent", "Reset all to current date"))}
             </button>
-            <button type="button" data-action="rewind-all">
+            <button type="button" data-action="rewind-all"${hasActors ? "" : " disabled"}>
               <i class="fas fa-clock-rotate-left" aria-hidden="true"></i>
               ${escapeHtml(qaLocalize("StateProgression.RewindAll", "Rewind all…"))}
             </button>
-          </div>` : ""}
+          </div>
       </div>
       <div class="fblqa-progression-summary-rows">${rowsHtml}</div>
     </div>`;
@@ -1188,10 +1191,11 @@ function renderGMSummaryResult(result) {
 
 function updateGMSummaryStatus(state, actorId, status) {
   if (!state) return;
-  const pendingManual = getPendingAddictions(state.entries.get(actorId)?.actor).length;
+  const pending = getPendingAddictions(state.entries.get(actorId)?.actor);
+  const pendingManual = pending.length;
   status = { ...status, pendingManual };
   if (pendingManual && !["processing", "error", "unmarked", "recovery"].includes(status.state)) {
-    status = { ...status, state: "blocked", detail: manualEnduranceDetail() };
+    status = { ...status, state: "blocked", detail: pending.some(getPendingAddictionTransition) ? addictionPauseDetail(true) : manualEnduranceDetail() };
   }
   state.statuses.set(actorId, { ...(state.statuses.get(actorId) ?? {}), ...status });
   refreshGMSummaryDom(state);
@@ -1206,6 +1210,9 @@ function updateCurrentGMSummary(actorId, context, status) {
 function refreshGMSummaryDom(state) {
   const container = state.root?.querySelector?.(".fblqa-progression-summary-rows");
   if (!container) return;
+  for (const button of state.root.querySelectorAll?.(".fblqa-progression-summary-toolbar button") ?? []) {
+    button.disabled = state.entries.size === 0;
+  }
   container.innerHTML = state.entries.size
     ? Array.from(state.entries.values()).map((entry) => renderGMSummaryRow(state, entry)).join("")
     : `<p class="fblqa-progression-empty">${escapeHtml(qaLocalize("StateProgression.NoAssignedActors", "No characters assigned to non-GM players were found."))}</p>`;
@@ -1315,8 +1322,9 @@ async function resolveActorFromGMSummary(state, actorId) {
   const marker = getActorCalendarMarker(entry.actor);
   const status = calculateActorCalendarStatus(marker, context);
   const days = Math.max(0, Number(status.days) || 0);
-  if (getPendingAddictions(entry.actor).length) {
-    ui.notifications?.warn?.(manualEnduranceDetail());
+  const pending = getPendingAddictions(entry.actor);
+  if (pending.length) {
+    ui.notifications?.warn?.(pending.some(getPendingAddictionTransition) ? addictionPauseDetail(true) : manualEnduranceDetail());
     if (entry.actor.sheet) {
       entry.actor.sheet._customActiveTab = "conditions";
       entry.actor.sheet.render?.(true);
@@ -1393,6 +1401,7 @@ async function resolveActorFromGMSummary(state, actorId) {
     try {
       const result = await processActorAutomaticDays(entry.actor, liveMarker.date, liveContext, liveDays, {
         approvedMarker: liveMarker,
+        requireAssignment: true,
         maxDays: liveDays > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? liveDays : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
       });
       updateGMSummaryStatus(state, actorId, result.failedActions
@@ -1513,7 +1522,10 @@ async function rewindActorFromGMSummary(state, actorId) {
   const days = await promptRewindDays({ actorName: entry.actor.name ?? "" });
   if (!days) return;
   const liveContext = getCalendariaContext();
-  if (!liveContext || liveContext.calendarId !== context.calendarId) return;
+  if (!liveContext || summaryKey(liveContext) !== summaryKey(context)) {
+    ui.notifications?.warn?.(pendingChangedDetail());
+    return;
+  }
   try {
     const rewound = await rewindActorCalendarMarker(entry.actor, days, liveContext, liveContext.api, { requireCurrentDay: true });
     const pending = calculateActorCalendarStatus(getActorCalendarMarker(entry.actor), liveContext);
@@ -1605,7 +1617,10 @@ async function rewindAllFromGMSummary(state) {
   const days = await promptRewindDays({ actorName: null });
   if (!days) return;
   const liveContext = getCalendariaContext();
-  if (!liveContext || liveContext.calendarId !== context.calendarId) return;
+  if (!liveContext || summaryKey(liveContext) !== summaryKey(context)) {
+    ui.notifications?.warn?.(pendingChangedDetail());
+    return;
+  }
 
   try {
     const outcome = await rewindAllCalendarMarkers(days, liveContext, liveContext.api, { requireCurrentDay: true });
@@ -1668,7 +1683,7 @@ function promptRewindDays({ actorName = null, defaultDays = 1 } = {}) {
       <p><strong>${escapeHtml(heading)}</strong></p>
       <label class="fblqa-rest-field">
         <span>${escapeHtml(qaLocalize("StateProgression.RewindDaysLabel", "Days to rewind"))}</span>
-        <input type="number" name="rewindDays" min="1" max="${MAX_AUTOMATIC_CALENDAR_DAYS}" step="1" value="${Math.max(1, Math.floor(Number(defaultDays) || 1))}">
+        <input type="number" name="rewindDays" min="1" max="${MAX_AUTOMATIC_CALENDAR_DAYS}" step="1" required value="${parseRewindDays(defaultDays) ?? 1}">
       </label>
       <p class="fblqa-rest-note">${escapeHtml(qaLocalize("StateProgression.RewindWarning", "Rewinding only moves the Calendaria processed-day marker backwards and does NOT reverse already applied injury, condition, or addiction changes. Those days will become pending again."))}</p>
     </form>`;
@@ -1683,21 +1698,30 @@ function promptRewindDays({ actorName = null, defaultDays = 1 } = {}) {
     const dialog = createFoundryDialog({
       title: qaLocalize("StateProgression.RewindTitle", "Rewind Calendaria processed days"),
       content,
+      closeOnSubmit: false,
       buttons: {
         rewind: {
           icon: '<i class="fas fa-clock-rotate-left"></i>',
           label: qaLocalize("StateProgression.RewindApply", "Rewind"),
           callback: (html, _event, button, renderedDialog) => {
             const form = findDialogForm(button?.form ?? renderedDialog ?? html, "form");
-            const raw = Number(form?.querySelector?.('input[name="rewindDays"]')?.value);
-            const safeDays = Number.isFinite(raw) ? Math.max(1, Math.min(MAX_AUTOMATIC_CALENDAR_DAYS, Math.floor(raw))) : 1;
-            finish(safeDays);
+            const days = parseRewindDays(form?.querySelector?.('input[name="rewindDays"]')?.value);
+            if (days === null) {
+              ui.notifications?.warn?.(qaLocalize("StateProgression.InvalidRewindDays",
+                "Enter a whole number between 1 and {max}.", { max: MAX_AUTOMATIC_CALENDAR_DAYS }));
+              return;
+            }
+            finish(days);
+            return (renderedDialog ?? dialog).close?.();
           }
         },
         cancel: {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Cancel"),
-          callback: () => finish(null)
+          callback: (_html, _event, _button, renderedDialog) => {
+            finish(null);
+            return (renderedDialog ?? dialog).close?.();
+          }
         }
       },
       default: "rewind",
@@ -1766,14 +1790,19 @@ export async function rewindActorCalendarMarker(actor, days = 1, context = getCa
   return outcome;
 }
 
+function parseRewindDays(value) {
+  const days = readNumericValue(value);
+  return Number.isInteger(days) && days >= 1 && days <= MAX_AUTOMATIC_CALENDAR_DAYS ? days : null;
+}
+
 function normalizeRewindRequest(days, context, api, { requireCurrentDay = false } = {}) {
   const calendarId = String(context?.calendarId ?? "").trim();
   const normalizedCurrentDate = normalizeCalendariaDate(context?.date);
   if (!calendarId || !normalizedCurrentDate || !api?.addDays || !api?.daysBetween) {
     throw progressionError("calendaria-unavailable", "Calendaria context is unavailable");
   }
-  const safeDays = Math.floor(Number(days));
-  if (!Number.isInteger(safeDays) || safeDays < 1 || safeDays > MAX_AUTOMATIC_CALENDAR_DAYS) {
+  const safeDays = parseRewindDays(days);
+  if (safeDays === null) {
     throw new RangeError(`Rewind days must be an integer between 1 and ${MAX_AUTOMATIC_CALENDAR_DAYS}`);
   }
   return { context: { ...context, calendarId, date: normalizedCurrentDate }, api, days: safeDays, requireCurrentDay };
@@ -2137,6 +2166,11 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
     if (!plainValuesEqual(current, operation)) throw calendarRecoveryError(current);
     await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION, { render: false });
   };
+  const rejectUnstarted = async error => {
+    try { await discardUnstarted(); }
+    catch (cleanupError) { console.error(`${MODULE_ID} | could not clear the unstarted Calendaria journal`, cleanupError); }
+    throw error;
+  };
   let approvalFailed = false;
   const beforeApply = () => {
     try {
@@ -2155,7 +2189,7 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
     ...calendarApplyOptions(), beforeApply, pauseForPendingAddiction: true
   }).catch(async error => {
     // The custom-condition lock is acquired before any daily action is sent.
-    if (approvalFailed || error?.code === "actor-mutation-busy") await discardUnstarted();
+    if (approvalFailed || error?.code === "actor-mutation-busy") return rejectUnstarted(error);
     throw error;
   });
   if (applied.pausedForAddiction) {
@@ -2163,8 +2197,7 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
     return applied;
   }
   if (applied.stalePlan) {
-    await discardUnstarted();
-    throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
+    return rejectUnstarted(progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр.")));
   }
   const finished = { ...operation, phase: "applied", failures: calendarFailureIds(applied.failed) };
   await writeOperation(finished);
@@ -2458,6 +2491,12 @@ function resolveAssignedActorEntry(actorId) {
   const entry = getAssignedPlayerActors().find((candidate) => candidate.actor.id === id);
   if (!entry) throw progressionError("actor-not-assigned", "Actor is not assigned to a player");
   return entry;
+}
+
+function assertAssignedCalendarActor(actor) {
+  const live = resolveAssignedActorEntry(actor.id);
+  if (live.actor !== actor) throw progressionError("actor-not-assigned", "The assigned actor changed");
+  return live;
 }
 
 function assertRequesterAssignedToActor(entry, user) {

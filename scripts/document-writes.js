@@ -134,12 +134,16 @@ export async function clearDocumentFlagNullVerified(document, scope, key, docume
   if (current == null) return false;
 
   const update = { [`flags.${scope}.${key}`]: null };
-  if (typeof document?.update === "function") {
-    await document.update(update, hasDocumentOptions(documentOptions) ? documentOptions : {});
-  } else if (typeof document?.setFlag === "function") {
-    await document.setFlag(scope, key, null);
-  } else {
-    throw createCodedError("write-unavailable", `Cannot clear flag ${scope}.${key}`);
+  try {
+    if (typeof document?.update === "function") {
+      await document.update(update, hasDocumentOptions(documentOptions) ? documentOptions : {});
+    } else if (typeof document?.setFlag === "function") {
+      await document.setFlag(scope, key, null);
+    } else {
+      throw createCodedError("write-unavailable", `Cannot clear flag ${scope}.${key}`);
+    }
+  } catch (error) {
+    if (readDocumentFlag(document, scope, key) != null) throw error;
   }
 
   const persisted = readDocumentFlag(document, scope, key);

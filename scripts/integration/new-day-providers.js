@@ -12,6 +12,9 @@ const FA_NON_ICON_CLASSES = new Set([
 ]);
 const BUILD_OPERATION = "integration.new-day.build-provider";
 const APPLY_OPERATION = "integration.new-day.apply-provider";
+const PRE_DISPATCH_ERRORS = new Set([
+  "unknown-provider", "stale-provider-action", "provider-registration-changed", "provider-preflight-failed", "duplicate-provider-action"
+]);
 const providers = new Map();
 const enqueueProviderApply = createObjectOperationQueue();
 let bridgeRegistered = false;
@@ -70,8 +73,7 @@ export async function buildNewDayProviderActions(actor) {
 }
 
 export async function applyNewDayProviderAction(actor, action, options = {}) {
-  const provider = getNewDayProvider(action?.providerId);
-  if (!provider) throw new Error(`Missing new-day provider: ${action?.providerId ?? "<empty>"}`);
+  const provider = requireProvider(action?.providerId);
 
   return executeAsActiveGM(APPLY_OPERATION, {
     providerId: provider.id,
@@ -81,6 +83,10 @@ export async function applyNewDayProviderAction(actor, action, options = {}) {
     actionId: action.providerActionId,
     suppressChat: Boolean(options.suppressChat)
   });
+}
+
+export function wasProviderActionRejected(error) {
+  return PRE_DISPATCH_ERRORS.has(error?.code);
 }
 
 export function describeNewDayProviderAction(action) {
@@ -222,9 +228,14 @@ async function handleApplyProviderAction(payload, context) {
       activeGM: context.activeGM,
       isRemote: context.isRemote
     });
-    const rawActions = await provider.buildActions(actor, buildContext);
+    let freshActions;
+    try {
+      freshActions = normalizeProviderActions(provider, await provider.buildActions(actor, buildContext));
+    } catch (error) {
+      if (wasProviderActionRejected(error)) throw error;
+      throw Object.assign(createCodedError("provider-preflight-failed", "Could not rebuild the selected New Day action."), { cause: error });
+    }
     assertCurrentProvider(provider);
-    const freshActions = normalizeProviderActions(provider, rawActions);
     const actionId = normalizeProviderActionId(payload?.actionId ?? payload?.action?.id, 0);
     const action = freshActions.find(candidate => candidate.providerActionId === actionId)?.providerAction;
     const liveUser = requireLiveApplyAuthority(actor, context);
@@ -240,8 +251,7 @@ async function handleApplyProviderAction(payload, context) {
     try {
       result = await provider.applyAction(actor, action, liveContext) ?? {};
     } catch (error) {
-      // Only the bridge's comparison can guarantee rejection before mutation.
-      if (error?.code === "stale-provider-action") {
+      if (wasProviderActionRejected(error)) {
         throw Object.assign(createCodedError("provider-action-failed", error.message), { cause: error });
       }
       throw error;

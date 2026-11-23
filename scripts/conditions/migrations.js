@@ -11,7 +11,7 @@ import {
 import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
-import { createCodedError, plainValuesEqual } from "../document-writes.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, plainValuesEqual, readDocumentFlag, setDocumentFlagVerified } from "../document-writes.js";
 import { getProperty } from "../actor-data.js";
 import { enqueueActorMutationOperation } from "../operation-queue.js";
 import {
@@ -80,7 +80,7 @@ async function migrateLegacyActorFlags(actor) {
   setIfMissing(update, actor, FLAGS.LIST, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LIST));
   setIfMissing(update, actor, FLAGS.LAYOUT_COLUMNS, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LAYOUT_COLUMNS));
   if (Object.keys(update).length) {
-    await actor.update(update, { render: false });
+    await actor.update(clonePlainJson(update), { render: false });
     assertMigrationFields(actor, update);
   }
   await actor.update({ [`flags.-=${LEGACY_MODULE_ID}`]: null }, { render: false });
@@ -138,13 +138,15 @@ function assertMigrationFields(document, fields) {
 
 async function persistItemMigration(actor, itemUpdates) {
   if (!itemUpdates.length) return;
-  await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+  await actor.updateEmbeddedDocuments("Item", clonePlainJson(itemUpdates), { render: false });
   for (const { _id, ...fields } of itemUpdates) {
     const item = getActorItemById(actor, _id);
     if (item) assertMigrationFields(item, fields);
   }
 }
 
+
+const ORDER_MIGRATION = "conditions.pendingOrderMigration";
 
 function isArcEntry(name) {
   const value = String(name || "").toUpperCase();
@@ -163,9 +165,41 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 
   const list = foundry.utils.deepClone(Array.isArray(customConditions) ? customConditions : []);
   const injuries = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury");
-  const itemOrders = new Map();
-  let customChanged = false;
+  const pending = readDocumentFlag(actor, MODULE_ID, ORDER_MIGRATION);
+  const orders = pending ?? planConditionOrders(list, injuries);
+  if (!orders.custom.length && !orders.items.length) return { changed: false, list };
+  const options = { render: false };
+  if (!pending) await setDocumentFlagVerified(actor, MODULE_ID, ORDER_MIGRATION, orders, options, { replace: true });
 
+  const customOrders = new Map(orders.custom);
+  let customChanged = false;
+  for (const condition of list) {
+    const order = customOrders.get(condition.id);
+    if (order === undefined || Number(condition.order) === order) continue;
+    condition.order = order;
+    customChanged = true;
+  }
+  if (customChanged) await setDocumentFlagVerified(actor, MODULE_ID, FLAGS.LIST, list, options);
+
+  const itemOrders = orders.items.filter(([id, order]) => {
+    const item = getActorItemById(actor, id);
+    return item && item.getFlag?.(MODULE_ID, FLAGS.ORDER) !== order;
+  });
+  if (itemOrders.length) {
+    const updates = itemOrders.map(([id, order]) => ({ _id: id, [flagUpdatePath(FLAGS.ORDER)]: order }));
+    await actor.updateEmbeddedDocuments("Item", updates, options);
+    for (const [id, order] of itemOrders) {
+      const item = getActorItemById(actor, id);
+      assertPersistedMigration(!item || item.getFlag?.(MODULE_ID, FLAGS.ORDER) === order,
+        `Item condition order was not persisted for ${id}`);
+    }
+  }
+  await clearDocumentFlagNullVerified(actor, MODULE_ID, ORDER_MIGRATION, options);
+  return { changed: true, list };
+}
+
+function planConditionOrders(list, injuries) {
+  const orders = { custom: [], items: [] };
   for (const arcGroup of [true, false]) {
     const entries = [];
     let stableIndex = 0;
@@ -202,41 +236,13 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
     entries.forEach((entry, index) => {
       const order = index * 10;
       if (entry.kind === "custom") {
-        if (Number(entry.condition.order) !== order) {
-          entry.condition.order = order;
-          customChanged = true;
-        }
-        return;
-      }
-
-      if (Number(entry.item.getFlag?.(MODULE_ID, FLAGS.ORDER)) !== order) {
-        itemOrders.set(entry.item.id, order);
+        if (Number(entry.condition.order) !== order) orders.custom.push([entry.condition.id, order]);
+      } else if (entry.item.getFlag?.(MODULE_ID, FLAGS.ORDER) !== order) {
+        orders.items.push([entry.item.id, order]);
       }
     });
   }
-
-  if (customChanged) {
-    await actor.update({ [flagUpdatePath(FLAGS.LIST)]: list }, { render: false });
-    if (typeof actor.getFlag === "function") {
-      assertPersistedMigration(
-        plainValuesEqual(actor.getFlag(MODULE_ID, FLAGS.LIST), list),
-        `Custom condition order was not persisted for ${actor.id}`
-      );
-    }
-  }
-  if (itemOrders.size) {
-    const updates = Array.from(itemOrders, ([id, order]) => ({ _id: id, [flagUpdatePath(FLAGS.ORDER)]: order }));
-    await actor.updateEmbeddedDocuments("Item", updates, { render: false });
-    for (const [id, order] of itemOrders) {
-      const item = getActorItemById(actor, id);
-      assertPersistedMigration(
-        !item || Number(item.getFlag?.(MODULE_ID, FLAGS.ORDER)) === order,
-        `Item condition order was not persisted for ${id}`
-      );
-    }
-  }
-
-  return { changed: customChanged || itemOrders.size > 0, list };
+  return orders;
 }
 
 export async function migrateActorData(actor) {

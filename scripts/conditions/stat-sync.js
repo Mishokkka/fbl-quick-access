@@ -1,5 +1,6 @@
 import { MODULE_ID } from "./constants.js";
 import { renderExpandedConditions } from "./main.js";
+import { getStatProviders } from "../integration/stat-providers.js";
 
 const scheduled = new WeakMap();
 
@@ -33,7 +34,7 @@ function collectApps(actor) {
 /** Sync other views after a deliberately render-suppressed Document write. */
 export function scheduleStatSync(actor, options = {}, userId = null, renderer = renderExpandedConditions, changes = null) {
   if (options.render !== false || actor?.type !== "character") return;
-  if (changes !== null && !isRelevantStatActorUpdate(changes)) return;
+  if (changes !== null && !isRelevantStatActorUpdate(changes) && !getStatProviders().length) return;
   const apps = collectApps(actor);
   for (const app of apps) {
     if ((app.actor ?? app.document)?.uuid !== actor.uuid || app.rendered === false) continue;

@@ -5,17 +5,29 @@ import { qaLocalize } from "./i18n.js";
 import { findGameUser, makeSocketRequestId } from "./socket-utils.js";
 
 const LOCK_ID = "fblqaActorLock01";
+const RECOVERY_LOCK_ID = "fblqaRecover0001";
 const LOCK_FLAG = "mutationLock";
 const LOCK_OWNER = "mutationLockOwner";
 const localLocks = new Set();
 
-function actorLocks(actor) {
-  const effects = actor?.getEmbeddedCollection?.("ActiveEffect");
-  return Array.from(effects?.values() ?? [], effect => ({
+function readLocks(effects) {
+  return Array.from(effects ?? [], effect => ({
     id: effect.id,
     token: readDocumentFlag(effect, MODULE_ID, LOCK_FLAG) ?? null,
     ownerId: readDocumentFlag(effect, MODULE_ID, LOCK_OWNER) ?? null
-  })).filter(lock => lock.id === LOCK_ID || lock.token);
+  })).filter(lock => lock.id !== RECOVERY_LOCK_ID && (lock.id === LOCK_ID || lock.token))
+    .sort((left, right) => left.id.localeCompare(right.id));
+}
+
+function actorLocks(actor) {
+  return readLocks(actor?.getEmbeddedCollection?.("ActiveEffect")?.values());
+}
+
+async function persistedActorLocks(actor) {
+  const Effect = globalThis.CONFIG?.ActiveEffect?.documentClass;
+  if (!Effect?.database?.get) return actorLocks(actor);
+  const effects = await Effect.database.get(Effect, { action: "get", parent: actor, query: {} });
+  return readLocks(effects);
 }
 
 export async function recoverActorMutationLock(actor) {
@@ -35,11 +47,17 @@ export async function recoverActorMutationLock(actor) {
     icon: "fas fa-unlock"
   });
   if (!confirmed || !globalThis.game?.user?.isGM) return false;
-  if (!plainValuesEqual(actorLocks(actor), locks) || locks.some(stillInUse)) throw lockUnavailable();
-  const ids = locks.map(lock => lock.id);
-  await actor.deleteEmbeddedDocuments("ActiveEffect", ids, { render: false });
-  if (actorLocks(actor).some(lock => ids.includes(lock.id))) throw lockUnavailable();
-  return true;
+
+  // Foundry deletes by ID only. Serialize recovery across clients, then verify
+  // the abandoned token through the database before passing that ID to delete.
+  return withLockEffect(actor, RECOVERY_LOCK_ID, "Quick Access — Lock recovery", async () => {
+    const persisted = await persistedActorLocks(actor);
+    if (!plainValuesEqual(persisted, locks) || locks.some(stillInUse)) throw lockUnavailable();
+    await actor.deleteEmbeddedDocuments("ActiveEffect", locks.map(lock => lock.id), { render: false });
+    const remaining = await persistedActorLocks(actor);
+    if (remaining.some(lock => locks.some(removed => plainValuesEqual(lock, removed)))) throw lockUnavailable();
+    return true;
+  });
 }
 
 function lockUnavailable() {
@@ -51,25 +69,26 @@ function lockUnavailable() {
 // disabled and has no changes or statuses.
 export async function withActorMutationLock(actor, operation) {
   if (!actor?.getEmbeddedCollection) return operation();
-  const token = makeSocketRequestId();
-  const effects = actor.getEmbeddedCollection("ActiveEffect");
-  const readLock = () => actor.getEmbeddedCollection("ActiveEffect").get(LOCK_ID);
-  if (effects.has(LOCK_ID)) throw lockUnavailable();
   // Older builds used several effect IDs for locks.
-  for (const effect of effects.values()) {
-    if (readDocumentFlag(effect, MODULE_ID, LOCK_FLAG)) throw lockUnavailable();
-  }
+  if (actorLocks(actor).length) throw lockUnavailable();
+  return withLockEffect(actor, LOCK_ID, "Quick Access — Operation in progress", operation);
+}
+
+async function withLockEffect(actor, id, name, operation) {
+  const token = makeSocketRequestId();
+  const readLock = () => actor.getEmbeddedCollection("ActiveEffect").get(id);
+  if (readLock()) throw lockUnavailable();
 
   let created;
   try {
     [created] = await actor.createEmbeddedDocuments("ActiveEffect", [{
-      _id: LOCK_ID, name: "Quick Access — Operation in progress", disabled: true, transfer: false, statuses: [], changes: [],
+      _id: id, name, disabled: true, transfer: false, statuses: [], changes: [],
       flags: { [MODULE_ID]: { [LOCK_FLAG]: token, [LOCK_OWNER]: globalThis.game?.user?.id ?? null } }
     }], { keepId: true, render: false });
   } catch (error) {
     throw Object.assign(lockUnavailable(), { cause: error });
   }
-  if (created?.id !== LOCK_ID || readDocumentFlag(readLock(), MODULE_ID, LOCK_FLAG) !== token) throw lockUnavailable();
+  if (created?.id !== id || readDocumentFlag(readLock(), MODULE_ID, LOCK_FLAG) !== token) throw lockUnavailable();
 
   localLocks.add(token);
   try {
@@ -77,7 +96,7 @@ export async function withActorMutationLock(actor, operation) {
   } finally {
     try {
       if (readDocumentFlag(readLock(), MODULE_ID, LOCK_FLAG) === token) {
-        await actor.deleteEmbeddedDocuments("ActiveEffect", [LOCK_ID], { render: false });
+        await actor.deleteEmbeddedDocuments("ActiveEffect", [id], { render: false });
         if (readDocumentFlag(readLock(), MODULE_ID, LOCK_FLAG) === token) throw lockUnavailable();
       }
     } catch (error) {

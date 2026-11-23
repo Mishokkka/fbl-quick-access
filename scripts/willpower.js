@@ -12,6 +12,7 @@ const WILLPOWER_LABEL_PATTERN = /(Willpower|Сила\s+воли)/i;
 let activePopover = null;
 let activeOutsideClickHandler = null;
 let activeKeydownHandler = null;
+const pendingTalentSaves = new Set();
 
 /**
  * Adds two controls to the character header:
@@ -151,10 +152,10 @@ function openWillpowerTalentPopover(app, actor, anchor) {
 
   const saved = getWillpowerTalents(actor);
   const talents = getActorTalents(actor);
+  const key = actorKey(actor);
   const popover = document.createElement("div");
   popover.classList.add("fblqa-wp-popover");
-  popover.dataset.actorId = actor.id ?? "";
-  popover.dataset.actorKey = actorKey(actor);
+  popover.dataset.actorKey = key;
 
   popover.innerHTML = `
     <div class="fblqa-wp-popover-title">${escapeHtml(qaLocalize("Willpower.Title", "Willpower"))}</div>
@@ -186,11 +187,10 @@ function openWillpowerTalentPopover(app, actor, anchor) {
   });
 
   const saveButton = popover.querySelector('[data-action="save"]');
-  let saving = false;
   saveButton?.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (saving) return;
+    if (pendingTalentSaves.has(key)) return;
 
     if (!canModifyActor(actor)) {
       warnCannotModifyActor();
@@ -205,18 +205,18 @@ function openWillpowerTalentPopover(app, actor, anchor) {
       return;
     }
 
-    saving = true;
+    pendingTalentSaves.add(key);
     saveButton.disabled = true;
     try {
-      await saveWillpowerTalents(actor, { kinTalentId, professionalTalentId }, { render: false });
+      if (!await saveWillpowerTalents(actor, { kinTalentId, professionalTalentId }, { render: false })) return;
       ui.notifications?.info?.(qaLocalize("Willpower.TalentsSaved", "Таланты для расчёта Willpower сохранены."));
-      closeWillpowerTalentPopover();
-      rerenderSheet(app);
+      if (activePopover === popover) closeWillpowerTalentPopover();
+      if (activePopover?.dataset.actorKey !== key) rerenderSheet(app);
     } catch (error) {
       console.error(`${MODULE_ID} | failed to save Willpower talent settings`, error);
       ui.notifications?.error?.(qaLocalize("Willpower.SaveFailed", "Не удалось сохранить таланты для Willpower."));
     } finally {
-      saving = false;
+      pendingTalentSaves.delete(key);
       if (saveButton.isConnected) saveButton.disabled = false;
     }
   });
@@ -242,10 +242,7 @@ function openWillpowerTalentPopover(app, actor, anchor) {
 }
 
 export function closeWillpowerTalentPopover(actorOrKey = null) {
-  if (actorOrKey && activePopover) {
-    const key = typeof actorOrKey === "string" ? actorOrKey : actorKey(actorOrKey);
-    if (activePopover.dataset.actorKey !== key && activePopover.dataset.actorId !== key) return;
-  }
+  if (actorOrKey && activePopover?.dataset.actorKey !== actorKey(actorOrKey)) return;
   if (activeOutsideClickHandler) document.removeEventListener("mousedown", activeOutsideClickHandler, true);
   if (activeKeydownHandler) document.removeEventListener("keydown", activeKeydownHandler, true);
   activeOutsideClickHandler = null;
@@ -450,8 +447,10 @@ function findWillpowerAnchorNode(root) {
   const wpInput = root?.querySelector?.(`input[name="${WP_PATH}"]`);
   const container = wpInput?.closest?.("tr, .bio-stat, .willpower, .form-group, div");
   if (container && !container.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
-    const labelEl = container.querySelector?.("label, th, td:first-child, h3, h4, span");
-    if (labelEl) {
+    const labels = wpInput.labels?.length ? Array.from(wpInput.labels)
+      : Array.from(container.querySelectorAll?.("label, th, td:first-child, h3, h4, span") ?? [])
+        .filter(label => WILLPOWER_LABEL_PATTERN.test(label.textContent));
+    for (const labelEl of labels) {
       const textNode = firstSafeTextNode(labelEl);
       if (textNode) return textNode;
     }

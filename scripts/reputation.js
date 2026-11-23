@@ -233,11 +233,13 @@ export function openReputationDialog(app, actor) {
 
     return enqueueReputationSave(actor, async () => {
       if (borrowed && REPUTATION_DRAFTS.get(actor) !== borrowed) {
+        const matchesSaved = plainValuesEqual(getReputationEntries(actor), entries);
         if (localRevision === revision) {
           dirty = false;
-          setStatus(status, "", "");
+          if (!matchesSaved) setStatus(status, qaLocalize("Reputation.DraftSuperseded", "Reputation changed. Reopen the dialog to use the saved entries."), "is-error");
+          else setStatus(status, "", "");
         }
-        return true;
+        return matchesSaved;
       }
       if (!await saveReputationEntries(actor, entries, { render: false })) {
         throw createCodedError("write-not-persisted", "Reputation entries were not saved.");
@@ -299,7 +301,7 @@ export function openReputationDialog(app, actor) {
             globalThis.clearTimeout?.(saveTimeout);
             saveTimeout = null;
           }
-          if (!dirty) return true;
+          if (!dirty) return plainValuesEqual(getReputationEntries(actor), collectRows(rowsRoot).map(({ entry }) => entry));
           return queueSave(rowsRoot, status);
         },
         resize

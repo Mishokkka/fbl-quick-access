@@ -528,7 +528,7 @@ await qa.rewindAllCalendarMarkers(3);
 
 ## Money transfer reconciliation
 
-If an interrupted Quick Access operation leaves a character locked, the GM can call `qa.recoverActorMutationLock(actor)` to review and confirm clearing the character's lock. Close the client that was running the operation before confirming. Review any pending transfer or condition changes before retrying. A lock held by an operation on the current client or by another connected user stays in place.
+If an interrupted Quick Access operation leaves a character locked, the GM can call `qa.recoverActorMutationLock(actor)` to review and confirm clearing the character's lock. Close the client that was running the operation before confirming. The recovery checks the persisted token so an older confirmation cannot remove a replacement lock. If recovery itself was interrupted, the GM can inspect and remove the separate **Quick Access — Lock recovery** effect after that client closes. Review any pending transfer or condition changes before retrying.
 
 Wallet writes, Mor changes, and custom-condition list writes share one queue per Actor in each client. A disabled `Quick Access — Operation in progress` effect holds the same lock across clients. Foundry v13 rejects a duplicate embedded ID on the server. If a client disconnects mid-write, a GM can remove the effect after checking the affected data and confirming the operation has stopped.
 

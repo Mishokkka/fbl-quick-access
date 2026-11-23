@@ -4,6 +4,7 @@ import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
 import {
+  canStepDurationText,
   canUserEditActor,
   createChatMessage,
   escapeHTML,
@@ -15,6 +16,7 @@ import {
 } from "./utils.js";
 import { getNextWashName, removeOtherWashStates, transitionWashLevel, isWashCondition } from "./features/wash.js";
 import {
+  acknowledgeCounterDamage,
   getAddictionState,
   applyHeatFailure,
   applyMorGain,
@@ -44,7 +46,7 @@ import {
 import { correctAddictionState, getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
-import { setDocumentFlagVerified } from "../document-writes.js";
+import { createCodedError, setDocumentFlagVerified } from "../document-writes.js";
 import { decrementFirstInteger } from "../new-day.js";
 import { enqueueActorMutationOperation } from "../operation-queue.js";
 
@@ -52,13 +54,7 @@ const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
 const STAT_DRAG_CLEANUPS = new WeakMap();
 const SPECIAL_ACTION_ITEMS = new WeakSet();
-const UNSUPPORTED_STEP_DURATION_PATTERN = /(?:\b\d*\s*d\s*\d+\b|\d+\s*[-\u2013]\s*\d+)/i;
-
-function canStepDurationText(value) {
-  const text = String(value ?? "").trim();
-  if (!text || UNSUPPORTED_STEP_DURATION_PATTERN.test(text)) return false;
-  return /(\d+)/.test(text);
-}
+let activeStatDragCleanup = null;
 
 function setConditionDetailsExpanded(row, expanded) {
   row.children(".injury-desc, .condition-desc").stop(true, true).toggle(expanded);
@@ -288,8 +284,16 @@ export async function renderExpandedConditions(app, html) {
     }
   }
 
+  const inputRevisions = new WeakMap();
+  const trackTimerEdit = event => {
+    const input = event.currentTarget;
+    inputRevisions.set(input, (inputRevisions.get(input) ?? 0) + 1);
+  };
+  html.find(".conditions-tab").off("input", ".condition-time").on("input", ".condition-time", trackTimerEdit);
+
   function editCustomField(input, field, edit, updateInput = false) {
     const id = String(input.closest(".condition-row").data("condition-id") || "");
+    const revision = inputRevisions.get(input[0]);
     let value;
     return mutateCustomConditions(list => {
       const entry = list.find(condition => condition.id === id);
@@ -299,7 +303,7 @@ export async function renderExpandedConditions(app, html) {
       entry[field] = value;
       return true;
     }, () => {
-      if (updateInput && value !== undefined) input.val(value);
+      if (updateInput && value !== undefined && inputRevisions.get(input[0]) === revision) input.val(value);
     });
   }
 
@@ -315,7 +319,7 @@ export async function renderExpandedConditions(app, html) {
     if (!editable) return;
 
     const customOrders = new Map();
-    const itemUpdates = [];
+    const itemOrders = new Map();
 
     html.find(".conditions-rows > [data-row-kind]").each((i, el) => {
       const row = $(el);
@@ -328,7 +332,7 @@ export async function renderExpandedConditions(app, html) {
         if (id) customOrders.set(id, order);
       } else if (kind === "item") {
         const itemId = String(row.data("item-id") || "");
-        if (itemId) itemUpdates.push({ _id: itemId, [flagUpdatePath(FLAGS.ORDER)]: order });
+        if (itemId) itemOrders.set(itemId, order);
       }
     });
 
@@ -342,8 +346,15 @@ export async function renderExpandedConditions(app, html) {
       }
       return changed;
     }, async () => {
-      if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+      if (!itemOrders.size) return;
+      const updates = Array.from(itemOrders, ([id, order]) => ({ _id: id, [flagUpdatePath(FLAGS.ORDER)]: order }));
+      await app.actor.updateEmbeddedDocuments("Item", updates, { render: false });
+      if (Array.from(itemOrders).some(([id, order]) => app.actor.items.get(id)?.getFlag(MODULE_ID, FLAGS.ORDER) !== order)) {
+        throw createCodedError("write-not-persisted", "Injury order was not saved.");
+      }
     });
+    customConditions = getLiveCustomConditions();
+    await refreshRows();
   }
 
 
@@ -419,7 +430,20 @@ export async function renderExpandedConditions(app, html) {
     SPECIAL_ACTION_ITEMS.add(item);
     row.find("button, select, input").prop("disabled", true);
     let result;
-    try { result = await operation(item); }
+    try {
+      result = await Promise.resolve(operation(item)).catch(async error => {
+        if (error?.code !== "damage-recovery-required") throw error;
+        const confirmed = await confirmDangerAction({
+          title: localize("Notifications.ReviewDamage", "Review interrupted damage"),
+          message: error.fblqaUserMessage,
+          warning: localize("Notifications.ReviewDamageHint", "Keep the correct attribute values on the sheet. Confirm, then press + again to finish the counter change."),
+          confirmLabel: localize("Notifications.KeepDamageValues", "Keep current attributes"),
+          cancelLabel: localize("Delete.ConfirmNo", "Cancel")
+        });
+        if (confirmed) await acknowledgeCounterDamage(app.actor, item, error.damageId, { render: false });
+        return null;
+      });
+    }
     catch (error) {
       console.error(`${MODULE_ID} | condition action failed`, error);
       const userMessage = error?.fblqaUserMessage || localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry.");
@@ -514,7 +538,7 @@ export async function renderExpandedConditions(app, html) {
     const item = app.actor.items.get($(ev.currentTarget).data("item-id"));
     if (item) {
       await updateItemAndRefresh(item, { "system.lethal": "no" }, $(ev.currentTarget).closest(".injury-row"));
-      ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: item.name }));
+      ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: escapeHTML(item.name) }));
     }
   });
 
@@ -579,11 +603,11 @@ export async function renderExpandedConditions(app, html) {
       }, { render: false });
 
       if (action === "fail") {
-        ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name: item.name }));
+        ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
       } else if (action === "prof") {
-        ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name: item.name }));
+        ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
       } else if (action === "normal") {
-        ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name: item.name }));
+        ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name: escapeHTML(item.name) }));
       }
     } else {
       await item.update({
@@ -658,6 +682,7 @@ export async function renderExpandedConditions(app, html) {
     await runSpecialItemAction(ev, async item => {
       if (await askAddictionDose(false) !== true) return;
       const result = await relapseAddiction(app.actor, item, { documentOptions: { render: false } });
+      if (!result?.changed || result.resumed) return result;
       try { await createChatMessage({ speaker: ChatMessage.getSpeaker({ actor: app.actor }), content: buildAddictionRelapseMessage(app.actor.name, item.name) }); }
       catch (error) { console.error(`${MODULE_ID} | addiction relapse chat failed`, error); }
       return result;
@@ -838,9 +863,10 @@ export async function renderExpandedConditions(app, html) {
   const cancelActiveDrag = () => {
     if (!pointerDrag) return;
     if (pointerDrag.frame) cancelAnimationFrame(pointerDrag.frame);
-    $(document).off("mousemove.fblecSort mouseup.fblecSort");
+    $(document).off("mousemove.fblecSort", onDragMove).off("mouseup.fblecSort", onDragUp);
     $(pointerDrag.row).removeClass("fblec-dragging");
     pointerDrag = null;
+    if (activeStatDragCleanup === cancelActiveDrag) activeStatDragCleanup = null;
   };
   STAT_DRAG_CLEANUPS.get(app)?.();
   STAT_DRAG_CLEANUPS.set(app, cancelActiveDrag);
@@ -848,15 +874,12 @@ export async function renderExpandedConditions(app, html) {
   async function finishPointerDrag(save = true) {
     if (!pointerDrag) return;
 
-    const row = pointerDrag.row;
     if (pointerDrag.frame) {
       cancelAnimationFrame(pointerDrag.frame);
       pointerDrag.frame = 0;
       applyPointerDragPosition();
     }
-    $(document).off("mousemove.fblecSort mouseup.fblecSort");
-    $(row).removeClass("fblec-dragging");
-    pointerDrag = null;
+    cancelActiveDrag();
 
     if (save && editable) await persistRowOrder();
   }
@@ -870,6 +893,8 @@ export async function renderExpandedConditions(app, html) {
     ev.preventDefault();
     ev.stopPropagation();
 
+    activeStatDragCleanup?.();
+    activeStatDragCleanup = cancelActiveDrag;
     pointerDrag = {
       row,
       startX: ev.clientX,
@@ -883,28 +908,27 @@ export async function renderExpandedConditions(app, html) {
       twoColumns: html.find(".conditions-tab").hasClass("fblec-columns-2")
     };
 
-    $(document).off("mousemove.fblecSort mouseup.fblecSort");
-    $(document).on("mousemove.fblecSort", (moveEv) => {
-      if (!pointerDrag) return;
-
-      const distance = Math.abs(moveEv.clientX - pointerDrag.startX) + Math.abs(moveEv.clientY - pointerDrag.startY);
-      if (!pointerDrag.active && distance < 4) return;
-      if (!pointerDrag.active) {
-        pointerDrag.active = true;
-        $(pointerDrag.row).addClass("fblec-dragging");
-      }
-
-      pointerDrag.pendingX = moveEv.clientX;
-      pointerDrag.pendingY = moveEv.clientY;
-      if (!pointerDrag.frame) pointerDrag.frame = requestAnimationFrame(applyPointerDragPosition);
-    });
-
-    $(document).on("mouseup.fblecSort", async () => {
-      const shouldSave = Boolean(pointerDrag?.active);
-      await finishPointerDrag(shouldSave);
-    });
+    $(document).on("mousemove.fblecSort", onDragMove).on("mouseup.fblecSort", onDragUp);
   });
 
+  function onDragMove(moveEv) {
+    if (!pointerDrag) return;
+
+    const distance = Math.abs(moveEv.clientX - pointerDrag.startX) + Math.abs(moveEv.clientY - pointerDrag.startY);
+    if (!pointerDrag.active && distance < 4) return;
+    if (!pointerDrag.active) {
+      pointerDrag.active = true;
+      $(pointerDrag.row).addClass("fblec-dragging");
+    }
+
+    pointerDrag.pendingX = moveEv.clientX;
+    pointerDrag.pendingY = moveEv.clientY;
+    if (!pointerDrag.frame) pointerDrag.frame = requestAnimationFrame(applyPointerDragPosition);
+  }
+
+  async function onDragUp() {
+    await finishPointerDrag(Boolean(pointerDrag?.active));
+  }
 
   async function confirmStatDelete(name, type = "entry") {
     const fallbackName = type === "condition" ? localize("Delete.ConditionFallback", "condition") : localize("Delete.InjuryFallback", "injury");

@@ -1397,8 +1397,12 @@ export function queueProfileSave(actor, state, status, delay = 350, path = null)
   const persistedPath = normalizeBiographySavePath(path);
   const pending = SAVE_PENDING.get(key) ?? { actor, patches: new Map(), status };
   pending.status = status;
-  if (persistedPath === "*") pending.patches.clear();
-  pending.patches.set(persistedPath, cloneProfileValue(persistedPath === "*" ? state : getPathValue(state, persistedPath)));
+  if (persistedPath === "*") {
+    pending.patches.clear();
+    pending.patches.set(persistedPath, normalizeBiographyProfile(state));
+  } else {
+    pending.patches.set(persistedPath, cloneProfileValue(getPathValue(state, persistedPath)));
+  }
   SAVE_PENDING.set(key, pending);
 
   const existing = SAVE_TIMERS.get(key);

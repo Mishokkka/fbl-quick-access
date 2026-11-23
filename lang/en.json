@@ -362,6 +362,7 @@
       "AddictionPendingRoll": "Craving: {total}. Manual Endurance is required. Record Success or Failure in STAT; the cycle is unchanged.",
       "ManualChecksPending": "Manual Endurance is still required for {count} addictions. Record the outcomes in STAT.",
       "PendingBlocked": "Resolve the pending addiction Endurance in STAT before advancing another day. Other timers will not change.",
+      "PendingSave": "Finish saving the previous Addiction outcome in STAT before advancing another day.",
       "AddictionAlreadyProcessed": "This morning was already processed; no repeat roll or step was performed. Current state: {state}."
     },
     "Reputation": {
@@ -383,6 +384,7 @@
       "Saving": "Saving…",
       "Saved": "Saved",
       "Unsaved": "Unsaved changes",
+      "DraftSuperseded": "Reputation changed. Reopen the dialog to use the saved entries.",
       "SaveFailed": "Could not save Reputation.",
       "Half": "Half",
       "HalfHint": "Randomly select half of all Reputation points and check them immediately.",
@@ -591,6 +593,7 @@
       "RewindHeading": "Rewind Calendaria marker for {actor}",
       "RewindAllHeading": "Rewind Calendaria marker for all player characters",
       "RewindDaysLabel": "Days to rewind",
+      "InvalidRewindDays": "Enter a whole number between 1 and {max}.",
       "RewindWarning": "Rewinding only moves the Calendaria processed-day marker backwards and does NOT reverse already applied injury, condition, or addiction changes. Those days will become pending again.",
       "RewindApply": "Rewind",
       "RewindDone": "Marker rewound by {days} day(s) (to {date}). Days are pending again.",
@@ -772,6 +775,7 @@
     "Injury": {
       "Lethal": "LETHAL",
       "RemainingShort": "left",
+      "UnresolvedDuration": "Resolve the duration on the item before adjusting it.",
       "Remaining": "Remaining",
       "StabilizeTitle": "Stabilize injury",
       "Stabilize": "Stabilize"
@@ -812,7 +816,11 @@
       "MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load.",
       "TreatmentUnresolvedTime": "Resolve the healing duration into a number of days before applying treatment.",
       "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry.",
-      "DamageConflict": "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after})."
+      "DamageConflict": "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after}).",
+      "DamageRecoveryRequired": "The damage write was interrupted. Check the current attributes against the intended values ({targets}).",
+      "ReviewDamage": "Review interrupted damage",
+      "ReviewDamageHint": "Keep the correct attribute values on the sheet. Confirm, then press + again to finish the counter change.",
+      "KeepDamageValues": "Keep current attributes"
     },
     "Chat": {
       "Addiction": {

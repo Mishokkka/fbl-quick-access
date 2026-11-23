@@ -66,6 +66,12 @@ export function isPermanentTime(value) {
   return /permanent|постоян/i.test(String(value ?? ""));
 }
 
+export function canStepDurationText(value) {
+  const text = String(value ?? "").trim();
+  return /\d/.test(text) && !isPermanentTime(text)
+    && !/(?:\b\d*\s*d\s*\d+\b|\d+\s*[-\u2013\u2014]\s*\d+)/i.test(text);
+}
+
 export function makeCustomCondition(data = {}, fallbackOrder = 0) {
   const parsedOrder = Number(data.order);
   return {
@@ -144,11 +150,12 @@ export async function applyActorAttributeDamage(actor, plan, documentOptions) {
   }
   if (Object.keys(update).length) {
     await actor.update(update, documentOptions);
-    if (plan.some(({ path, value }) => readValue(path) !== value)) {
-      throw createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
-    }
   }
-  return plan;
+}
+
+export function remainingActorAttributeDamage(actor, plan) {
+  const source = actor._source ?? actor;
+  return plan.filter(({ path, value }) => readNumericValue(getProperty(source, path)) !== value);
 }
 
 export function canUserEditActor(actor) {

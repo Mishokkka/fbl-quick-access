@@ -27,9 +27,13 @@ function makeActor(items) {
   return {
     documentName: "Actor",
     items,
-    savedList: null,
+    flags: {},
+    getFlag(_scope, key) { return this.flags[key]; },
     async update(data) {
-      this.savedList = structuredClone(data["flags.fbl-quick-access.conditions.list"]);
+      for (const [path, value] of Object.entries(data)) {
+        const key = path.slice("flags.fbl-quick-access.".length).replace(".==", ".");
+        this.flags[key] = structuredClone(value);
+      }
     },
     async updateEmbeddedDocuments(_type, updates) {
       for (const update of updates) {
@@ -57,4 +61,22 @@ test("STAT order migration assigns unique stable order to equal-sort injuries", 
 
   const secondPass = await ensureConditionItemOrders(actor, result.list);
   assert.equal(secondPass.changed, false);
+});
+
+test("STAT order migration resumes the saved order after a partially applied reindex", async () => {
+  const wound = makeItem("wound");
+  wound.flags["conditions.order"] = 100;
+  const actor = makeActor([wound]);
+  const custom = [{ id: "custom", name: "Custom", order: 110 }];
+  const updateItems = actor.updateEmbeddedDocuments;
+  actor.updateEmbeddedDocuments = async () => {};
+  await assert.rejects(ensureConditionItemOrders(actor, custom), { code: "migration-write-not-persisted" });
+  assert.equal(actor.getFlag("", "conditions.list")[0].order, 10);
+  assert.equal(wound.flags["conditions.order"], 100);
+
+  actor.updateEmbeddedDocuments = updateItems;
+  await ensureConditionItemOrders(actor, actor.getFlag("", "conditions.list"));
+  assert.equal(wound.flags["conditions.order"], 0);
+  assert.equal(actor.getFlag("", "conditions.list")[0].order, 10);
+  assert.equal(actor.getFlag("", "conditions.pendingOrderMigration"), null);
 });

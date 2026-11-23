@@ -4,8 +4,8 @@ import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
-import { applyHeatFailure, applyMorGain, changePermanentMor, clearStaleMorGain, getAddictionState, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
-import { getAddictionMorning, getPendingAddictionTransition, handleAddictionOperation, performAddictionMorning } from "../scripts/conditions/services/addiction-service.js";
+import { acknowledgeCounterDamage, applyHeatFailure, applyMorGain, changePermanentMor, clearStaleMorGain, getAddictionState, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { getAddictionDayKey, getAddictionMorning, getPendingAddictionTransition, handleAddictionOperation, performAddictionMorning } from "../scripts/conditions/services/addiction-service.js";
 import { FLAGS, LEGACY_FLAGS, LEGACY_MODULE_ID, flagUpdatePath } from "../scripts/conditions/constants.js";
 import { migrateActorData } from "../scripts/conditions/migrations.js";
 import { recoverActorMutationLock } from "../scripts/actor-mutation-lock.js";
@@ -120,12 +120,17 @@ const context = { calendarId: "audit", date: { ...start, day: 3 } };
 
 function captureCalendarDialogs() {
   const dialogs = [];
+  class RewindForm extends HTMLElement {
+    constructor(value) { super(); this.value = value; }
+    matches(selector) { return selector === "form"; }
+    querySelector() { return { value: this.value }; }
+  }
   foundry.applications = { api: { DialogV2: class {
     constructor(config) { this.config = config; dialogs.push(this); }
     addEventListener() {}
     close() {}
     render() {}
-    submit(action) { return this.config.buttons.find(button => button.action === action).callback({}, {}, this); }
+    submit(action, days = "1") { return this.config.buttons.find(button => button.action === action).callback({}, { form: new RewindForm(days) }, this); }
   } } };
   return dialogs;
 }
@@ -182,6 +187,27 @@ test("GM can release an abandoned lock after confirmation but cannot release a l
   assert.equal(server.size, 0);
 });
 
+test("lock recovery leaves a new lock intact even when the local Actor still shows the abandoned one", async () => {
+  reset();
+  const id = "fblqaActorLock01";
+  const makeLock = token => ({ id, flags: { [scope]: { mutationLock: token } } });
+  const server = new Map([[id, makeLock("abandoned")]]);
+  const character = withEffectStore(actor(), server);
+  const previous = globalThis.CONFIG;
+  const documentClass = { database: { get: async () => [...server.values()] } };
+  globalThis.CONFIG = { ActiveEffect: { documentClass } };
+  window.confirm = () => {
+    server.set(id, makeLock("new-operation"));
+    return true;
+  };
+  try {
+    await assert.rejects(recoverActorMutationLock(character), { code: "actor-mutation-busy" });
+    assert.deepEqual([...server.values()], [makeLock("new-operation")]);
+  } finally {
+    globalThis.CONFIG = previous;
+  }
+});
+
 test("pending Heat and Mor both apply damage through the shared actor queue", async () => {
   reset();
   const heat = item("heat", { rollModifiers: {} }, "Heat");
@@ -224,6 +250,29 @@ test("retrying Heat finalization preserves a later edit of the damaged attribute
   assert.equal(character.system.attribute.strength.value, 4);
   await character.update({ "system.attribute.strength.value": 5 });
   heat.update = write;
+  await applyHeatFailure(character, heat);
+  assert.equal(character.system.attribute.strength.value, 5);
+  assert.equal(parseHeatValue(heat), 3);
+});
+
+test("an unverified Heat write can be confirmed without undoing a later recovery", async () => {
+  reset();
+  const heat = item("heat", { rollModifiers: {} }, "Heat");
+  const character = actor([heat]);
+  character.system.attribute.strength.value = 5;
+  await heat.update({ [flagUpdatePath(FLAGS.HEAT_VALUE)]: 2 });
+  const write = heat.update;
+  const checkpoint = flagUpdatePath("conditions.==heatPendingChange");
+  heat.update = patch => patch[checkpoint]?.damageInFlight === false ? undefined : write(patch);
+  await assert.rejects(applyHeatFailure(character, heat), { code: "write-not-persisted" });
+  assert.equal(character.system.attribute.strength.value, 4);
+
+  await character.update({ "system.attribute.strength.value": 5 });
+  heat.update = write;
+  const pending = heat.getFlag(scope, "conditions.heatPendingChange");
+  await assert.rejects(applyHeatFailure(character, heat), { code: "damage-recovery-required", damageId: pending.id });
+  assert.equal(character.system.attribute.strength.value, 5);
+  await acknowledgeCounterDamage(character, heat, pending.id);
   await applyHeatFailure(character, heat);
   assert.equal(character.system.attribute.strength.value, 5);
   assert.equal(parseHeatValue(heat), 3);
@@ -408,6 +457,8 @@ test("bulk rewind keeps Resolve available for an interrupted day", async () => {
   await eligible.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: context.date });
   const manager = await calendar.openStateProgressionManager();
   const rewinding = calendar.rewindAllFromGMSummary(manager);
+  await dialogs.at(-1).submit("rewind", "");
+  assert.deepEqual(calendar.getActorCalendarMarker(eligible).date, context.date);
   await dialogs.at(-1).submit("rewind");
   await rewinding;
   assert.equal(manager.statuses.get(character.id).state, "recovery");
@@ -445,7 +496,8 @@ test("changing a pending marker invalidates an open time-skip approval", async (
   assert.equal(wound.system.healingTime, "10 days");
 });
 
-for (const [change, code] of [["mode", "wrong-progression-mode"], ["date", "stale-calendar-day"], ["timer", "stale-plan"]]) {
+for (const [change, code] of [["mode", "wrong-progression-mode"], ["date", "stale-calendar-day"],
+  ["date and cleanup", "stale-calendar-day"], ["timer", "stale-plan"]]) {
   test(`Calendaria keeps the marker pending if the ${change} changes while journaling`, async () => {
     reset();
     const date = { ...start, day: 2 };
@@ -458,14 +510,17 @@ for (const [change, code] of [["mode", "wrong-progression-mode"], ["date", "stal
     const write = character.update;
     const settings = game.settings.get;
     character.update = async patch => {
+      if (change === "date and cleanup" && patch[`flags.${scope}.stateProgressionOperation`] === null) return;
       await write(patch);
       if (patch[`flags.${scope}.==stateProgressionOperation`]?.phase !== "applying") return;
       if (change === "mode") game.settings.get = (scope, key) => key === "stateProgressionMode" ? "long-rest" : settings(scope, key);
-      else if (change === "date") CALENDARIA.api.getCurrentDateTime = () => start;
+      else if (change.startsWith("date")) CALENDARIA.api.getCurrentDateTime = () => start;
       else wound.system.healingTime = "9 days";
     };
     await assert.rejects(calendar.applyCalendarDay(character, live, start, date, date, plan, ["injury:wound:healing"]), { code });
-    assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
+    const journal = character.getFlag(scope, "stateProgressionOperation");
+    if (change === "date and cleanup") assert.equal(journal.phase, "applying");
+    else assert.equal(journal, null);
     assert.deepEqual(calendar.getActorCalendarMarker(character).date, start);
     assert.deepEqual(wound.updates, []);
   });
@@ -663,14 +718,16 @@ test("a delayed request for an older Addiction day cannot overwrite the newer mo
 for (const path of [flagUpdatePath(FLAGS.ADDICTION_STATE), "system.rollModifiers.fblecAddictionStrength"]) {
   test(`Addiction resumes the saved outcome when ${path} was omitted`, async () => {
     reset();
+    game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "long-rest" : true;
     const addiction = item("addiction", { rollModifiers: {} }, "Addiction");
     const character = actor([addiction]);
+    await character.setFlag(scope, FLAGS.ADDICTION_DAY, 1);
     await saveAddictionState(addiction, { phase: "down", die: 6, daysLeft: 0, severity: 5 });
     let rolls = 0;
     globalThis.Roll = class { async evaluate() { rolls++; this.total = 4; return this; } };
     const write = addiction.update;
     addiction.update = patch => write(Object.fromEntries(Object.entries(patch).filter(([key]) => key !== path)));
-    await assert.rejects(performAddictionMorning(character, addiction, { postChat: false }), { code: "write-not-persisted" });
+    await assert.rejects(performAddictionMorning(character, addiction, { dayKey: "manual:2", newDay: true, postChat: false }), { code: "write-not-persisted" });
     assert.equal(getAddictionMorning(addiction), null);
     const saved = getPendingAddictionTransition(addiction);
     assert.equal(saved.nextState.phase, "flat");
@@ -679,6 +736,7 @@ for (const path of [flagUpdatePath(FLAGS.ADDICTION_STATE), "system.rollModifiers
     addiction.update = write;
     await performAddictionMorning(character, addiction, { postChat: false });
     assert.equal(rolls, 1);
+    assert.equal(getAddictionDayKey(character, { newDay: true }), "manual:3");
     assert.equal(getAddictionMorning(addiction).id, saved.id);
     assert.deepEqual(getAddictionState(addiction), saved.nextState);
     assert.equal(addiction.system.rollModifiers.fblecAddictionStrength.value, "-2");
@@ -686,10 +744,35 @@ for (const path of [flagUpdatePath(FLAGS.ADDICTION_STATE), "system.rollModifiers
   });
 }
 
+test("Addiction keeps the staged cure until the manual day is verified", async () => {
+  reset();
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "long-rest" : true;
+  const addiction = item("addiction", { rollModifiers: {} }, "Addiction");
+  const character = actor([addiction]);
+  await character.setFlag(scope, FLAGS.ADDICTION_DAY, 1);
+  await saveAddictionState(addiction, { phase: "up", die: 12, daysLeft: 0, severity: 5 });
+  let rolls = 0;
+  globalThis.Roll = class { async evaluate() { rolls++; this.total = 4; return this; } };
+  const write = character.update;
+  character.update = patch => Object.hasOwn(patch, flagUpdatePath(FLAGS.ADDICTION_DAY)) ? undefined : write(patch);
+  const options = { postChat: false, documentOptions: { render: false } };
+  await assert.rejects(performAddictionMorning(character, addiction, { ...options, dayKey: "manual:2", newDay: true }), { code: "write-not-persisted" });
+  assert.equal(character.items.get(addiction.id), addiction);
+  assert.equal(getPendingAddictionTransition(addiction).cured, true);
+
+  character.update = write;
+  const resumed = await performAddictionMorning(character, addiction, options);
+  assert.equal(resumed.cured, true);
+  assert.equal(rolls, 1);
+  assert.equal(character.items.get(addiction.id), undefined);
+  assert.equal(getAddictionDayKey(character, { newDay: true }), "manual:3");
+});
+
 for (const omitted of ["actor list", "item notes", "counter flag", "counter cleanup"]) {
   test(`legacy migration retains its source and retries when ${omitted} is omitted`, async () => {
     reset();
     const heat = item("heat", { healingTime: "4", rollModifiers: {} }, "Heat");
+    await heat.update({ [flagUpdatePath(FLAGS.HEAT_VALUE)]: null });
     const wound = item("wound", { healingTime: "3 days" });
     const character = actor([heat, wound]);
     const conditions = [{ id: "cold", name: "Cold", time: "3 days", order: 10 }];
@@ -766,30 +849,36 @@ test("a Calendaria day finishes its selected provider and rest actions before pa
   }
 });
 
-test("an expired provider preview leaves the day pending when no action was attempted", async () => {
-  reset();
-  initializeNewDayProviderBridge();
-  const character = actor();
-  const date = { ...start, day: 2 };
-  await setActorCalendarMarker(character, { ...context, date: start });
-  let revision = 1;
-  const unregister = registerNewDayProvider({
-    id: "audit.only-stale", category: "audit-timer",
-    buildActions: () => [{ id: "tick", revision }],
-    applyAction: () => assert.fail("the stale action must not run"),
-    describeAction: () => "", icon: () => "fa-clock"
+for (const change of ["changed action", "removed provider"]) {
+  test(`${change} leaves the day pending when no action was attempted`, async () => {
+    reset();
+    initializeNewDayProviderBridge();
+    const character = actor();
+    const date = { ...start, day: 2 };
+    await setActorCalendarMarker(character, { ...context, date: start });
+    let revision = 1;
+    let builds = 0;
+    const unregister = registerNewDayProvider({
+      id: "audit.only-stale", category: "audit-timer",
+      buildActions: () => {
+        if (++builds === 2 && change === "removed provider") unregister();
+        return [{ id: "tick", revision }];
+      },
+      applyAction: () => assert.fail("the stale action must not run"),
+      describeAction: () => "", icon: () => "fa-clock"
+    });
+    try {
+      const plan = await buildNewDayPlanWithProviders(character);
+      revision++;
+      const [id] = plan.actions.filter(action => action.providerId).map(action => action.id);
+      await assert.rejects(calendar.applyCalendarDay(character, context, start, date, date, plan, [id]), { code: "stale-plan" });
+      assert.deepEqual(getActorCalendarMarker(character).date, start);
+      assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
+    } finally {
+      unregister();
+    }
   });
-  try {
-    const plan = await buildNewDayPlanWithProviders(character);
-    revision++;
-    const [id] = plan.actions.filter(action => action.providerId).map(action => action.id);
-    await assert.rejects(calendar.applyCalendarDay(character, context, start, date, date, plan, [id]), { code: "stale-plan" });
-    assert.deepEqual(getActorCalendarMarker(character).date, start);
-    assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
-  } finally {
-    unregister();
-  }
-});
+}
 
 test("Calendaria retains failed-action IDs until their history is persisted", async () => {
   reset();
@@ -853,6 +942,35 @@ test("a reset click from the previous calendar date refreshes the summary withou
   CALENDARIA.api.getCurrentDateTime = () => ({ ...start, day: 2 });
   await calendar.resetActorFromGMSummary(shown, character.id);
   assert.deepEqual(getActorCalendarMarker(character).date, start);
+});
+
+test("an automatic day rechecks character assignment after saving its journal", async () => {
+  reset();
+  const wound = item("wound", { healingTime: "5 days" });
+  const character = assignedActor([wound]);
+  const owner = game.users.find(user => user.character === character);
+  await setActorCalendarMarker(character, { ...context, date: start });
+  const write = character.update;
+  character.update = async patch => {
+    await write(patch);
+    if (patch[`flags.${scope}.==stateProgressionOperation`]?.phase === "applying") owner.character = actor();
+  };
+  await assert.rejects(calendar.processActorAutomaticDays(character, start, context, 1, { requireAssignment: true }),
+    { code: "actor-not-assigned" });
+  assert.equal(wound.system.healingTime, "5 days");
+  assert.deepEqual(getActorCalendarMarker(character).date, start);
+  assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
+});
+
+test("Calendaria rejects incomplete years and fractional rewinds without moving the marker", async () => {
+  reset();
+  const character = assignedActor();
+  await setActorCalendarMarker(character, context);
+  assert.equal(calendar.normalizeCalendariaDate({ ...start, year: null }), null);
+  assert.equal(calendar.normalizeCalendariaDate({ ...start, year: 0 }).year, 0);
+  await assert.rejects(calendar.rewindActorCalendarMarker(character, 1.9, { ...context, api: CALENDARIA.api }), RangeError);
+  await assert.rejects(calendar.rewindAllCalendarMarkers(365.9, { ...context, api: CALENDARIA.api }), RangeError);
+  assert.deepEqual(getActorCalendarMarker(character).date, context.date);
 });
 
 for (const interactive of [false, true]) {
@@ -1222,6 +1340,22 @@ test("the BIO tab restores running and pending patches over persisted fields", a
   }
 });
 
+test("BIO uses the normalized shape of an unsaved whole-profile replacement", async () => {
+  reset();
+  const bio = await expose("scripts/biography.js", ["getBiographyDraft"]);
+  const character = actor();
+  bio.queueProfileSave(character, { background: "Notes" }, null, 10_000);
+  bio.queueProfileSave(character, { family: "Family" }, null, 10_000, "family");
+  try {
+    const draft = bio.getBiographyDraft(character);
+    assert.equal(draft.background, "Notes");
+    assert.equal(draft.family, "Family");
+    assert.ok(draft.questions && draft.identity && draft.legacy);
+  } finally {
+    await bio.flushBiographySaves(character);
+  }
+});
+
 test("whole BIO and Pilgrim Card saves drop obsolete keys while keeping migrated values", async () => {
   reset();
   const { saveBiographyProfile, savePilgrimCardProfile } = await import("../scripts/biography.js");
@@ -1501,6 +1635,19 @@ test("Long Rest records its recovery before changing any attribute", async () =>
   const retry = await rest.applyRest(null, character, { type: "long" });
   assert.equal(retry.failed, undefined);
   assert.equal(character.system.attribute.strength.value, 2);
+});
+
+test("Long Rest completes when cleanup saved successfully but its response rejected", async () => {
+  reset();
+  const character = actor();
+  const write = character.update;
+  character.update = async patch => {
+    await write(patch);
+    if (patch[`flags.${scope}.pendingRestCleanup`] === null) throw new Error("Late cleanup error");
+  };
+  assert.equal((await rest.applyRest(null, character, { type: "long" })).failed, undefined);
+  assert.equal(character.system.attribute.strength.value, 2);
+  assert.equal(character.getFlag(scope, "pendingRestCleanup"), null);
 });
 
 for (const type of ["short", "long"]) {

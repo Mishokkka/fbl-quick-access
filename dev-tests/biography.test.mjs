@@ -321,7 +321,7 @@ test("Pilgrim font labels resolve to the actual Foundry family key", async () =>
 
 
 test("Pilgrim Card is stored independently from Actor name and Forbidden Lands BIO fields", async () => {
-  const storedCard = normalizePilgrimCardProfile({
+  let storedCard = normalizePilgrimCardProfile({
     identity: { name: "Имя в карте", kin: "Human", issuingCountry: "Нованд", birthDate: "7 Хладохода 844" },
     physical: { hair: "Black", appearance: "Card-only appearance" }
   });
@@ -335,7 +335,10 @@ test("Pilgrim Card is stored independently from Actor name and Forbidden Lands B
       return null;
     },
     updates: [],
-    async update(data, options) { this.updates.push({ data, options }); }
+    async update(data, options) {
+      this.updates.push({ data, options });
+      storedCard = structuredClone(data["flags.fbl-quick-access.==pilgrimCardProfile"]);
+    }
   };
 
   const card = getPilgrimCardProfile(actor);
@@ -344,7 +347,8 @@ test("Pilgrim Card is stored independently from Actor name and Forbidden Lands B
   assert.equal(card.physical.appearance, "Card-only appearance");
 
   card.identity.name = "Новое имя только в карте";
-  await savePilgrimCardProfile(actor, card, { render: false });
+  assert.equal(await savePilgrimCardProfile(actor, card, { render: false }), true);
+  assert.equal(getPilgrimCardProfile(actor).identity.name, "Новое имя только в карте");
 
   assert.equal(actor.updates.length, 1);
   assert.deepEqual(Object.keys(actor.updates[0].data), ["flags.fbl-quick-access.==pilgrimCardProfile"]);

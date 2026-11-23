@@ -1,5 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, MODULE_ID, TEMPLATE_PATHS } from "../constants.js";
-import { escapeHTML, isPermanentTime, localize, normalizeConditionName } from "../utils.js";
+import { canStepDurationText, escapeHTML, isPermanentTime, localize, normalizeConditionName } from "../utils.js";
 import { getWashDisplayName, isWashCondition } from "../features/wash.js";
 import { getConditionKind } from "../condition-kind.js";
 import {
@@ -30,6 +30,7 @@ function buildLethalHtml(item, editable) {
   if (sys.lethal !== "yes") return "";
 
   const limit = escapeHTML(sys.limit || "0");
+  const steppable = editable && canStepDurationText(sys.limit || "0");
   if (!editable) {
     return `
       <div class="injury-lethal-wrapper">
@@ -43,9 +44,9 @@ function buildLethalHtml(item, editable) {
   return `
     <div class="injury-lethal-wrapper">
       <div class="injury-lethal">${escapeHTML(localize("Injury.Lethal", "LETHAL"))}:</div>
-      <button type="button" class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>
+      ${steppable ? `<button type="button" class="lethal-limit-btn lethal-limit-minus" data-item-id="${itemId}">-</button>` : ""}
       <input class="lethal-limit-input" value="${limit}" readonly>
-      <button type="button" class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>
+      ${steppable ? `<button type="button" class="lethal-limit-btn lethal-limit-plus" data-item-id="${itemId}">+</button>` : ""}
       <span class="lethal-limit-caption">${escapeHTML(localize("Injury.RemainingShort", "left"))}</span>
       <button type="button" class="toggle-lethal-btn" data-item-id="${itemId}" title="${escapeHTML(localize("Injury.StabilizeTitle", "Stabilize injury"))}">
         <i class="fas fa-heartbeat"></i> ${escapeHTML(localize("Injury.Stabilize", "Stabilize"))}
@@ -59,8 +60,9 @@ function buildTimeControlsHtml(item, editable) {
   const permanentClass = permanent ? "is-permanent" : "";
   const value = escapeHTML(timeStr || "0");
 
-  if (permanent || !editable) {
-    return `<input type="text" value="${value}" class="healing-time-input ${permanentClass}" readonly>`;
+  if (!editable || !canStepDurationText(timeStr || "0")) {
+    const hint = editable && !permanent ? localize("Injury.UnresolvedDuration", "Resolve the duration on the item before adjusting it.") : "";
+    return `<input type="text" value="${value}" class="healing-time-input ${permanentClass}" title="${escapeHTML(hint)}" readonly>`;
   }
 
   return `<span class="injury-healing-label">${escapeHTML(localize("Injury.Remaining", "Remaining"))}:</span>

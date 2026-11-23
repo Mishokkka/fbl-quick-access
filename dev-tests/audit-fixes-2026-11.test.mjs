@@ -267,7 +267,7 @@ test("STAT verifies embedded injury order independently of Foundry's mutated upd
       id: "wound-1", name: "Broken leg", type: "criticalInjury", system: {},
       getFlag: (_scope, key) => key === "conditions.order" ? order : undefined
     };
-    const actor = {
+    const actor = makeFlaggedActor({
       id: "stat-order-actor", documentName: "Actor", items: [injury],
       async updateEmbeddedDocuments(type, updates) {
         assert.equal(type, "Item");
@@ -277,7 +277,7 @@ test("STAT verifies embedded injury order independently of Foundry's mutated upd
           if (!veto) order = getNested(update, "flags.fbl-quick-access.conditions.order");
         }
       }
-    };
+    });
     assert.equal((await ensureConditionItemOrders(actor)).changed, true);
     assert.equal(order, 0);
     assert.equal((await ensureConditionItemOrders(actor)).changed, false);
