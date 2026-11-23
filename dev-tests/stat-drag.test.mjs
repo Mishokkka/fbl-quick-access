@@ -3,6 +3,7 @@ import assert from "node:assert/strict";
 import { bindStatDrag, cancelStatDrag } from "../scripts/conditions/features/row-drag.js";
 import { invalidateExpandedConditionsRender } from "../scripts/conditions/main.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
+import { scheduleStatSync } from "../scripts/conditions/stat-sync.js";
 
 function dragFixture(t) {
   const handlers = new Map(), frames = new Map(), classes = new Set(), cancelled = [];
@@ -68,4 +69,23 @@ test("STAT saves a live drag once and releases its document handlers", t => {
   assert.equal(saves(), 1);
   assert.equal(handlers.size, 0);
   assert.deepEqual(cancelled, [1]);
+});
+
+test("STAT waits for the drop before syncing an injury rename", { timeout: 1_000 }, async t => {
+  const { app, handlers, saves } = dragFixture(t);
+  const actor = { type: "character", uuid: "Actor.drag", apps: { app } };
+  Object.assign(app, { actor, element: { querySelector: () => true } });
+  let renders = 0;
+  const rendered = new Promise(resolve => {
+    scheduleStatSync(actor, { render: false }, "writer", () => {
+      renders += 1;
+      resolve();
+    });
+  });
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(renders, 0);
+  handlers.get("mouseup.fblecSort")();
+  await rendered;
+  assert.equal(renders, 1);
+  assert.equal(saves(), 1);
 });

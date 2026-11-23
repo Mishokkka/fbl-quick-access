@@ -80,11 +80,12 @@ export function reportPartialConditionWrite(actor, item, damage, cause) {
     ? localize("Notifications.ConditionDamageUnknown", "{actor} — {item}: damage was recorded ({attributes}), but the condition update is unconfirmed. Check the sheet manually before repeating.", details)
     : localize("Notifications.ConditionDamagePartial", "{actor} — {item}: damage was recorded ({attributes}), but the condition update failed. Check the sheet manually before repeating.", details);
   globalThis.ui?.notifications?.error?.(escapeHTML(message));
-  const gm = getActiveGM() ?? (globalThis.game?.user?.isGM ? game.user : null);
+  const gm = getActiveGM() ?? (globalThis.game?.user?.isGM ? game.user
+    : Array.from(globalThis.game?.users ?? []).find(user => user?.isGM));
   if (gm && globalThis.game?.socket?.connected !== false && globalThis.ChatMessage?.create) {
     void Promise.resolve().then(() => ChatMessage.create({ content: escapeHTML(message), whisper: [gm.id] }))
       .catch(error => console.error(`${MODULE_ID} | partial condition report failed`, error));
   }
-  return Object.assign(new Error(message, { cause }), { notified: true,
+  return Object.assign(new Error(message, { cause }), { notified: true, appliedDamage: damage,
     code: unknown ? "condition-outcome-unknown" : "condition-partial-failure" });
 }

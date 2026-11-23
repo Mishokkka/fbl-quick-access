@@ -396,9 +396,11 @@ export async function migrateSpecialCounter(actor, item) {
 
   const update = { [flagUpdatePath(key)]: expected };
   const options = { render: false };
-  if (item.getFlag(MODULE_ID, key) === undefined) await item.update(foundry.utils.deepClone(update), options);
+  if (item.getFlag(MODULE_ID, key) === undefined) {
+    await item.update(foundry.utils.deepClone(update), options);
+    verifyConditionWrite(getConditionItem(actor, item.id), update);
+  }
   const live = getConditionItem(actor, item.id);
-  verifyConditionWrite(live, update);
   const cleanup = { "system.healingTime": "" };
   await live.update(cleanup, options);
   verifyConditionWrite(getConditionItem(actor, item.id), cleanup);

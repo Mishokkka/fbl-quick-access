@@ -4,6 +4,10 @@ export function cancelStatDrag(app) {
   if (activeDrag?.app === app) activeDrag.finish(false);
 }
 
+export async function waitForStatDrag(app) {
+  while (activeDrag?.app === app) await activeDrag.completion;
+}
+
 export function bindStatDrag(app, html, { editable, isCurrent, persistRowOrder }) {
   const sortable = ".condition-row:not(.arc-row), .injury-row:not(.arc-row)";
   html.find(".conditions-tab").off("mousedown", ".fblec-drag-handle").on("mousedown", ".fblec-drag-handle", event => {
@@ -19,6 +23,8 @@ export function bindStatDrag(app, html, { editable, isCurrent, persistRowOrder }
     if (focused && list.contains(focused)) focused.blur();
     const next = row.nextSibling;
     const twoColumns = html.find(".conditions-tab").hasClass("fblec-columns-2");
+    let complete;
+    const completion = new Promise(resolve => { complete = resolve; });
     let pointerDrag = { frame: null, active: false, position: null, target: null, before: null };
     const attached = () => isCurrent() && row.isConnected && list.contains(row);
 
@@ -64,12 +70,13 @@ export function bindStatDrag(app, html, { editable, isCurrent, persistRowOrder }
       }
       pointerDrag = null;
       activeDrag = null;
+      complete();
       if (shouldSave) return persistRowOrder();
     }
 
     function release() { return finish(true); }
 
-    activeDrag = { app, finish };
+    activeDrag = { app, finish, completion };
     $(document).on("mousemove.fblecSort", move).on("mouseup.fblecSort", release);
   });
 }

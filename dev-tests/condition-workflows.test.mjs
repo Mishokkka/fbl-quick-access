@@ -386,6 +386,31 @@ test("manual Heat correction and cooling never damage or heal attributes, and pr
   assert.deepEqual(owner.system.attribute, values);
 });
 
+test("a partial Heat failure returns the committed damage and whispers to an offline GM", async () => {
+  setup();
+  game.user = { id: "owner", isGM: false, active: true };
+  game.users = [game.user, { id: "gm", isGM: true, active: false }];
+  game.socket = { connected: true };
+  const heat = item("Heat"), owner = actor(heat);
+  owner.isOwner = true;
+  set(heat, `flags.${scope}.conditions.heatValue`, 3);
+  heat.update = async () => { throw new Error("Heat write failed"); };
+  const whispers = [];
+  ChatMessage.create = async data => { whispers.push(data); };
+
+  await assert.rejects(applyHeatFailure(owner, heat, { render: false }), error => {
+    assert.equal(error.code, "condition-partial-failure");
+    assert.deepEqual(error.appliedDamage.map(({ path, value }) => [path, value]), [
+      ["system.attribute.strength.value", 5], ["system.attribute.wits.value", 5]
+    ]);
+    return true;
+  });
+  assert.equal(owner.system.attribute.strength.value, 5);
+  assert.equal(owner.system.attribute.wits.value, 5);
+  assert.equal(parseHeatValue(heat), 3);
+  assert.deepEqual(whispers.map(({ whisper }) => whisper), [["gm"]]);
+});
+
 for (const failure of ["chat", "Mor write"]) {
   test(`Mor applies damage and writes the counter before chat even when ${failure} fails`, { timeout: 1_000 }, async t => {
     setup();
@@ -548,6 +573,23 @@ for (const [name, oldValue, key, expected] of [
     assert.equal(counter.system.healingTime, "");
   });
 }
+
+test("migrating Heat and Mor clears stale timers without recopying existing flags", async () => {
+  setup();
+  for (const [name, timer, key, current] of [
+    ["Heat", "2", "heatValue", 4], ["Mor", "1/2", "morState", { current: 2, permanent: 3 }]
+  ]) {
+    const counter = item(name), owner = actor(counter);
+    const path = `flags.${scope}.conditions.${key}`;
+    counter.system.healingTime = timer;
+    set(counter, path, current);
+
+    assert.equal(await migrateActorData(owner), true);
+    assert.equal(counter.system.healingTime, "");
+    assert.deepEqual(counter.getFlag(scope, `conditions.${key}`), current);
+    assert.ok(counter.updates.every(update => !Object.hasOwn(update, path)));
+  }
+});
 
 function washActor(...extraItems) {
   const old = item("Помытый");

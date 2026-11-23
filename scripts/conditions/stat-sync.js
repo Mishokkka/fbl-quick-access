@@ -1,6 +1,7 @@
 import { refreshExpandedConditionsRows, renderExpandedConditions } from "./main.js";
 import { getStatProviders } from "../integration/stat-providers.js";
 import { MODULE_ID } from "./constants.js";
+import { waitForStatDrag } from "./features/row-drag.js";
 
 const scheduled = new WeakMap();
 
@@ -44,13 +45,16 @@ function scheduleView(app, root, renderer) {
     active.addEventListener("blur", resume, { once: true });
     return;
   }
+  const cleanup = () => globalThis.clearTimeout(timer);
   const timer = globalThis.setTimeout(async () => {
+    await waitForStatDrag(app);
+    if (scheduled.get(app) !== cleanup) return;
     scheduled.delete(app);
     if (root.isConnected === false || app.rendered === false) return;
     try { await renderer(app, root); }
     catch (error) { console.error("fbl-quick-access | STAT synchronization failed", error); }
   }, 0);
-  scheduled.set(app, () => globalThis.clearTimeout(timer));
+  scheduled.set(app, cleanup);
 }
 
 export function cleanupStatSync(app) {

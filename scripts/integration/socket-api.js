@@ -226,6 +226,7 @@ async function handleSocketMessage(message) {
         message: String(error?.message ?? error ?? "Operation failed")
       }
     };
+    if (Array.isArray(error?.appliedDamage)) response.error.appliedDamage = cloneForSocket(error.appliedDamage);
   }
 
   const responseMessage = {
@@ -269,10 +270,12 @@ async function handleResponse(message) {
     return;
   }
 
-  pending.reject(integrationError(
+  const error = integrationError(
     message.error?.code ?? "operation-failed",
     message.error?.message ?? `Quick Access GM operation failed: ${pending.operation}`
-  ));
+  );
+  if (Array.isArray(message.error?.appliedDamage)) error.appliedDamage = message.error.appliedDamage;
+  pending.reject(error);
 }
 
 async function invokeHandler(operation, payload, context) {

@@ -1,4 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID } from "./constants.js";
+import { getConditionKind } from "./condition-kind.js";
 import { getActorAttributeState } from "../actor-data.js";
 import { confirmDangerAction, createFoundryDialog, findDialogForm } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
@@ -11,7 +12,7 @@ import {
   localize,
   parseStatDuration
 } from "./utils.js";
-import { initializeWashOperations } from "./features/wash.js";
+import { getWashDisplayName, initializeWashOperations } from "./features/wash.js";
 import {
   getAddictionState,
   applyHeatFailure,
@@ -29,7 +30,7 @@ import {
 } from "./features/sheet-tab.js";
 import { renderConditionItemRow, renderConditionsRows, renderStatTab } from "./render/stat-tab-renderer.js";
 import { refreshConditionsRows } from "./render/refresh-rows.js";
-import { bindStatDrag, cancelStatDrag } from "./features/row-drag.js";
+import { bindStatDrag, cancelStatDrag, waitForStatDrag } from "./features/row-drag.js";
 import {
   buildAddictionRelapseMessage,
   buildHeatChangeMessage
@@ -392,7 +393,26 @@ export async function renderExpandedConditions(app, html) {
     }));
   }
 
-  bindInjuryAction("change", ".injury-name-input", control => ({ kind: "item-name", value: control.value }));
+  html.find(".conditions-tab").off("change", ".injury-name-input").on("change", ".injury-name-input", async event => {
+    if (!requireEditable()) return;
+    const control = event.currentTarget;
+    const row = $(control).closest(".injury-row");
+    const item = getRowItem(row);
+    if (!item) return;
+    const kind = getConditionKind(item);
+    const value = control.value;
+    await submitStatCommand({ kind: "item-name", itemId: item.id, value });
+    const live = app.actor.items.get(item.id);
+    if (!isCurrent() || !live) return;
+    if (getConditionKind(live) !== kind) {
+      await waitForStatDrag(app);
+      if (isCurrent()) await refreshRows();
+    } else if (control.isConnected && control.value === value) {
+      const name = kind === "wash" ? getWashDisplayName(live.name) : live.name;
+      control.value = name;
+      row.find(".injury-img").attr("title", name);
+    }
+  });
   html.find(".conditions-tab").off("change", ".injury-notes").on("change", ".injury-notes", async event => {
     if (!requireEditable()) return;
     const control = event.currentTarget;
@@ -469,8 +489,11 @@ export async function renderExpandedConditions(app, html) {
     const btn = $(ev.currentTarget);
     const delta = btn.hasClass("heat-plus") ? 1 : -1;
     await runSpecialItemAction(ev, async item => {
-      const result = delta > 0 ? await applyHeatFailure(app.actor, item, { render: false })
-        : await coolHeatItem(app.actor, item, { render: false });
+      const result = await (delta > 0 ? applyHeatFailure(app.actor, item, { render: false })
+        : coolHeatItem(app.actor, item, { render: false })).catch(error => {
+        if (isCurrent()) syncAttributeDamageInputs(error?.appliedDamage);
+        throw error;
+      });
       syncAttributeDamageInputs(result?.appliedDamage);
       await postHeatResult(result, delta > 0 ? "failure" : "reduce");
       return result;
