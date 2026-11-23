@@ -1,29 +1,25 @@
-import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID, flagDeletePath, flagUpdatePath } from "./constants.js";
+import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID } from "./constants.js";
+import { getConditionKind } from "./condition-kind.js";
+import { getActorAttributeState } from "../actor-data.js";
 import { confirmDangerAction, createFoundryDialog, findDialogForm } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
 import {
-  applyActorAttributeDamage,
   canUserEditActor,
   createChatMessage,
   escapeHTML,
   localize,
-  makeCustomCondition,
-  normalizeConditionName,
-  normalizeCustomConditionList,
-  rollToMessage
+  parseStatDuration
 } from "./utils.js";
-import { removeOtherWashStates, transitionWashLevel, isWashCondition } from "./features/wash.js";
+import { getWashDisplayName, initializeWashOperations } from "./features/wash.js";
 import {
   getAddictionState,
   applyHeatFailure,
-  buildHeatModifierUpdate,
-  getMorState,
-  normalizeAddictionSeverityChange,
-  parseHeatValue,
-  updateHeatItem,
-  updateMorItem
+  changeMor,
+  coolHeatItem,
+  initializeCounterOperations,
+  updateHeatItem
 } from "./features/special-counters.js";
 import {
   activateConditionsTab,
@@ -34,19 +30,18 @@ import {
 } from "./features/sheet-tab.js";
 import { renderConditionItemRow, renderConditionsRows, renderStatTab } from "./render/stat-tab-renderer.js";
 import { refreshConditionsRows } from "./render/refresh-rows.js";
+import { bindStatDrag, cancelStatDrag, waitForStatDrag } from "./features/row-drag.js";
 import {
   buildAddictionRelapseMessage,
-  buildHeatChangeMessage,
-  buildMorGainMessage,
-  buildMorRemoveMessage
+  buildHeatChangeMessage
 } from "./services/chat-service.js";
 import { correctAddictionState, getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
-import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
-import { decrementFirstInteger } from "../new-day.js";
+import { initializeStatOperations, readStatConditions, runStatOperation } from "./services/stat-operations.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
+const STAT_ROW_VIEWS = new WeakMap();
 const SPECIAL_ACTION_ITEMS = new WeakSet();
 
 function setConditionDetailsExpanded(row, expanded) {
@@ -126,12 +121,18 @@ function editAddictionState(state) {
 }
 
 export function invalidateExpandedConditionsRender(app) {
-  if (app && typeof app === "object") STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
+  if (!app || typeof app !== "object") return;
+  cancelStatDrag(app);
+  STAT_ROW_VIEWS.delete(app);
+  STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
 }
 
 export function initExpandedConditions() {
   registerSettings();
   initializeAddictionOperations();
+  initializeCounterOperations();
+  initializeWashOperations();
+  initializeStatOperations();
 }
 
 export async function readyExpandedConditions() {
@@ -142,36 +143,42 @@ export async function readyExpandedConditions() {
 }
 
 export async function handleExpandedConditionsCreateItem(item, options, userId) {
-  if (game.user.id !== userId) return;
-  if (item.type !== "criticalInjury") return;
-  const kindUpdate = conditionKindUpdate(item);
-  if (kindUpdate) { const { _id, ...update } = kindUpdate; await item.update(update, { render: false }); }
-  if (getConditionKind(item) === "heat") {
-    await item.update(buildHeatModifierUpdate(parseHeatValue(item)), { render: false });
-  }
-  if (!isWashCondition(item)) return;
   if (options?.fblqaWashTransition) return;
-
   const actor = item.parent;
-  if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return;
-
-  await removeOtherWashStates(actor, item);
+  if (game.user.id !== userId || item.type !== "criticalInjury"
+    || actor?.documentName !== "Actor" || actor.type !== "character") return;
+  try { await runStatOperation(actor, { kind: "item-created", itemId: item.id }); }
+  catch (error) { notifyStatError(error); }
 }
 
 
-export async function persistNormalizedCustomConditions(actor, customConditions, { changed, editable } = {}) {
+export async function persistNormalizedCustomConditions(actor, _customConditions, { changed, editable } = {}) {
   if (!editable || !changed) return false;
-  await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-  return true;
+  return (await runStatOperation(actor, { kind: "normalize" })).changed;
+}
+
+export function refreshExpandedConditionsRows(app, root) {
+  const view = STAT_ROW_VIEWS.get(app);
+  return view && view.root === (findActorSheetRoot(root) ?? root) ? view.refreshRows() : renderExpandedConditions(app, root);
+}
+
+function notifyStatError(error) {
+  console.error(`${MODULE_ID} | condition action failed`, error);
+  if (error?.code === "condition-partial-failure" || error?.code === "condition-outcome-unknown") {
+    if (!error.notified) ui.notifications?.error?.(escapeHTML(error.message));
+  } else if (error?.code === "timeout") {
+    ui.notifications?.warn?.(localize("Notifications.ConditionOutcomeUnknown", "The outcome is unknown. Check the sheet manually before repeating."));
+  } else {
+    ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+  }
 }
 
 export async function renderExpandedConditions(app, html) {
+  invalidateExpandedConditionsRender(app);
   if (app.actor?.type !== "character") return;
-  const generation = (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1;
-  STAT_RENDER_GENERATIONS.set(app, generation);
-  const isCurrent = () => STAT_RENDER_GENERATIONS.get(app) === generation;
-
+  const generation = STAT_RENDER_GENERATIONS.get(app);
   const root = findActorSheetRoot(html);
+  const isCurrent = () => STAT_RENDER_GENERATIONS.get(app) === generation && root?.isConnected !== false;
   if (root) root.classList.add("fblqa-sheet-root", "fblqa-actor-sheet-root", "fblec-sheet-root");
 
   html = html instanceof jQuery ? html : $(html);
@@ -186,31 +193,35 @@ export async function renderExpandedConditions(app, html) {
     window.setTimeout(() => syncConditionsTabChrome(html), 0);
   });
 
-  const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(app.actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
-  let customConditions = customNormalization.list;
   // Rendering must remain read-only. Performing embedded-document migrations
   // here can race a wash-state create/delete sequence and leave Foundry trying
   // to update an Item that was removed milliseconds earlier. World/actor data
   // migration is handled outside the render lifecycle; normalized values are
   // still used locally for a stable UI.
 
-  let layoutColumns = Number(app.actor.getFlag(MODULE_ID, FLAGS.LAYOUT_COLUMNS)) === 2 ? 2 : 1;
+  const readLayout = () => Number(app.actor.getFlag(MODULE_ID, FLAGS.LAYOUT_COLUMNS)) === 2 ? 2 : 1;
   const scrollKey = getStatScrollKey(app);
   const captureScroll = () => captureStatScrollPosition(html, scrollKey);
   const restoreScroll = () => restoreStatScrollPosition(html, scrollKey);
 
-  const getInjuries = () => app.actor.items.filter(i => i.type === "criticalInjury");
+  const getInjuries = () => Array.from(app.actor.items?.values?.() ?? app.actor.items).filter(i => i.type === "criticalInjury");
 
   async function buildRows() {
     return renderConditionsRows({
-      customConditions,
+      customConditions: readStatConditions(app.actor),
       injuries: getInjuries(),
       editable
     });
   }
 
+  let rowRefresh = 0;
   async function refreshRows() {
-    return refreshConditionsRows({ html, buildRows, captureScroll, restoreScroll, isCurrent });
+    const revision = ++rowRefresh;
+    const rows = await refreshConditionsRows({ html, buildRows, captureScroll, restoreScroll,
+      isCurrent: () => isCurrent() && rowRefresh === revision,
+      beforeReplace: () => cancelStatDrag(app) });
+    if (rows !== null) applyLayout(readLayout());
+    return rows;
   }
 
   const rowsHtml = await buildRows();
@@ -224,7 +235,7 @@ export async function renderExpandedConditions(app, html) {
     rowsHtml,
     providerSectionsHtml: providerSections.html,
     editable,
-    layoutColumns
+    layoutColumns: readLayout()
   });
   if (!isCurrent()) return;
   const existingTab = html.find(`.conditions-tab[data-tab="${CONDITIONS_TAB_ID}"]`);
@@ -247,80 +258,30 @@ export async function renderExpandedConditions(app, html) {
   bindStatScrollCapture(html, captureScroll);
   restoreScroll();
 
-  async function saveCustom() {
-    if (!editable) return;
-
-    const rowsById = new Map();
-
-    html.find(".conditions-rows > .condition-row[data-condition-id]").each((i, el) => {
-      const row = $(el);
-      const id = String(row.data("condition-id") || "");
-      const previous = foundry.utils.deepClone(customConditions.find(condition => condition.id === id) || { id });
-      const order = Number(row.data("order") ?? i * 10);
-
-      if (row.hasClass("arc-row")) {
-        previous.desc = row.find(".condition-desc-input").val() ?? previous.desc ?? "";
-        previous.order = Number.isFinite(order) ? order : i * 10;
-        rowsById.set(id, makeCustomCondition(previous));
-        return;
-      }
-
-      rowsById.set(id, makeCustomCondition({
-        id,
-        order: Number.isFinite(order) ? order : i * 10,
-        name: row.find(".condition-name").val() ?? previous.name ?? "",
-        time: row.find(".condition-time").val() ?? previous.time ?? "0",
-        notes: row.find(".condition-notes").val() ?? previous.notes ?? "",
-        desc: row.find(".condition-desc-input").val() ?? previous.desc ?? ""
-      }));
-    });
-
-    const updated = Array.from(rowsById.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    customConditions = updated;
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: updated }, { render: false });
+  async function submitStatCommand(command) {
+    try { return await runStatOperation(app.actor, command); }
+    catch (error) { notifyStatError(error); return null; }
   }
 
   async function persistRowOrder() {
-    if (!editable) return;
-
-    const customMap = new Map(customConditions.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
-    const itemUpdates = [];
-
-    html.find(".conditions-rows > [data-row-kind]").each((i, el) => {
-      const row = $(el);
-      const order = i * 10;
-      row.attr("data-order", order).data("order", order);
-
-      const kind = String(row.data("row-kind") || "");
-      if (kind === "custom") {
-        const id = String(row.data("condition-id") || "");
-        const condition = customMap.get(id);
-        if (condition) condition.order = order;
-      } else if (kind === "item") {
-        const itemId = String(row.data("item-id") || "");
-        if (itemId) itemUpdates.push({ _id: itemId, [flagUpdatePath(FLAGS.ORDER)]: order });
-      }
-    });
-
-    customConditions = Array.from(customMap.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    const rows = html.find(".conditions-rows > [data-row-kind]").get().map(element => ({
+      kind: element.dataset.rowKind,
+      id: element.dataset.conditionId ?? element.dataset.itemId
+    }));
+    await submitStatCommand({ kind: "order", rows });
+    await refreshRows();
   }
-
 
   function getRowItem(row) {
     return app.actor.items.get(row.data("item-id"));
   }
 
   async function refreshItemRow(item, rowHint = null) {
-    if (!item || !app.actor.items.get(item.id)) return null;
+    if (!isCurrent() || !item || !app.actor.items.get(item.id)) return null;
 
     captureScroll();
-    const current = rowHint?.jquery
-      ? rowHint
-      : rowHint instanceof HTMLElement
-        ? $(rowHint)
-        : html.find(`.conditions-rows > [data-item-id="${item.id}"]`).first();
+    const row = rowHint?.jquery ? rowHint[0] : rowHint;
+    const current = row?.isConnected ? $(row) : html.find(`.conditions-rows > [data-item-id="${item.id}"]`).first();
     if (!current?.length) {
       await refreshRows();
       return null;
@@ -329,33 +290,23 @@ export async function renderExpandedConditions(app, html) {
     const description = current.children(".injury-desc, .condition-desc");
     const wasExpanded = description.length > 0 && description.css("display") !== "none";
     const rowHtml = await renderConditionItemRow(item, editable);
-    if (!isCurrent()) return null;
+    if (!isCurrent() || !current[0]?.isConnected) return null;
+    cancelStatDrag(app);
     const replacement = $(rowHtml);
     current.replaceWith(replacement);
     if (wasExpanded) setConditionDetailsExpanded(replacement, true);
     restoreScroll();
     return replacement;
   }
-
-  async function updateItemAndRefresh(item, update, rowHint = null) {
-    if (!item) return null;
-    await item.update(update, { render: false });
-    return refreshItemRow(item, rowHint);
-  }
-
-  async function deleteItemAndRemoveRow(item, rowHint = null) {
-    if (!item) return;
-    const row = rowHint?.jquery ? rowHint : rowHint instanceof HTMLElement ? $(rowHint) : null;
-    await item.delete({ render: false });
-    row?.remove();
-  }
-
   async function refreshAfterSpecialItemAction(item, row, result = null) {
+    if (!isCurrent()) return;
+    if (result?.refreshRows) return refreshRows();
     if (result?.cured || !app.actor.items.get(item.id)) {
+      cancelStatDrag(app);
       row?.remove?.();
       return;
     }
-    await refreshItemRow(item, row);
+    await refreshItemRow(app.actor.items.get(item.id), row);
   }
 
   function syncAttributeDamageInputs(appliedDamage = []) {
@@ -380,10 +331,8 @@ export async function renderExpandedConditions(app, html) {
     row.find("button, select, input").prop("disabled", true);
     let result;
     try { result = await operation(item); }
-    catch (error) {
-      console.error(`${MODULE_ID} | condition action failed`, error);
-      ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
-    } finally {
+    catch (error) { notifyStatError(error); }
+    finally {
       SPECIAL_ACTION_ITEMS.delete(item);
       await refreshAfterSpecialItemAction(item, row, result);
     }
@@ -423,151 +372,70 @@ export async function renderExpandedConditions(app, html) {
   });
 
   // System injuries.
-  html.find(".conditions-tab").off("change", ".injury-name-input").on("change", ".injury-name-input", async (ev) => {
+  function bindInjuryAction(eventType, selector, command) {
+    html.find(".conditions-tab").off(eventType, selector).on(eventType, selector, event => runSpecialItemAction(event, async item => {
+      const action = await command(event.currentTarget, item);
+      if (!action) return;
+      const result = await runStatOperation(app.actor, { ...action, itemId: item.id });
+      if (result?.reason === "unresolved-duration") {
+        ui.notifications.warn(localize("Notifications.TreatmentUnresolvedTime", "Resolve the healing duration into a number of days before applying treatment."));
+      } else if (result?.reason === "treated") {
+        ui.notifications.warn(localize("Notifications.TreatmentAlreadyApplied", "Treatment has already been applied. Reset it before choosing another result."));
+      } else if (result?.changed && action.kind === "stabilize") {
+        ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: escapeHTML(item.name) }));
+      } else if (result?.changed && action.kind === "treatment") {
+        const name = escapeHTML(item.name);
+        if (action.action === "fail") ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name }));
+        else if (action.action === "prof") ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name }));
+        else ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name }));
+      }
+      return result;
+    }));
+  }
+
+  html.find(".conditions-tab").off("change", ".injury-name-input").on("change", ".injury-name-input", async event => {
     if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".injury-row"));
-    if (item) await updateItemAndRefresh(item, { name: ev.currentTarget.value }, $(ev.currentTarget).closest(".injury-row"));
-  });
-
-  html.find(".conditions-tab").off("change", ".injury-notes").on("change", ".injury-notes", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".injury-row"));
-    if (item) await item.update({ [flagUpdatePath(FLAGS.NOTES)]: ev.currentTarget.value }, { render: false });
-  });
-
-  html.find(".conditions-tab").off("click", ".delete-injury").on("click", ".delete-injury", async (ev) => {
-    if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".injury-row"));
-    if (!item) return;
-    if (!(await confirmStatDelete(item.name, "injury"))) return;
-    await deleteItemAndRemoveRow(item, $(ev.currentTarget).closest(".injury-row"));
-  });
-
-  html.find(".conditions-tab").off("click", ".heal-minus, .heal-plus").on("click", ".heal-minus, .heal-plus", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const item = getRowItem(btn.closest(".injury-row"));
-    if (!item) return;
-
-    const timeStr = item.system.healingTime || "0";
-    const match = timeStr.match(/(\d+)/);
-    if (!match) return;
-
-    let currentVal = parseInt(match[0], 10);
-    if (btn.hasClass("heal-plus")) currentVal += 1;
-    else currentVal = Math.max(0, currentVal - 1);
-
-    if (currentVal === 0 && isWashCondition(item) && btn.hasClass("heal-minus")) {
-      await transitionWashLevel(app.actor, getWashStage(item) ?? item.name, { render: false });
-      await refreshRows();
-    } else {
-      const newStr = timeStr.replace(/(\d+)/, currentVal);
-      await updateItemAndRefresh(item, { "system.healingTime": newStr }, btn.closest(".injury-row"));
-    }
-  });
-
-  html.find(".conditions-tab").off("click", ".toggle-lethal-btn").on("click", ".toggle-lethal-btn", async (ev) => {
-    if (!requireEditable()) return;
-    const item = app.actor.items.get($(ev.currentTarget).data("item-id"));
-    if (item) {
-      await updateItemAndRefresh(item, { "system.lethal": "no" }, $(ev.currentTarget).closest(".injury-row"));
-      ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: escapeHTML(item.name) }));
-    }
-  });
-
-  html.find(".conditions-tab").off("click", ".lethal-limit-btn").on("click", ".lethal-limit-btn", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const item = app.actor.items.get(btn.data("item-id"));
-    if (!item) return;
-
-    const limitStr = item.system.limit || "0";
-    const match = limitStr.match(/(\d+)/);
-    if (!match) return;
-
-    let currentVal = parseInt(match[0], 10);
-    currentVal = btn.hasClass("lethal-limit-plus") ? currentVal + 1 : Math.max(0, currentVal - 1);
-    const newStr = limitStr.replace(/(\d+)/, currentVal);
-    await updateItemAndRefresh(item, { "system.limit": newStr }, btn.closest(".injury-row"));
-  });
-
-  html.find(".conditions-tab").off("click", ".treatment-btn").on("click", ".treatment-btn", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const row = btn.closest(".injury-row");
+    const control = event.currentTarget;
+    const row = $(control).closest(".injury-row");
     const item = getRowItem(row);
     if (!item) return;
-
-    if (item.getFlag(MODULE_ID, FLAGS.TREATMENT_STATUS)) {
-      ui.notifications.warn(localize("Notifications.TreatmentAlreadyApplied", "Treatment has already been applied. Reset it before choosing another result."));
-      return;
+    const kind = getConditionKind(item);
+    const value = control.value;
+    await submitStatCommand({ kind: "item-name", itemId: item.id, value });
+    const live = app.actor.items.get(item.id);
+    if (!isCurrent() || !live) return;
+    if (getConditionKind(live) !== kind) {
+      await waitForStatDrag(app);
+      if (isCurrent()) await refreshRows();
+    } else if (control.isConnected && control.value === value) {
+      const name = kind === "wash" ? getWashDisplayName(live.name) : live.name;
+      control.value = name;
+      row.find(".injury-img").attr("title", name);
     }
-
-    const action = btn.data("action");
-    const treatmentData = item.getFlag(MODULE_ID, FLAGS.TREATMENT_DATA) || {};
-    const originalTimeStr = String(treatmentData.originalHealingTime ?? item.system.healingTime ?? "0");
-    const duration = decrementFirstInteger(originalTimeStr, 0);
-    if (!duration && /\d/.test(originalTimeStr)) {
-      ui.notifications.warn(localize("Notifications.TreatmentUnresolvedTime", "Resolve the healing duration into a number of days before applying treatment."));
-      return;
-    }
-    const match = duration ? originalTimeStr.match(/(\d+)/) : null;
-
-    if (match) {
-      const originalVal = parseInt(match[0], 10);
-      let newVal = originalVal;
-
-      if (action === "fail") {
-        newVal = originalVal * 2;
-        ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
-      } else if (action === "prof") {
-        newVal = Math.ceil(originalVal / 2);
-        ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
-      } else if (action === "normal") {
-        ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name: escapeHTML(item.name) }));
-      }
-
-      const newTimeStr = originalTimeStr.replace(/(\d+)/, newVal);
-      await item.update({
-        "system.healingTime": newTimeStr,
-        [flagUpdatePath(FLAGS.TREATMENT_STATUS)]: action,
-        [flagUpdatePath(FLAGS.TREATMENT_DATA)]: {
-          originalHealingTime: originalTimeStr,
-          adjustedHealingTime: newTimeStr,
-          action
-        }
-      }, { render: false });
-    } else {
-      await item.update({
-        [flagUpdatePath(FLAGS.TREATMENT_STATUS)]: action,
-        [flagUpdatePath(FLAGS.TREATMENT_DATA)]: {
-          originalHealingTime: originalTimeStr,
-          adjustedHealingTime: originalTimeStr,
-          action
-        }
-      }, { render: false });
-    }
-    await refreshItemRow(item, row);
   });
-
-  html.find(".conditions-tab").off("click", ".treatment-reset-btn").on("click", ".treatment-reset-btn", async (ev) => {
+  html.find(".conditions-tab").off("change", ".injury-notes").on("change", ".injury-notes", async event => {
     if (!requireEditable()) return;
-    const item = getRowItem($(ev.currentTarget).closest(".injury-row"));
-    if (!item) return;
-    const treatmentData = item.getFlag(MODULE_ID, FLAGS.TREATMENT_DATA) || {};
-    const update = {
-      [flagDeletePath(FLAGS.TREATMENT_STATUS)]: null,
-      [flagDeletePath(FLAGS.TREATMENT_DATA)]: null
-    };
-    if (treatmentData.originalHealingTime !== undefined) update["system.healingTime"] = treatmentData.originalHealingTime;
-    await updateItemAndRefresh(item, update, $(ev.currentTarget).closest(".injury-row"));
+    const control = event.currentTarget;
+    const item = getRowItem($(control).closest(".injury-row"));
+    if (item) await submitStatCommand({ kind: "item-notes", itemId: item.id, value: control.value });
   });
+  bindInjuryAction("click", ".delete-injury", async (_control, item) =>
+    await confirmStatDelete(item.name, "injury") ? { kind: "item-delete" } : null);
+  bindInjuryAction("click", ".heal-minus, .heal-plus", control => ({
+    kind: "healing-time", delta: control.classList.contains("heal-plus") ? 1 : -1
+  }));
+  bindInjuryAction("click", ".toggle-lethal-btn", () => ({ kind: "stabilize" }));
+  bindInjuryAction("click", ".lethal-limit-btn", control => ({
+    kind: "lethal-limit", delta: control.classList.contains("lethal-limit-plus") ? 1 : -1
+  }));
+  bindInjuryAction("click", ".treatment-btn", control => ({ kind: "treatment", action: control.dataset.action }));
+  bindInjuryAction("click", ".treatment-reset-btn", () => ({ kind: "treatment-reset" }));
 
   // Addiction.
   html.find(".conditions-tab").off("change", ".addiction-severity-select").on("change", ".addiction-severity-select", async (ev) => {
     const severity = Number(ev.currentTarget.value);
     await runSpecialItemAction(ev, item => correctAddictionState(app.actor, item, {
-      state: normalizeAddictionSeverityChange(getAddictionState(item), severity), documentOptions: { render: false }
+      severity, documentOptions: { render: false }
     }));
   });
 
@@ -621,8 +489,11 @@ export async function renderExpandedConditions(app, html) {
     const btn = $(ev.currentTarget);
     const delta = btn.hasClass("heat-plus") ? 1 : -1;
     await runSpecialItemAction(ev, async item => {
-      const result = delta > 0 ? await applyHeatFailure(app.actor, item, { render: false })
-        : await updateHeatItem(app.actor, item, parseHeatValue(item) - 1, "rest", { render: false });
+      const result = await (delta > 0 ? applyHeatFailure(app.actor, item, { render: false })
+        : coolHeatItem(app.actor, item, { render: false })).catch(error => {
+        if (isCurrent()) syncAttributeDamageInputs(error?.appliedDamage);
+        throw error;
+      });
       syncAttributeDamageInputs(result?.appliedDamage);
       await postHeatResult(result, delta > 0 ? "failure" : "reduce");
       return result;
@@ -648,217 +519,118 @@ export async function renderExpandedConditions(app, html) {
   });
 
   // Mor.
-  html.find(".conditions-tab").off("click", ".mor-item-x-plus").on("click", ".mor-item-x-plus", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    let x = parseInt(row.find('.mor-input[data-type="x"]').val(), 10) || 0;
-    let y = parseInt(row.find('.mor-input[data-type="y"]').val(), 10) || 0;
-
-    x += 1;
-    const diceCount = x + y;
-    const roll = await new Roll(`${diceCount}d6`).evaluate();
-    const ones = roll.terms[0].results.filter(r => r.result === 1).length;
-    const appliedDamage = ones > 0 ? await applyActorAttributeDamage(app.actor, { strength: ones }, { render: false }) : [];
-    syncAttributeDamageInputs(appliedDamage);
-    const state = { current: x, permanent: y };
-    const flavor = buildMorGainMessage(app.actor.name, state, diceCount, ones, appliedDamage);
-
-    await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
-  });
-
-  html.find(".conditions-tab").off("click", ".mor-item-x-minus").on("click", ".mor-item-x-minus", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    let x = parseInt(row.find('.mor-input[data-type="x"]').val(), 10) || 0;
-    let y = parseInt(row.find('.mor-input[data-type="y"]').val(), 10) || 0;
-
-    if (x <= 0) return ui.notifications.warn(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
-    x -= 1;
-
-    const roll = await new Roll("1d6").evaluate();
-    const becamePermanent = roll.total === 1;
-    if (becamePermanent) y += 1;
-    const state = { current: x, permanent: y };
-    const flavor = buildMorRemoveMessage(app.actor.name, roll.total, state, becamePermanent);
-
-    await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
-  });
-
-  html.find(".conditions-tab").off("click", ".mor-item-y-plus, .mor-item-y-minus").on("click", ".mor-item-y-plus, .mor-item-y-minus", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const row = btn.closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    const mor = getMorState(item);
-    const x = mor.current;
-    let y = mor.permanent;
-
-    if (btn.hasClass("mor-item-y-plus")) y += 1;
-    else y = Math.max(0, y - 1);
-
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
+  const morButtons = ".mor-item-x-plus, .mor-item-x-minus, .mor-item-y-plus, .mor-item-y-minus";
+  html.find(".conditions-tab").off("click", morButtons).on("click", morButtons, event => {
+    const classes = event.currentTarget.classList;
+    const current = classes.contains("mor-item-x-plus") || classes.contains("mor-item-x-minus");
+    const delta = classes.contains("mor-item-x-plus") || classes.contains("mor-item-y-plus") ? 1 : -1;
+    return runSpecialItemAction(event, async item => {
+      const result = await changeMor(app.actor, item, current ? "current" : "permanent", delta, { render: false }).catch(error => {
+        if (isCurrent() && current && delta > 0 && ["condition-partial-failure", "condition-outcome-unknown", "timeout"].includes(error?.code)) {
+          const strength = getActorAttributeState(app.actor, "strength");
+          if (strength.hasValue) syncAttributeDamageInputs([{ path: strength.valuePath, value: strength.value }]);
+        }
+        throw error;
+      });
+      if (result?.changed === false && current && delta < 0) {
+        ui.notifications.warn(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
+      }
+      syncAttributeDamageInputs(result?.appliedDamage);
+      return result;
+    });
   });
 
   // Custom conditions.
-  html.find(".conditions-tab").off("click", ".time-plus, .time-minus").on("click", ".time-plus, .time-minus", async (ev) => {
+  const timeButtons = ".time-plus, .time-minus";
+  html.find(".conditions-tab").off("click", timeButtons).on("click", timeButtons, async event => {
     if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const input = btn.siblings(".condition-time");
-    const timeStr = input.val() || "0";
-    const match = timeStr.match(/(\d+)/);
-    if (!match) return;
-
-    const num = parseInt(match[0], 10) + (btn.hasClass("time-plus") ? 1 : -1);
-    const newStr = timeStr.replace(/(\d+)/, Math.max(0, num));
-    input.val(newStr);
-    await saveCustom();
-  });
-
-  html.find(".add-condition").off("click").on("click", async () => {
-    if (!requireEditable()) return;
-    customConditions.push(makeCustomCondition({}, (customConditions.length + app.actor.items.size + 1) * 10));
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    await refreshRows();
-  });
-
-  html.find(".layout-toggle").off("click").on("click", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    layoutColumns = Number(btn.data("columns")) === 2 ? 2 : 1;
-    await app.actor.update({ [flagUpdatePath(FLAGS.LAYOUT_COLUMNS)]: layoutColumns }, { render: false });
-
-    const tab = html.find(".conditions-tab");
-    tab.removeClass("fblec-columns-1 fblec-columns-2").addClass(`fblec-columns-${layoutColumns}`);
-    tab.attr("data-layout-columns", layoutColumns);
-
-    const next = layoutColumns === 2 ? 1 : 2;
-    btn.data("columns", next).attr("data-columns", next);
-    btn.text(layoutColumns === 2 ? localize("UI.OneColumn", "1 column") : localize("UI.TwoColumns", "2 columns"));
-    btn.attr("title", layoutColumns === 2 ? localize("UI.SwitchToOneColumn", "Switch STAT to one column") : localize("UI.SwitchToTwoColumns", "Switch STAT to two columns"));
-  });
-
-  html.find(".conditions-tab").off("click", ".delete-condition:not(.delete-injury)").on("click", ".delete-condition:not(.delete-injury)", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".condition-row");
-    const id = String(row.data("condition-id") || "");
-    const conditionName = customConditions.find(condition => condition.id === id)?.name || row.find(".condition-name").val() || row.find(".condition-name-static").text() || localize("Delete.ConditionFallback", "condition");
-    if (!(await confirmStatDelete(conditionName, "condition"))) return;
-    customConditions = customConditions.filter(condition => condition.id !== id);
-    row.remove();
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-  });
-
-  html.find(".conditions-tab").off("change", ".condition-name, .condition-time, .condition-notes, .condition-desc-input")
-    .on("change", ".condition-name, .condition-time, .condition-notes, .condition-desc-input", saveCustom);
-
-  let pointerDrag = null;
-
-  function getSortableRowFromPoint(clientX, clientY) {
-    const element = document.elementFromPoint(clientX, clientY);
-    const row = $(element).closest(".condition-row:not(.arc-row), .injury-row:not(.arc-row)")[0];
-    const list = html.find(".conditions-rows")[0];
-    if (!row || !list?.contains(row) || row === pointerDrag?.row) return null;
-    return row;
-  }
-
-  function applyPointerDragPosition() {
-    if (!pointerDrag) return;
-    pointerDrag.frame = 0;
-    const clientX = pointerDrag.pendingX;
-    const clientY = pointerDrag.pendingY;
-    pointerDrag.pendingX = null;
-    pointerDrag.pendingY = null;
-    if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return;
-
-    const target = getSortableRowFromPoint(clientX, clientY);
-    if (!target) return;
-
-    const rect = target.getBoundingClientRect();
-    const midY = rect.top + rect.height / 2;
-    const before = pointerDrag.twoColumns
-      ? (clientY < midY || (Math.abs(clientY - midY) < 8 && clientX < rect.left + rect.width / 2))
-      : clientY < midY;
-
-    if (pointerDrag.lastTarget === target && pointerDrag.lastBefore === before) return;
-    pointerDrag.lastTarget = target;
-    pointerDrag.lastBefore = before;
-    if (before) target.before(pointerDrag.row);
-    else target.after(pointerDrag.row);
-  }
-
-  async function finishPointerDrag(save = true) {
-    if (!pointerDrag) return;
-
-    const row = pointerDrag.row;
-    if (pointerDrag.frame) {
-      cancelAnimationFrame(pointerDrag.frame);
-      pointerDrag.frame = 0;
-      applyPointerDragPosition();
-    }
-    $(document).off("mousemove.fblecSort mouseup.fblecSort");
-    $(row).removeClass("fblec-dragging");
-    pointerDrag = null;
-
-    if (save && editable) await persistRowOrder();
-  }
-
-  html.find(".conditions-tab").off("mousedown", ".fblec-drag-handle").on("mousedown", ".fblec-drag-handle", (ev) => {
-    if (!editable || ev.button !== 0) return;
-
-    const row = $(ev.currentTarget).closest(".condition-row:not(.arc-row), .injury-row:not(.arc-row)")[0];
-    if (!row) return;
-
-    ev.preventDefault();
-    ev.stopPropagation();
-
-    pointerDrag = {
-      row,
-      startX: ev.clientX,
-      startY: ev.clientY,
-      active: false,
-      frame: 0,
-      pendingX: null,
-      pendingY: null,
-      lastTarget: null,
-      lastBefore: null,
-      twoColumns: html.find(".conditions-tab").hasClass("fblec-columns-2")
-    };
-
-    $(document).off("mousemove.fblecSort mouseup.fblecSort");
-    $(document).on("mousemove.fblecSort", (moveEv) => {
-      if (!pointerDrag) return;
-
-      const distance = Math.abs(moveEv.clientX - pointerDrag.startX) + Math.abs(moveEv.clientY - pointerDrag.startY);
-      if (!pointerDrag.active && distance < 4) return;
-      if (!pointerDrag.active) {
-        pointerDrag.active = true;
-        $(pointerDrag.row).addClass("fblec-dragging");
+    const control = event.currentTarget;
+    if (control.disabled) return;
+    const button = $(control);
+    const controls = button.closest(".condition-time-inline").find(timeButtons);
+    const id = control.closest(".condition-row")?.dataset.conditionId;
+    controls.prop("disabled", true);
+    try {
+      const result = await submitStatCommand({ kind: "custom-time", id, delta: button.hasClass("time-plus") ? 1 : -1 });
+      if (result?.changed && isCurrent()) {
+        const condition = readStatConditions(app.actor).find(entry => entry.id === id);
+        if (condition) button.siblings(".condition-time").val(condition.time);
       }
-
-      pointerDrag.pendingX = moveEv.clientX;
-      pointerDrag.pendingY = moveEv.clientY;
-      if (!pointerDrag.frame) pointerDrag.frame = requestAnimationFrame(applyPointerDragPosition);
-    });
-
-    $(document).on("mouseup.fblecSort", async () => {
-      const shouldSave = Boolean(pointerDrag?.active);
-      await finishPointerDrag(shouldSave);
-    });
+    } finally { controls.prop("disabled", false); }
   });
 
+  html.find(".add-condition").off("click").on("click", async event => {
+    if (!requireEditable()) return;
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    button.disabled = true;
+    try {
+      if ((await submitStatCommand({ kind: "custom-add" }))?.changed) await refreshRows();
+    } finally { button.disabled = false; }
+  });
+
+  function applyLayout(columns) {
+    const tab = html.find(".conditions-tab");
+    tab.removeClass("fblec-columns-1 fblec-columns-2").addClass(`fblec-columns-${columns}`);
+    tab.attr("data-layout-columns", columns);
+    const button = tab.find(".layout-toggle");
+    const next = columns === 2 ? 1 : 2;
+    button.data("columns", next).attr("data-columns", next);
+    button.text(columns === 2 ? localize("UI.OneColumn", "1 column") : localize("UI.TwoColumns", "2 columns"));
+    button.attr("title", columns === 2 ? localize("UI.SwitchToOneColumn", "Switch STAT to one column") : localize("UI.SwitchToTwoColumns", "Switch STAT to two columns"));
+  }
+
+  html.find(".layout-toggle").off("click").on("click", async event => {
+    if (!requireEditable()) return;
+    const control = event.currentTarget;
+    if (control.disabled) return;
+    control.disabled = true;
+    const columns = Number($(control).data("columns")) === 2 ? 2 : 1;
+    try {
+      if ((await submitStatCommand({ kind: "layout", columns }))?.changed && isCurrent()) applyLayout(columns);
+    } finally { control.disabled = false; }
+  });
+
+  const removeSelector = ".delete-condition:not(.delete-injury)";
+  html.find(".conditions-tab").off("click", removeSelector).on("click", removeSelector, async event => {
+    if (!requireEditable()) return;
+    const button = event.currentTarget;
+    if (button.disabled) return;
+    const row = $(button).closest(".condition-row");
+    const id = row[0]?.dataset.conditionId;
+    const conditionName = row.find(".condition-name").val() || row.find(".condition-name-static").text();
+    button.disabled = true;
+    try {
+      if (await confirmStatDelete(conditionName, "condition") && (await submitStatCommand({ kind: "custom-remove", id }))?.changed) {
+        cancelStatDrag(app);
+        row.remove();
+      }
+    } finally { button.disabled = false; }
+  });
+
+  const fields = { "condition-name": "name", "condition-time": "time", "condition-notes": "notes", "condition-desc-input": "desc" };
+  const inputs = Object.keys(fields).map(name => `.condition-row[data-condition-id] .${name}`).join(", ");
+  html.find(".conditions-tab").off("change", inputs).on("change", inputs, async event => {
+    if (!requireEditable()) return;
+    const control = event.currentTarget;
+    const field = Object.keys(fields).find(name => control.classList.contains(name));
+    const row = control.closest(".condition-row");
+    const id = row?.dataset.conditionId;
+    const value = control.value;
+    const result = await submitStatCommand({ kind: "custom-edit", id, field: fields[field], value });
+    if (result?.changed && field === "condition-time" && isCurrent() && control.isConnected && control.value === value) {
+      const hidden = !parseStatDuration(value);
+      const buttons = $(control).siblings(timeButtons);
+      const focused = document.activeElement;
+      if (hidden && buttons.get().includes(focused)) {
+        row.querySelector(focused.classList.contains("time-plus") ? removeSelector : ".condition-name")?.focus();
+      }
+      buttons.prop("hidden", hidden);
+    }
+  });
+
+  bindStatDrag(app, html, { editable, isCurrent, persistRowOrder });
+  STAT_ROW_VIEWS.set(app, { root, refreshRows });
 
   async function confirmStatDelete(name, type = "entry") {
     const fallbackName = type === "condition" ? localize("Delete.ConditionFallback", "condition") : localize("Delete.InjuryFallback", "injury");

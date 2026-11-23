@@ -17,8 +17,8 @@ function makeItem(id, sort = 0) {
     type: "criticalInjury",
     sort,
     flags: {},
-    getFlag(_scope, key) {
-      return this.flags[key];
+    getFlag(scope, key) {
+      return foundry.utils.getProperty(this.flags[scope], key);
     }
   };
 }
@@ -27,14 +27,14 @@ function makeActor(items) {
   return {
     documentName: "Actor",
     items,
-    savedList: null,
+    flags: {},
     async update(data) {
-      this.savedList = structuredClone(data["flags.fbl-quick-access.conditions.list"]);
+      this.flags["fbl-quick-access"] = { conditions: { list: structuredClone(data["flags.fbl-quick-access.conditions.list"]) } };
     },
     async updateEmbeddedDocuments(_type, updates) {
       for (const update of updates) {
         const item = this.items.find((candidate) => candidate.id === update._id);
-        item.flags["conditions.order"] = update["flags.fbl-quick-access.conditions.order"];
+        item.flags["fbl-quick-access"] = { conditions: { order: update["flags.fbl-quick-access.conditions.order"] } };
       }
     }
   };
@@ -51,8 +51,8 @@ test("STAT order migration assigns unique stable order to equal-sort injuries", 
 
   const result = await ensureConditionItemOrders(actor, custom);
   assert.equal(result.changed, true);
-  assert.equal(first.flags["conditions.order"], 10);
-  assert.equal(second.flags["conditions.order"], 20);
+  assert.equal(first.getFlag("fbl-quick-access", "conditions.order"), 10);
+  assert.equal(second.getFlag("fbl-quick-access", "conditions.order"), 20);
   assert.deepEqual(result.list.map((entry) => entry.order), [0, 30]);
 
   const secondPass = await ensureConditionItemOrders(actor, result.list);

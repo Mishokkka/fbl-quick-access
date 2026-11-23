@@ -63,6 +63,14 @@ export function isPermanentTime(value) {
   return /permanent|постоян/i.test(String(value ?? ""));
 }
 
+export function parseStatDuration(value) {
+  const text = String(value ?? "");
+  const match = text.match(/^(\s*)(\d+)((?:\s*\p{L}+(?:\(\p{L}+\))?\.?)?\s*)$/u);
+  if (!match || isPermanentTime(text)) return null;
+  const count = Number(match[2]);
+  return Number.isSafeInteger(count) ? { count, prefix: match[1], unit: match[3] } : null;
+}
+
 export function makeCustomCondition(data = {}, fallbackOrder = 0) {
   const parsedOrder = Number(data.order);
   return {
@@ -88,32 +96,6 @@ export function normalizeCustomConditionList(list) {
 export function getActorAttributePath(actor, attributeName) {
   const state = getActorAttributeState(actor, attributeName);
   return state.hasValue ? state.valuePath : null;
-}
-
-export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}, extraUpdate = null) {
-  if (!actor || !damages || typeof damages !== "object") return [];
-
-  const update = {};
-  const applied = [];
-
-  for (const [attributeName, amountRaw] of Object.entries(damages)) {
-    const amount = Math.max(0, parseFirstInteger(amountRaw, 0));
-    if (!amount) continue;
-
-    const path = getActorAttributePath(actor, attributeName);
-    if (!path) continue;
-
-    const previous = Number(foundry.utils.getProperty(actor, path));
-    if (!Number.isFinite(previous)) continue;
-
-    const value = Math.max(0, previous - amount);
-    update[path] = value;
-    applied.push({ attribute: attributeName, path, amount, previous, value });
-  }
-
-  if (extraUpdate) Object.assign(update, typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate);
-  if (Object.keys(update).length) await actor.update(update, documentOptions);
-  return applied;
 }
 
 export function canUserEditActor(actor) {

@@ -120,11 +120,9 @@ test("global wallet click returns immediately when no wallet UI is active", () =
   assert.match(close, /if \(!OPEN_WALLET_ACTORS\.size && !ACTIVE_WALLET_SUMMARIES\.size\) return/);
 });
 
-test("condition and Pilgrim pointer drags coalesce pointermove work through RAF", () => {
-  const conditions = read("scripts", "conditions", "main.js");
+test("Pilgrim pointer drag coalesces pointermove work through RAF", () => {
   const biography = read("scripts", "biography.js");
 
-  assert.match(conditions, /pointerDrag\.pendingX = moveEv\.clientX[\s\S]*?requestAnimationFrame\(applyPointerDragPosition\)/);
   assert.match(biography, /pendingPointer = \{ pointerId: event\.pointerId, clientX: event\.clientX, clientY: event\.clientY \}[\s\S]*?requestAnimationFrame\(applyPointerPosition\)/);
 });
 

@@ -18,7 +18,7 @@ import { handleExpandedConditionsCreateItem, initExpandedConditions, invalidateE
 import { getStoredSlots, saveSlots } from "./quick-access.js";
 import { refreshEquipmentSheets } from "./equipment-sheet.js";
 import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences } from "./data-hygiene.js";
-import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
+import { cleanupStatProviderListeners, getStatProviders, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { closeReputationDialog, getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
@@ -115,16 +115,25 @@ Hooks.on("renderSettingsConfig", (_app, htmlOrElement) => {
 });
 
 Hooks.on("createItem", handleExpandedConditionsCreateItem);
+Hooks.on("createItem", (item, options, userId) => {
+  if (item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId);
+});
 Hooks.on("deleteItem", handleDeletedActorItem);
 Hooks.on("deleteActor", handleDeletedActor);
-Hooks.on("updateActor", (actor, _changes, options, userId) => {
-  if (!options?.fblqaEquipmentOnly) scheduleStatSync(actor, options, userId);
+Hooks.on("updateActor", (actor, changes, options, userId) => {
+  if (!options?.fblqaEquipmentOnly) scheduleStatSync(actor, options, userId, undefined, changes);
 });
 // Equipment writes suppress the expensive whole-sheet render. Replace only the
 // small quick-access panel; unrelated journal/status writes never touch it.
 Hooks.on("updateActor", refreshEquipmentSheets);
-Hooks.on("updateItem", (item, _changes, options, userId) => scheduleStatSync(item.parent, options, userId));
-Hooks.on("deleteItem", (item, options, userId) => scheduleStatSync(item.parent, options, userId));
+Hooks.on("updateItem", (item, _changes, options, userId) => {
+  const renderer = getStatProviders().length ? renderExpandedConditions : undefined;
+  if (renderer || item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId, renderer);
+});
+Hooks.on("deleteItem", (item, options, userId) => {
+  const renderer = getStatProviders().length ? renderExpandedConditions : undefined;
+  if (renderer || item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId, renderer);
+});
 Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInjected);
 
 // Forbidden Lands v13.0.5 still uses ApplicationV1 actor sheets. The concrete
@@ -145,6 +154,7 @@ Hooks.on("renderItemSheet", renderItemSheetVisuals);
 Hooks.on("renderApplicationV2", renderItemSheetVisuals);
 
 async function renderExpandedConditionsSafely(app, htmlOrElement) {
+  cleanupStatSync(app);
   try {
     await renderExpandedConditions(app, htmlOrElement);
   } catch (error) {

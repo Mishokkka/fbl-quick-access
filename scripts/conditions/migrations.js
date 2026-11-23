@@ -10,12 +10,14 @@ import {
 } from "./constants.js";
 import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
+import { enqueueActorMutation } from "../operation-queue.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
+import { getConditionItem, verifyConditionWrite } from "./services/condition-writes.js";
 import {
-  buildSpecialCounterMigrationUpdate,
   buildHeatModifierUpdate,
   getAddictionState,
   isAddictionCondition,
+  migrateSpecialCounter,
   needsAddictionModifierSync,
   parseHeatValue,
   updateAddictionModifiers
@@ -23,19 +25,6 @@ import {
 
 function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object ?? {}, key);
-}
-
-function getFlagData(document, scope, key) {
-  const data = document?.flags?.[scope];
-  if (!data) return undefined;
-  return foundry.utils.getProperty(data, key);
-}
-
-function setIfMissing(update, document, key, value) {
-  if (value === undefined) return false;
-  if (document.getFlag?.(MODULE_ID, key) !== undefined) return false;
-  update[flagUpdatePath(key)] = foundry.utils.deepClone(value);
-  return true;
 }
 
 function getLegacyWorldSetting(key) {
@@ -64,55 +53,45 @@ async function migrateLegacyWorldSettings() {
   }
 }
 
-async function migrateLegacyActorFlags(actor) {
-  const legacy = actor?.flags?.[LEGACY_MODULE_ID];
+async function migrateLegacyFlags(document, readLive, mapping) {
+  const legacy = document.flags?.[LEGACY_MODULE_ID];
   if (!legacy) return false;
 
-  const update = {};
-  setIfMissing(update, actor, FLAGS.LIST, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LIST));
-  setIfMissing(update, actor, FLAGS.LAYOUT_COLUMNS, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LAYOUT_COLUMNS));
-  update[`flags.-=${LEGACY_MODULE_ID}`] = null;
-
-  await actor.update(update, { render: false });
-  return true;
-}
-
-async function migrateLegacyItemFlags(actor) {
-  const itemUpdates = [];
-  const mapping = [
-    [LEGACY_FLAGS.ORDER, FLAGS.ORDER],
-    [LEGACY_FLAGS.NOTES, FLAGS.NOTES],
-    [LEGACY_FLAGS.TREATMENT_STATUS, FLAGS.TREATMENT_STATUS],
-    [LEGACY_FLAGS.TREATMENT_DATA, FLAGS.TREATMENT_DATA],
-    [LEGACY_FLAGS.ADDICTION_STATE, FLAGS.ADDICTION_STATE],
-    [LEGACY_FLAGS.ADDICTION_MODIFIER_KEYS, FLAGS.ADDICTION_MODIFIER_KEYS],
-    [LEGACY_FLAGS.HEAT_VALUE, FLAGS.HEAT_VALUE],
-    [LEGACY_FLAGS.MOR_STATE, FLAGS.MOR_STATE]
-  ];
-
-  for (const item of actor.items ?? []) {
-    const legacy = item?.flags?.[LEGACY_MODULE_ID];
-    if (!legacy) continue;
-
-    const update = { _id: item.id, [`flags.-=${LEGACY_MODULE_ID}`]: null };
-    let hasData = false;
-
-    for (const [legacyKey, currentKey] of mapping) {
-      const value = foundry.utils.getProperty(legacy, legacyKey);
-      if (value === undefined) continue;
-      if (item.getFlag?.(MODULE_ID, currentKey) !== undefined) continue;
-      update[flagUpdatePath(currentKey)] = foundry.utils.deepClone(value);
-      hasData = true;
+  const expected = {}, writes = {}, removed = {};
+  for (const [oldKey, newKey] of mapping) {
+    const value = legacy[oldKey];
+    if (value === undefined) continue;
+    if (document.getFlag?.(MODULE_ID, newKey) === undefined) {
+      const path = flagUpdatePath(newKey);
+      expected[path] = foundry.utils.deepClone(value);
+      writes[path] = foundry.utils.deepClone(expected[path]);
     }
-
-    if (hasData || legacy) itemUpdates.push(update);
+    removed[`flags.${LEGACY_MODULE_ID}.-=${oldKey}`] = null;
   }
+  const removedKeys = Object.keys(removed).length;
+  if (!removedKeys) return false;
 
-  if (!itemUpdates.length) return false;
-  await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+  const options = { render: false };
+  if (Object.keys(writes).length) await document.update(writes, options);
+  const live = readLive();
+  verifyConditionWrite(live, expected);
+  const cleanup = removedKeys === Object.keys(legacy).length ? { [`flags.-=${LEGACY_MODULE_ID}`]: null } : removed;
+  await live.update(cleanup, options);
+  verifyConditionWrite(readLive(), cleanup);
   return true;
 }
 
+const actorFlags = [[LEGACY_FLAGS.LIST, FLAGS.LIST], [LEGACY_FLAGS.LAYOUT_COLUMNS, FLAGS.LAYOUT_COLUMNS]];
+const itemFlags = [
+  [LEGACY_FLAGS.ORDER, FLAGS.ORDER],
+  [LEGACY_FLAGS.NOTES, FLAGS.NOTES],
+  [LEGACY_FLAGS.TREATMENT_STATUS, FLAGS.TREATMENT_STATUS],
+  [LEGACY_FLAGS.TREATMENT_DATA, FLAGS.TREATMENT_DATA],
+  [LEGACY_FLAGS.ADDICTION_STATE, FLAGS.ADDICTION_STATE],
+  [LEGACY_FLAGS.ADDICTION_MODIFIER_KEYS, FLAGS.ADDICTION_MODIFIER_KEYS],
+  [LEGACY_FLAGS.HEAT_VALUE, FLAGS.HEAT_VALUE],
+  [LEGACY_FLAGS.MOR_STATE, FLAGS.MOR_STATE]
+];
 
 function isArcEntry(name) {
   const value = String(name || "").toUpperCase();
@@ -184,45 +163,54 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
   }
 
   if (customChanged) {
-    await actor.update({ [flagUpdatePath(FLAGS.LIST)]: list }, { render: false });
+    const update = { [flagUpdatePath(FLAGS.LIST)]: list };
+    await actor.update(update, { render: false });
+    verifyConditionWrite(actor, update);
   }
   if (itemUpdates.length) {
     await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    for (const { _id, ...update } of itemUpdates) verifyConditionWrite(getConditionItem(actor, _id), update);
   }
 
   return { changed: customChanged || itemUpdates.length > 0, list };
 }
 
 export async function migrateActorData(actor) {
-  if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return false;
+  if (!actor || actor.pack || actor.documentName !== "Actor" || actor.type !== "character") return false;
+  return enqueueActorMutation(actor, () => migrateActorDataInternal(actor));
+}
 
+async function migrateActorDataInternal(actor) {
   let changed = false;
-
-  if (await migrateLegacyActorFlags(actor)) changed = true;
-  if (await migrateLegacyItemFlags(actor)) changed = true;
+  if (await migrateLegacyFlags(actor, () => actor, actorFlags)) changed = true;
+  const items = () => Array.from(actor.items?.values?.() ?? actor.items ?? []);
+  for (const item of items()) {
+    const readLive = () => getConditionItem(actor, item.id);
+    if (await migrateLegacyFlags(item, readLive, itemFlags)) changed = true;
+    const live = readLive();
+    const kindUpdate = conditionKindUpdate(live);
+    if (kindUpdate) {
+      const { _id, ...update } = kindUpdate;
+      await live.update(update, { render: false });
+      verifyConditionWrite(readLive(), update);
+      changed = true;
+    }
+    if (live?.type === "criticalInjury" && await migrateSpecialCounter(actor, live)) changed = true;
+  }
 
   const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
-  let customConditions = customNormalization.list;
+  const customConditions = customNormalization.list;
   if (customNormalization.changed) {
-    await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
+    const update = { [flagUpdatePath(FLAGS.LIST)]: customConditions };
+    await actor.update(update, { render: false });
+    verifyConditionWrite(actor, update);
     changed = true;
   }
 
   const ordering = await ensureConditionItemOrders(actor, customConditions);
-  customConditions = ordering.list;
   if (ordering.changed) changed = true;
 
-  const itemUpdates = actor.items
-    .filter(item => item.type === "criticalInjury")
-    .map(item => buildSpecialCounterMigrationUpdate(item))
-    .filter(Boolean);
-
-  if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
-    changed = true;
-  }
-
-  const addictionItems = actor.items.filter(item => item.type === "criticalInjury" && isAddictionCondition(item));
+  const addictionItems = items().filter(item => item.type === "criticalInjury" && isAddictionCondition(item));
   for (const item of addictionItems) {
     const state = getAddictionState(item);
     if (!needsAddictionModifierSync(item, state)) continue;
@@ -230,7 +218,7 @@ export async function migrateActorData(actor) {
     changed = true;
   }
 
-  for (const item of actor.items.filter(item => item.type === "criticalInjury" && getConditionKind(item) === "heat")) {
+  for (const item of items().filter(item => item.type === "criticalInjury" && getConditionKind(item) === "heat")) {
     const update = buildHeatModifierUpdate(parseHeatValue(item));
     const current = item.system?.rollModifiers ?? {};
     const needsSync = Object.entries(update).some(([path, modifier]) => {
@@ -238,7 +226,11 @@ export async function migrateActorData(actor) {
       if (key.startsWith("-=")) return current[key.slice(2)] !== undefined;
       return current[key]?.name !== modifier.name || String(current[key]?.value) !== modifier.value;
     });
-    if (needsSync) { await item.update(update, { render: false }); changed = true; }
+    if (needsSync) {
+      await item.update(update, { render: false });
+      verifyConditionWrite(getConditionItem(actor, item.id), update);
+      changed = true;
+    }
   }
 
   return changed;
@@ -265,8 +257,6 @@ export async function runWorldMigration() {
 
   for (const actor of game.actors) {
     try {
-      const kindUpdates = Array.from(actor.items ?? []).map(conditionKindUpdate).filter(Boolean);
-      if (kindUpdates.length) await actor.updateEmbeddedDocuments("Item", kindUpdates, { render: false });
       if (await migrateActorData(actor)) changedActors += 1;
     } catch (error) {
       failures += 1;
