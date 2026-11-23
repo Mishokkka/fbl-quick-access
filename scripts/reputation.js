@@ -213,24 +213,32 @@ export function openReputationDialog(app, actor) {
 
   const editable = canModifyActor(actor);
   const persistedEntries = getReputationEntries(actor);
-  const draft = editable ? REPUTATION_DRAFTS.get(actor) : null;
-  const content = buildDialogContent(editable, draft ?? persistedEntries);
+  let borrowedDraft = editable ? REPUTATION_DRAFTS.get(actor) : null;
+  const content = buildDialogContent(editable, borrowedDraft ?? persistedEntries);
   let saveTimeout = null;
   let dialogRoot = null;
   let revision = 0;
-  let dirty = Boolean(draft);
+  let dirty = Boolean(borrowedDraft);
   let lastSerialized = JSON.stringify(persistedEntries);
 
   const queueSave = (rowsRoot, status) => {
     if (!editable || !rowsRoot) return Promise.resolve(false);
     const localRevision = revision;
-    const entries = collectRows(rowsRoot).map(({ entry }) => entry);
+    const borrowed = borrowedDraft;
+    const entries = borrowed ?? collectRows(rowsRoot).map(({ entry }) => entry);
     const serialized = JSON.stringify(entries);
     if (!dirty && serialized === lastSerialized) return Promise.resolve(true);
-    REPUTATION_DRAFTS.set(actor, entries);
+    if (!borrowed) REPUTATION_DRAFTS.set(actor, entries);
     setStatus(status, qaLocalize("Reputation.Saving", "Сохранение…"), "is-saving");
 
     return enqueueReputationSave(actor, async () => {
+      if (borrowed && REPUTATION_DRAFTS.get(actor) !== borrowed) {
+        if (localRevision === revision) {
+          dirty = false;
+          setStatus(status, "", "");
+        }
+        return true;
+      }
       if (!await saveReputationEntries(actor, entries, { render: false })) {
         throw createCodedError("write-not-persisted", "Reputation entries were not saved.");
       }
@@ -269,7 +277,7 @@ export function openReputationDialog(app, actor) {
         actor,
         root: dialogRoot,
         editable,
-        entries: (editable ? REPUTATION_DRAFTS.get(actor) : null) ?? getReputationEntries(actor),
+        entries: borrowedDraft ?? getReputationEntries(actor),
         scheduleSave: (rowsRoot, status) => {
           if (!editable || !rowsRoot) return;
           const entries = collectRows(rowsRoot).map(({ entry }) => entry);
@@ -277,6 +285,7 @@ export function openReputationDialog(app, actor) {
           if (serialized === lastSerialized && !dirty) return;
           revision += 1;
           dirty = true;
+          borrowedDraft = null;
           REPUTATION_DRAFTS.set(actor, entries);
           if (saveTimeout) globalThis.clearTimeout?.(saveTimeout);
           setStatus(status, qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");

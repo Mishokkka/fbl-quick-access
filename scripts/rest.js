@@ -279,7 +279,8 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
     .join("");
 
   const shortUsed = snapshot.shortRestUse?.usedThisQuarter;
-  const resumeShortRest = Boolean(snapshot.pendingShortRecovery);
+  const resumeShortRest = Boolean(snapshot.pendingShortRecovery && !snapshot.pendingLongRest);
+  const onlyLongRest = snapshot.pendingLongRest && !snapshot.pendingShortRecovery;
   const shortStatus = formatShortRestStatus(snapshot);
 
   const newDayControl = usesCalendariaStateProgression()
@@ -297,13 +298,14 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
       <div class="fblqa-rest-header-template" hidden>${conditionChips}</div>
 
       <fieldset class="fblqa-rest-type-switch">
-        <label><input type="radio" name="restType" value="long"${resumeShortRest ? "" : " checked"}> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
-        <label><input type="radio" name="restType" value="short"${resumeShortRest ? " checked" : ""}> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
+        <label><input type="radio" name="restType" value="long"${resumeShortRest ? " disabled" : " checked"}> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
+        <label><input type="radio" name="restType" value="short"${resumeShortRest ? " checked" : onlyLongRest ? " disabled" : ""}> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
       </fieldset>
 
       <section class="fblqa-rest-pane" data-rest-pane="long">
         <div class="fblqa-rest-pane-head">
           <h2>${qaLocalize("Rest.LongHeading", "Long Rest — 6 часов сна")}</h2>
+          ${snapshot.pendingLongRest ? `<p class="fblqa-rest-note">${escapeHtml(qaLocalize("Rest.LongResume", "Apply to finish the pending Long Rest."))}</p>` : ""}
           <p>${qaLocalize("Rest.LongDescription", "Восстанавливает по 1 единице каждой незаблокированной повреждённой характеристики.")}</p>
         </div>
         <label class="fblqa-rest-check">
@@ -541,8 +543,16 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     return null;
   }
 
-  const pendingCleanup = options.type === "long" ? readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP) : null;
-  let pendingShortRest = options.type === "short" ? getPendingShortRest(actor) : null;
+  const short = options.type === "short";
+  const savedLongRest = readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP);
+  const savedShortRest = getPendingShortRest(actor);
+  if ((short && savedLongRest && !savedShortRest) || (!short && savedShortRest && !savedLongRest)) {
+    const message = qaLocalize("Rest.FinishPending", "Finish the pending rest before starting a different type of rest.");
+    ui.notifications?.warn?.(message);
+    return { failed: true, error: createCodedError("rest-pending", message) };
+  }
+  let pendingCleanup = short ? null : savedLongRest;
+  let pendingShortRest = short ? savedShortRest : null;
   const pending = pendingCleanup ?? pendingShortRest;
   const result = pending ? readPendingRestResult(pending) : options.type === "short"
     ? calculateShortRestChanges(actor, options, { ...context, allowResetShortQuarter: canResetShortRestLimit(actor) })
@@ -566,7 +576,11 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       await setDocumentFlagVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, pendingShortRest, { render: false }, { replace: true });
     }
 
-    const cleanupPath = `flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`;
+    if (!short && !pendingCleanup && (effectIds.length || Object.keys(result.updates).length)) {
+      pendingCleanup = recordRestChanges(actor, result, effectIds);
+      await setDocumentFlagVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP, pendingCleanup, { render: false }, { replace: true });
+    }
+
     const savedRest = pendingCleanup ?? pendingShortRest;
     const actorUpdate = savedRest ? planRestRecoveryRetry(actor, savedRest, result.updates) : { ...result.updates };
     if (result.flagValue !== undefined) {
@@ -584,15 +598,9 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = null;
     }
 
-    if (effectIds.length && !pendingCleanup) {
-      actorUpdate[cleanupPath] = recordRestChanges(actor, result, effectIds);
-    }
     const hasActorUpdate = Object.keys(actorUpdate).length > 0;
     if (hasActorUpdate) {
       await actor.update(actorUpdate);
-    }
-    if (effectIds.length && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP), pendingCleanup ?? actorUpdate[cleanupPath])) {
-      throw createCodedError("write-not-persisted", "Rest cleanup was not recorded.");
     }
     for (const [path, expected] of Object.entries(result.updates)) {
       if (getProperty(actor._source ?? actor, path) !== expected) {
@@ -621,8 +629,8 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       if (effectIds.some(id => afterIds.has(id))) {
         throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
       }
-      await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP);
     }
+    if (pendingCleanup) await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP, { render: false });
     if (pendingShortRest) await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, { render: false });
 
     if (result.changed) {
@@ -720,6 +728,7 @@ export function buildRestSnapshot(actor, context = {}) {
     blockedBy,
     currentQuarterKey,
     quarterInfo,
+    pendingLongRest: Boolean(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP)),
     pendingShortRecovery: getPendingShortRest(actor)?.result?.flagValue ?? null,
     shortRestUse: {
       ...savedUse,

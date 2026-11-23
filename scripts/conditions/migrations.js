@@ -12,6 +12,7 @@ import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
 import { createCodedError, plainValuesEqual } from "../document-writes.js";
+import { getProperty } from "../actor-data.js";
 import { enqueueActorMutationOperation } from "../operation-queue.js";
 import {
   buildSpecialCounterMigrationUpdate,
@@ -78,15 +79,18 @@ async function migrateLegacyActorFlags(actor) {
   const update = {};
   setIfMissing(update, actor, FLAGS.LIST, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LIST));
   setIfMissing(update, actor, FLAGS.LAYOUT_COLUMNS, foundry.utils.getProperty(legacy, LEGACY_FLAGS.LAYOUT_COLUMNS));
-  update[`flags.-=${LEGACY_MODULE_ID}`] = null;
-
-  await actor.update(update, { render: false });
+  if (Object.keys(update).length) {
+    await actor.update(update, { render: false });
+    assertMigrationFields(actor, update);
+  }
+  await actor.update({ [`flags.-=${LEGACY_MODULE_ID}`]: null }, { render: false });
   assertPersistedMigration(actor.flags?.[LEGACY_MODULE_ID] === undefined, `Legacy actor flags were not removed for ${actor.id}`);
   return true;
 }
 
 async function migrateLegacyItemFlags(actor) {
   const itemUpdates = [];
+  const cleanupUpdates = [];
   const mapping = [
     [LEGACY_FLAGS.ORDER, FLAGS.ORDER],
     [LEGACY_FLAGS.NOTES, FLAGS.NOTES],
@@ -102,7 +106,7 @@ async function migrateLegacyItemFlags(actor) {
     const legacy = item?.flags?.[LEGACY_MODULE_ID];
     if (!legacy) continue;
 
-    const update = { _id: item.id, [`flags.-=${LEGACY_MODULE_ID}`]: null };
+    const update = { _id: item.id };
 
     for (const [legacyKey, currentKey] of mapping) {
       const value = foundry.utils.getProperty(legacy, legacyKey);
@@ -111,16 +115,34 @@ async function migrateLegacyItemFlags(actor) {
       update[flagUpdatePath(currentKey)] = foundry.utils.deepClone(value);
     }
 
-    itemUpdates.push(update);
+    if (Object.keys(update).length > 1) itemUpdates.push(update);
+    cleanupUpdates.push({ _id: item.id, [`flags.-=${LEGACY_MODULE_ID}`]: null });
   }
 
-  if (!itemUpdates.length) return false;
-  await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
-  for (const update of itemUpdates) {
+  if (!cleanupUpdates.length) return false;
+  await persistItemMigration(actor, itemUpdates);
+  await actor.updateEmbeddedDocuments("Item", cleanupUpdates, { render: false });
+  for (const update of cleanupUpdates) {
     const item = getActorItemById(actor, update._id);
     assertPersistedMigration(!item || item.flags?.[LEGACY_MODULE_ID] === undefined, `Legacy item flags were not removed for ${update._id}`);
   }
   return true;
+}
+
+function assertMigrationFields(document, fields) {
+  for (const [path, expected] of Object.entries(fields)) {
+    assertPersistedMigration(plainValuesEqual(getProperty(document._source ?? document, path), expected),
+      `Migration did not preserve ${path} on ${document.id}`);
+  }
+}
+
+async function persistItemMigration(actor, itemUpdates) {
+  if (!itemUpdates.length) return;
+  await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+  for (const { _id, ...fields } of itemUpdates) {
+    const item = getActorItemById(actor, _id);
+    if (item) assertMigrationFields(item, fields);
+  }
 }
 
 
@@ -235,20 +257,14 @@ export async function migrateActorData(actor) {
     return actorMigrated || itemsMigrated || normalized.changed || ordering.changed;
   });
 
-  const itemUpdates = Array.from(actor.items ?? [])
+  const counters = Array.from(actor.items ?? [])
     .filter(item => item.type === "criticalInjury")
     .map(item => buildSpecialCounterMigrationUpdate(item))
     .filter(Boolean);
 
-  if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
-    for (const update of itemUpdates) {
-      const item = getActorItemById(actor, update._id);
-      assertPersistedMigration(
-        !item || !buildSpecialCounterMigrationUpdate(item),
-        `Special counter migration was not persisted for ${update._id}`
-      );
-    }
+  if (counters.length) {
+    await persistItemMigration(actor, counters.filter(update => Object.keys(update).length > 1));
+    await persistItemMigration(actor, counters.map(({ _id }) => ({ _id, "system.healingTime": "" })));
     changed = true;
   }
 

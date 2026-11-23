@@ -1436,14 +1436,21 @@ function flushProfileSave(key) {
     if (DELETED_ACTORS.has(pending.actor)) return false;
     SAVE_RUNNING.set(key, pending);
     try {
+      let firstError;
       for (const [path, value] of pending.patches) {
         if (DELETED_ACTORS.has(pending.actor)) return false;
-        const profile = path === "*" ? value : getBiographyProfile(pending.actor);
-        if (path !== "*") setPath(profile, path, value);
-        const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
-        if (!saved) throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
-        pending.patches.delete(path);
+        try {
+          const profile = path === "*" ? value : getBiographyProfile(pending.actor);
+          if (path !== "*") setPath(profile, path, value);
+          const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+          if (!saved) throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
+          pending.patches.delete(path);
+        } catch (error) {
+          firstError ??= error;
+          if (path === "*") break;
+        }
       }
+      if (firstError) throw firstError;
       if (!SAVE_PENDING.has(key)) setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
       return true;
     } catch (error) {

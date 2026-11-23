@@ -344,10 +344,12 @@ function makeAddictionItem(initialState) {
     savedState: structuredClone(initialState),
     modifierKeys: [],
     morning: null,
+    pendingTransition: null,
     getFlag(_moduleId, key) {
       if (key === "conditions.addictionState") return this.savedState;
       if (key === "conditions.addictionModifierKeys") return this.modifierKeys;
       if (key === "conditions.addictionMorning") return this.morning;
+      if (key === "conditions.addictionPendingTransition") return this.pendingTransition;
       return undefined;
     },
     async setFlag(_moduleId, key, value) {
@@ -357,10 +359,21 @@ function makeAddictionItem(initialState) {
     async update(data) {
       const addictionStatePath = "flags.fbl-quick-access.conditions.addictionState";
       const modifierKeysPath = "flags.fbl-quick-access.conditions.addictionModifierKeys";
-      const morningPath = "flags.fbl-quick-access.conditions.addictionMorning";
+      const flagBase = "flags.fbl-quick-access.conditions.";
+      const morningPath = `${flagBase}==addictionMorning`;
+      const transitionPath = `${flagBase}==addictionPendingTransition`;
       if (data[addictionStatePath]) this.savedState = structuredClone(data[addictionStatePath]);
       if (Array.isArray(data[modifierKeysPath])) this.modifierKeys = [...data[modifierKeysPath]];
       if (data[morningPath] !== undefined) this.morning = structuredClone(data[morningPath]);
+      if (data[transitionPath] !== undefined) this.pendingTransition = structuredClone(data[transitionPath]);
+      if (data[`${flagBase}addictionPendingTransition`] === null) this.pendingTransition = null;
+      for (const [path, value] of Object.entries(data)) {
+        const prefix = "system.rollModifiers.";
+        if (!path.startsWith(prefix)) continue;
+        const modifier = path.slice(prefix.length);
+        if (modifier.startsWith("-=")) delete this.system.rollModifiers[modifier.slice(2)];
+        else this.system.rollModifiers[modifier] = structuredClone(value);
+      }
     },
     async delete() {
       this.deleted = true;

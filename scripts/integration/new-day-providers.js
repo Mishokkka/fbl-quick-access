@@ -236,7 +236,16 @@ async function handleApplyProviderAction(payload, context) {
       requestUser: liveUser,
       suppressChat: Boolean(payload?.suppressChat) && liveUser.isGM && !context.isRemote
     });
-    const result = await provider.applyAction(actor, action, liveContext) ?? {};
+    let result;
+    try {
+      result = await provider.applyAction(actor, action, liveContext) ?? {};
+    } catch (error) {
+      // Only the bridge's comparison can guarantee rejection before mutation.
+      if (error?.code === "stale-provider-action") {
+        throw Object.assign(createCodedError("provider-action-failed", error.message), { cause: error });
+      }
+      throw error;
+    }
 
     const normalized = {
       changed: Boolean(result.changed),

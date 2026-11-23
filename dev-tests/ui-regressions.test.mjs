@@ -89,6 +89,7 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
   };
   let dialogConfig = null;
   const updates = [];
+  let pendingRest = null;
 
   class FakeElement {
     matches(selector) { return selector === "form"; }
@@ -154,10 +155,12 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
         condition: {}
       },
       effects: [],
-      getFlag: () => null,
+      getFlag: (_scope, key) => key === "pendingRestCleanup" ? pendingRest : null,
       async update(update) {
         updates.push(update);
         if ("system.attribute.strength.value" in update) this.system.attribute.strength.value = update["system.attribute.strength.value"];
+        if ("flags.fbl-quick-access.==pendingRestCleanup" in update) pendingRest = update["flags.fbl-quick-access.==pendingRestCleanup"];
+        if ("flags.fbl-quick-access.pendingRestCleanup" in update) pendingRest = update["flags.fbl-quick-access.pendingRestCleanup"];
       },
       async deleteEmbeddedDocuments() {},
       async setFlag() {},
@@ -172,10 +175,13 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
 
     const fakeButton = { form: new FakeForm() };
     await apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => {} });
+    assert.equal(actor.system.attribute.strength.value, 3);
     const result = await completion;
 
     assert.equal(result?.type, "long");
-    assert.deepEqual(updates, [{ "system.attribute.strength.value": 3 }]);
+    assert.deepEqual(updates[0]["flags.fbl-quick-access.==pendingRestCleanup"].writes,
+      [{ path: "system.attribute.strength.value", before: 2, target: 3 }]);
+    assert.deepEqual(updates.slice(1), [{ "system.attribute.strength.value": 3 }, { "flags.fbl-quick-access.pendingRestCleanup": null }]);
   } finally {
     globalThis.game = previous.game;
     globalThis.foundry = previous.foundry;

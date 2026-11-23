@@ -17,6 +17,10 @@ function enqueueMorChange(actor, item, operation) {
   return actor ? enqueueActorMutationOperation(actor, operation) : enqueueMorOperation(item, operation);
 }
 
+function enqueueHeatMutation(actor, item, operation) {
+  return actor ? enqueueActorMutationOperation(actor, operation) : enqueueHeatChange(item, operation);
+}
+
 export function getHeatDefinition() {
   const definition = CONDITION_DEFINITIONS.heat || { names: ["жара", "heat"], max: 4, levels: {} };
   const levels = {};
@@ -224,10 +228,18 @@ export async function updateAddictionModifiers(item, state, documentOptions = {}
   if (item) await item.update(buildAddictionModifierUpdate(item, state), documentOptions);
 }
 
-export async function saveAddictionState(item, state, documentOptions = {}, extraUpdate = {}) {
+export async function saveAddictionState(item, state, documentOptions = {}) {
   if (!item) return;
-  await item.update({ ...extraUpdate, ...buildAddictionModifierUpdate(item, state),
+  const isPersisted = () => {
+    const saved = readDocumentFlag(item, MODULE_ID, FLAGS.ADDICTION_STATE);
+    return saved && Object.entries(state).every(([key, value]) => saved[key] === value) && !needsAddictionModifierSync(item, state);
+  };
+  if (isPersisted()) return;
+  await item.update({ ...buildAddictionModifierUpdate(item, state),
     [flagUpdatePath(FLAGS.ADDICTION_STATE)]: state }, documentOptions);
+  if (!isPersisted()) {
+    throw createCodedError("write-not-persisted", "Addiction state or modifiers were not persisted.");
+  }
 }
 
 export function buildHeatModifierUpdate(value) {
@@ -259,12 +271,12 @@ function getHeatThresholdDamage(previousValue, value, overcap = false) {
 
 export async function updateHeatItem(actor, item, newValue, reason = "manual", documentOptions = {}) {
   if (!item) return null;
-  return enqueueHeatChange(item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
+  return enqueueHeatMutation(actor, item, () => applyHeatChange(actor, item, newValue, reason, documentOptions));
 }
 
 export async function applyHeatFailure(actor, item, documentOptions = {}) {
   if (!item) return null;
-  return enqueueHeatChange(item, () => {
+  return enqueueHeatMutation(actor, item, () => {
     const pending = readDocumentFlag(item, MODULE_ID, HEAT_PENDING_CHANGE);
     return applyHeatChange(actor, item, pending?.value ?? parseHeatValue(item) + 1, "failure", documentOptions);
   });
@@ -347,15 +359,21 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 }
 
 async function applyCounterDamage(actor, item, pendingKey, pending, receiptName, legacyDamages, documentOptions) {
+  const receiptKey = `conditions.${receiptName}.${item.id}`;
+  const receipt = readDocumentFlag(actor, MODULE_ID, receiptKey);
   let { damagePlan } = pending;
   if (!Array.isArray(damagePlan)) {
     // Older interrupted operations stored the exact values in the Actor receipt.
-    const receipt = readDocumentFlag(actor, MODULE_ID, `conditions.${receiptName}.${item.id}`);
     damagePlan = receipt?.id === pending.id && Array.isArray(receipt.appliedDamage)
       ? receipt.appliedDamage : planActorAttributeDamage(actor, legacyDamages);
     await setDocumentFlagVerified(item, MODULE_ID, pendingKey, { ...pending, damagePlan }, documentOptions);
   }
-  return applyActorAttributeDamage(actor, damagePlan, documentOptions);
+  if (!damagePlan.length || (receipt?.id === pending.id && receipt.applied === true)) return damagePlan;
+  await applyActorAttributeDamage(actor, damagePlan, documentOptions);
+  // Record completion only after verifying the attributes. A later edit may
+  // intentionally bring an attribute back to its pre-damage value.
+  await setDocumentFlagVerified(actor, MODULE_ID, receiptKey, { id: pending.id, applied: true }, documentOptions, { replace: true });
+  return damagePlan;
 }
 
 export function changePermanentMor(item, delta, documentOptions = {}) {
@@ -466,20 +484,17 @@ export function buildSpecialCounterMigrationUpdate(item) {
   const healingTime = String(item?.system?.healingTime ?? "").trim();
   if (!healingTime) return null;
 
-  if (isNamedSpecialCondition(item, getHeatDefinition()) && item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) === undefined) {
+  if (isNamedSpecialCondition(item, getHeatDefinition())) {
     return {
       _id: item.id,
-      [flagUpdatePath(FLAGS.HEAT_VALUE)]: parseHeatValue(item),
-      "system.healingTime": ""
+      ...(item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) === undefined && { [flagUpdatePath(FLAGS.HEAT_VALUE)]: parseHeatValue(item) })
     };
   }
 
-  if (["мор", "mor"].includes(normalizeConditionName(item.name)) && item.getFlag(MODULE_ID, FLAGS.MOR_STATE) === undefined) {
-    const mor = getMorState(item);
+  if (["мор", "mor"].includes(normalizeConditionName(item.name))) {
     return {
       _id: item.id,
-      [flagUpdatePath(FLAGS.MOR_STATE)]: { current: mor.current, permanent: mor.permanent },
-      "system.healingTime": ""
+      ...(item.getFlag(MODULE_ID, FLAGS.MOR_STATE) === undefined && { [flagUpdatePath(FLAGS.MOR_STATE)]: getMorState(item) })
     };
   }
 

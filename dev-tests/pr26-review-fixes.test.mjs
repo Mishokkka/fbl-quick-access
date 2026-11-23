@@ -726,6 +726,33 @@ test("PR26: Reputation keeps the newest failed edit visible after reopening", as
     }
 
     assert.equal(rep.getReputationEntries(actor)[0].amount, 3);
+
+    const started = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    let waitForSave = true;
+    actor.update = async patch => {
+      if (waitForSave) {
+        waitForSave = false;
+        started.resolve();
+        await resume.promise;
+      }
+      return persist.call(actor, patch);
+    };
+    const writer = rep.openReputationDialog(null, actor);
+    const amount = writer.rowsRoot.querySelector("input[data-field='amount']");
+    amount.value = "4";
+    writer.rowsRoot.dispatch("input", { target: amount });
+    await writer.close();
+    await started.promise;
+    const reader = rep.openReputationDialog(null, actor);
+    assert.equal(reader.rowsRoot.querySelector("input[data-field='amount']").value, "4");
+    resume.resolve();
+    await nextTurn();
+    assert.equal(rep.getReputationEntries(actor)[0].amount, 4);
+    await rep.saveReputationEntries(actor, [{ ...rep.getReputationEntries(actor)[0], amount: 5 }]);
+    await reader.close();
+    await nextTurn();
+    assert.equal(rep.getReputationEntries(actor)[0].amount, 5, "closing an untouched reopened dialog must not save its borrowed draft");
   } finally {
     restore();
   }

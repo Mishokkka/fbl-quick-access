@@ -735,7 +735,9 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
           for (const [k, v] of Object.entries(patch)) {
             if (k.startsWith("flags.fbl-quick-access.")) {
               const fk = k.slice("flags.fbl-quick-access.".length);
-              setNested(itemFlags["fbl-quick-access"], fk, v);
+              setNestedFoundry(itemFlags["fbl-quick-access"], fk, v);
+            } else if (k.startsWith("system.")) {
+              setNestedFoundry(this, k, v);
             }
           }
           return this;

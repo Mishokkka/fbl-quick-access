@@ -14,7 +14,7 @@ import {
   isMorCondition,
   parseHeatValue
 } from "../features/special-counters.js";
-import { getAddictionDayKey, getAddictionMorning } from "../services/addiction-service.js";
+import { getAddictionDayKey, getAddictionMorning, getPendingAddictionTransition } from "../services/addiction-service.js";
 
 function toUpperTitle(name) {
   return String(name || "").toUpperCase();
@@ -227,14 +227,16 @@ async function renderInjury(item, editable, orderOverride = null) {
   if (isAddictionCondition(item)) {
     const state = getAddictionState(item);
     const morning = getAddictionMorning(item);
-    const pending = morning?.status === "pending";
+    const interrupted = getPendingAddictionTransition(item);
+    const pending = !interrupted && morning?.status === "pending";
     const processed = morning?.dayKey === getAddictionDayKey(item.parent);
     return renderHandlebarsTemplate(TEMPLATE_PATHS.addiction, {
       ...common,
       pending,
       modifierText: getAddictionModifierText(item),
-      morningDisabled: pending || processed,
-      morningText: pending ? localize("Addiction.Pending", "Awaiting manual Endurance")
+      morningDisabled: !interrupted && (pending || processed),
+      morningText: interrupted ? localize("Addiction.RetryMorning", "Finish saving the previous Addiction outcome.")
+        : pending ? localize("Addiction.Pending", "Awaiting manual Endurance")
         : processed ? localize(`Addiction.Outcome.${morning.outcome}`, "Morning resolved")
           : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
       rollText: morning?.total != null ? localize("Addiction.LastCraving", "Craving: {total}", { total: morning.total }) : "",

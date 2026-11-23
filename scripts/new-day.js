@@ -11,7 +11,7 @@ import {
   getAddictionState,
   isAddictionCondition
 } from "./conditions/features/special-counters.js";
-import { getAddictionDayKey, getAddictionMorning, getPendingAddictions, processAddictionNewDay } from "./conditions/services/addiction-service.js";
+import { getAddictionDayKey, getAddictionMorning, getPendingAddictions, getPendingAddictionTransition, processAddictionNewDay } from "./conditions/services/addiction-service.js";
 import {
   applyNewDayProviderAction,
   buildNewDayProviderActions,
@@ -89,6 +89,7 @@ export function buildNewDayPlan(actor, options = {}) {
     const conditionKind = getConditionKind(item);
 
     if (isAddictionCondition(item)) {
+      const morning = getPendingAddictionTransition(item) ?? getAddictionMorning(item);
       actions.push({
         id: `addiction:${item.id}:day`,
         kind: "addiction-day",
@@ -96,8 +97,8 @@ export function buildNewDayPlan(actor, options = {}) {
         itemId: item.id,
         itemName,
         checked: true,
-        dayKey: getAddictionMorning(item)?.status === "pending" ? getAddictionMorning(item).dayKey : dayKey,
-        pending: getAddictionMorning(item)?.status === "pending",
+        dayKey: blockedByAddiction ? morning.dayKey : dayKey,
+        pending: blockedByAddiction,
         state: getAddictionState(item)
       });
       continue;
@@ -243,7 +244,8 @@ function actionPrecondition(actor, action, customConditions, appliedHealing) {
   const item = getActorItem(actor, action.itemId);
   if (!item) return opaquePreconditionToken(["missing", action.itemId ?? null]);
   if (action.kind === "addiction-day") {
-    return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
+    return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item),
+      getAddictionState(item), getAddictionMorning(item), getPendingAddictionTransition(item)]);
   }
   let healingTime = timerSystem(item)?.healingTime;
   if (action.kind === "lethal-limit" && appliedHealing) {
@@ -305,7 +307,8 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     assertActionCurrent(actor, plan, action, preconditions);
   };
   const pausedForAddiction = () => !dispatched && pendingAtStart;
-  const stalePlan = () => !dispatched && results.length > 0 && results.every(entry => entry.code === "stale-plan");
+  const stalePlan = () => !dispatched && results.length > 0
+    && results.every(entry => ["stale-plan", "stale-provider-action"].includes(entry.code));
   const actions = selectedActions.filter(action => {
     try { assertCurrent(action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
@@ -381,12 +384,19 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
 
     try {
       assertCurrent(action);
-      dispatched = true;
       if (action.providerId) {
-        const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
+        let providerResult;
+        try {
+          providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
+        } catch (error) {
+          if (error?.code !== "stale-provider-action") dispatched = true;
+          throw error;
+        }
+        dispatched = true;
         results.push(successResult(action, providerResult));
         continue;
       }
+      dispatched = true;
 
       if (action.kind === "short-rest-reset") {
         await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_SHORT_REST_RECOVERY, documentOptions);

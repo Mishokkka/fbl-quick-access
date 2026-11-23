@@ -44,6 +44,7 @@ import {
 } from "./state-progression.js";
 import { EQUIPMENT_API_VERSION, getEquipmentState, getEquipmentReceipt, previewEquipmentAction, performEquipmentAction, registerEquipmentHooks } from "./integration/equipment-api.js";
 import { getHeldItemPresentation } from "./integration/weapon-presentation.js";
+import { recoverActorMutationLock } from "./actor-mutation-lock.js";
 
 const BIO_ACTIVATION_GUARDS = new WeakMap();
 
@@ -105,6 +106,7 @@ Hooks.once("init", () => {
       resetAllCalendarMarkersToCurrent,
       rewindAllCalendarMarkers,
       openMoneyTransferDialog,
+      recoverActorMutationLock,
       getPendingMoneyTransferReconciliations,
       resolveMoneyTransferReconciliation,
       getReputationEntries,

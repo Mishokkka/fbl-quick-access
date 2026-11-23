@@ -202,9 +202,9 @@ for (const [outcome, expected] of [["success", 8], ["failure-no-dose", 8], ["fai
     assert.equal(getAddictionMorning(dependency).status, "resolved");
     assert.equal((await resolveAddictionMorning(owner, dependency, outcome, quiet)).changed, false);
     assert.equal((await performAddictionMorning(owner, dependency, quiet)).reused, true);
-    const update = dependency.updates.at(-1);
-    assert.ok(update[`flags.${scope}.conditions.addictionState`]);
-    assert.equal(update[`flags.${scope}.conditions.addictionMorning`].outcome, outcome);
+    const stateWrite = dependency.updates.findLastIndex(update => update[`flags.${scope}.conditions.addictionState`]?.die === expected);
+    const morningWrite = dependency.updates.findLastIndex(update => update[`flags.${scope}.conditions.==addictionMorning`]?.outcome === outcome);
+    assert.ok(stateWrite >= 0 && stateWrite < morningWrite);
   });
 }
 
@@ -312,7 +312,7 @@ test("a calendar skip consumes only the started day and resumes after its manual
 });
 
 for (const mode of ["interactive", "automatic"]) {
-  for (const veto of ["applying", "applied", "marker"]) {
+  for (const veto of ["applying", "applied", "marker", "cleanup"]) {
     test(`${mode} day recovery after reload with ${veto} write veto`, async () => {
       setup();
       const start = { year: 1, month: 1, day: 1 };
@@ -345,7 +345,8 @@ for (const mode of ["interactive", "automatic"]) {
         owner.flags = structuredClone(flags);
         const update = owner.update;
         owner.update = function (payload, options) {
-          const stage = Object.hasOwn(payload, markerPath) ? "marker" : payload[operationPath]?.phase;
+          const stage = Object.hasOwn(payload, markerPath) ? "marker" : payload[`flags.${scope}.${operationKey}`] === null
+            ? "cleanup" : payload[operationPath]?.phase;
           if (stage === blockedWrite) return undefined;
           return update.call(this, payload, options);
         };
@@ -363,9 +364,9 @@ for (const mode of ["interactive", "automatic"]) {
       };
       const first = loadActor({ flags: { [scope]: { [markerKey]: { calendarId, date: start } } }, healingTime: "5 days", blockedWrite: veto });
       await assert.rejects(processDay(await calendarWorker({ fresh: true }), first.owner), { code: "write-not-persisted" });
-      assert.deepEqual(first.owner.getFlag(scope, markerKey).date, start);
+      assert.deepEqual(first.owner.getFlag(scope, markerKey).date, veto === "cleanup" ? date : start);
       assert.equal(first.wound.system.healingTime, veto === "applying" ? "5 days" : "4 days");
-      assert.equal(first.owner.getFlag(scope, operationKey)?.phase, { applying: undefined, applied: "applying", marker: "applied" }[veto]);
+      assert.equal(first.owner.getFlag(scope, operationKey)?.phase, { applying: undefined, applied: "applying", marker: "applied", cleanup: "applied" }[veto]);
 
       const reloaded = loadActor({ flags: first.owner.flags, healingTime: first.wound.system.healingTime });
       const worker = await calendarWorker({ fresh: true });
@@ -397,7 +398,7 @@ for (const mode of ["interactive", "automatic"]) {
         await processDay(worker, reloaded.owner);
         assert.deepEqual(reloaded.owner.getFlag(scope, markerKey).date, date);
         assert.equal(reloaded.owner.getFlag(scope, operationKey), null);
-        assert.equal(reloaded.wound.updates.length, veto === "marker" ? 0 : 1);
+        assert.equal(reloaded.wound.updates.length, ["marker", "cleanup"].includes(veto) ? 0 : 1);
       }
       assert.equal(reloaded.wound.system.healingTime, "4 days");
     });
