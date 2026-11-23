@@ -4,106 +4,11 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { captureRestDialogs } from "./helpers/rest-dialog.mjs";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
+import { makeFoundryActor, makeFoundryUser, saveGlobals, setFoundryPath } from "./helpers/foundry-documents.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-function saveGlobals(keys) {
-  const saved = new Map();
-  for (const key of keys) {
-    saved.set(key, { existed: key in globalThis, value: globalThis[key] });
-  }
-  return () => {
-    for (const [key, entry] of saved.entries()) {
-      if (entry.existed) globalThis[key] = entry.value;
-      else delete globalThis[key];
-    }
-  };
-}
-
-function getNested(obj, path) {
-  return String(path).split(".").reduce((cur, p) => (cur == null ? undefined : cur[p]), obj);
-}
-
-function mergeFoundryObject(target, source) {
-  if (!source || typeof source !== "object" || Array.isArray(source)) return structuredClone(source);
-  const base = target && typeof target === "object" && !Array.isArray(target) ? structuredClone(target) : {};
-  for (const [k, v] of Object.entries(source)) {
-    if (v && typeof v === "object" && !Array.isArray(v) && base[k] && typeof base[k] === "object" && !Array.isArray(base[k])) {
-      base[k] = mergeFoundryObject(base[k], v);
-    } else {
-      base[k] = structuredClone(v);
-    }
-  }
-  return base;
-}
-
-function setFoundryPath(obj, path, value, { forceReplace = false } = {}) {
-  const parts = String(path).split(".");
-  let leaf = parts.pop();
-  let cur = obj;
-  for (const p of parts) {
-    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
-    cur = cur[p];
-  }
-  if (leaf.startsWith("-=")) {
-    delete cur[leaf.slice(2)];
-    return;
-  }
-  const replace = forceReplace || leaf.startsWith("==");
-  if (leaf.startsWith("==")) leaf = leaf.slice(2);
-  if (!replace && value && typeof value === "object" && !Array.isArray(value) && cur[leaf] && typeof cur[leaf] === "object" && !Array.isArray(cur[leaf])) {
-    cur[leaf] = mergeFoundryObject(cur[leaf], value);
-  } else {
-    cur[leaf] = structuredClone(value);
-  }
-}
-
-function makeFoundryActor(overrides = {}) {
-  const flags = overrides._flags ?? {};
-  let cancelUpdate = Boolean(overrides.cancelUpdate);
-  const { _flags, cancelUpdate: _cu, ...rest } = overrides;
-  const actor = {
-    id: rest.id ?? "actor-1",
-    uuid: rest.uuid ?? `Actor.${rest.id ?? "actor-1"}`,
-    name: rest.name ?? "Tester",
-    documentName: "Actor",
-    type: "character",
-    isOwner: rest.isOwner ?? true,
-    pack: null,
-    system: rest.system ?? {},
-    items: rest.items ?? [],
-    effects: rest.effects ?? [],
-    setCancelUpdate(v) { cancelUpdate = Boolean(v); },
-    getFlag(scope, key) {
-      return getNested(flags[scope], key);
-    },
-    // Faithfully mimics Foundry v13: setFlag merges plain objects into existing flags.
-    async setFlag(scope, key, value) {
-      if (cancelUpdate) return undefined;
-      flags[scope] ??= {};
-      setFoundryPath(flags[scope], key, value, { forceReplace: false });
-      return this;
-    },
-    async update(data) {
-      if (cancelUpdate) return undefined;
-      for (const [path, value] of Object.entries(data ?? {})) {
-        const parts = path.split(".");
-        if (parts[0] === "flags" && parts.length >= 3) {
-          const scope = parts[1];
-          const key = parts.slice(2).join(".");
-          flags[scope] ??= {};
-          setFoundryPath(flags[scope], key, value, { forceReplace: false });
-          continue;
-        }
-        setFoundryPath(this, path, value, { forceReplace: false });
-      }
-      return this;
-    },
-    ...rest
-  };
-  return actor;
-}
 
 test("PR26: undoActorCalendariaAbsent & resetActorCalendarMarkerToCurrent replace whole marker (stripping absence metadata) under Foundry setFlag merge semantics", async () => {
   const restore = saveGlobals(["game", "ui", "CALENDARIA"]);
@@ -378,28 +283,15 @@ test("PR26: Rest ignores inactive condition ActiveEffects, honors legacy Calenda
 
     const rest = await import(`../scripts/rest.js?pr26-rest=${Date.now()}`);
 
-    // 1. Inactive Hungry effect must NOT block Strength; active Hungry effect MUST block.
-    const inactiveHungryActor = makeFoundryActor({
-      id: "rest-inactive",
-      system: {
-        attribute: { strength: { value: 2, max: 5 }, agility: { value: 4, max: 4 }, wits: { value: 4, max: 4 }, empathy: { value: 4, max: 4 } },
-        condition: { hungry: { value: false }, thirsty: { value: false }, sleepy: { value: false }, cold: { value: false } }
-      },
-      effects: [{ id: "eff-inactive-hungry", active: false, statuses: new Set(["hungry"]) }]
+    const hungryEffect = { id: "eff-hungry", active: false, statuses: new Set(["hungry"]) };
+    const hungryActor = makeFoundryActor({
+      id: "rest-hungry",
+      system: { condition: { hungry: { value: false } } },
+      effects: [hungryEffect]
     });
-    const inactiveSnap = rest.buildRestSnapshot(inactiveHungryActor);
-    assert.equal(inactiveSnap.conditions.hungry, false, "inactive Hungry ActiveEffect must not mark Hungry active");
-
-    const activeHungryActor = makeFoundryActor({
-      id: "rest-active",
-      system: {
-        attribute: { strength: { value: 2, max: 5 }, agility: { value: 4, max: 4 }, wits: { value: 4, max: 4 }, empathy: { value: 4, max: 4 } },
-        condition: { hungry: { value: false }, thirsty: { value: false }, sleepy: { value: false }, cold: { value: false } }
-      },
-      effects: [{ id: "eff-active-hungry", active: true, statuses: new Set(["hungry"]) }]
-    });
-    const activeSnap = rest.buildRestSnapshot(activeHungryActor);
-    assert.equal(activeSnap.conditions.hungry, true, "active Hungry ActiveEffect must still mark Hungry active");
+    assert.equal(rest.buildRestSnapshot(hungryActor).conditions.hungry, false);
+    hungryEffect.active = true;
+    assert.equal(rest.buildRestSnapshot(hungryActor).conditions.hungry, true);
 
     // 2. Legacy Calendaria quarter key without calendarId must still lock Short Rest in the same quarter
     const legacyKeyActor = makeFoundryActor({
@@ -431,46 +323,17 @@ test("PR26: Rest ignores inactive condition ActiveEffects, honors legacy Calenda
       }
     });
 
-    let dialogConfig = null;
-    class FakeElement {
-      constructor() { this.classList = { add() {}, toggle() {} }; this.dataset = {}; }
-      matches(s) { return s === "form"; }
-      querySelector() { return null; }
-      querySelectorAll() { return []; }
-      addEventListener() {}
-    }
-    class FakeLongForm extends FakeElement {
-      querySelector(selector) {
-        if (selector === 'input[name="restType"]:checked') return { value: "long" };
-        return null;
-      }
-    }
-    class FakeDialogV2 {
-      constructor(config) {
-        dialogConfig = config;
-        this.element = new FakeElement();
-        this.form = new FakeLongForm();
-        this.listeners = new Map();
-      }
-      addEventListener(t, l) { this.listeners.set(t, l); }
-      render() { return Promise.resolve(this); }
-      close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
-    }
-    globalThis.HTMLElement = FakeElement;
-    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
-
+    const dialogs = captureRestDialogs();
     const dialogPromise = rest.openRestDialog(null, retryActor, null);
-    const applyBtn = dialogConfig.buttons.find((b) => b.action === "apply");
-    const fakeForm = new FakeLongForm();
+    const dialog = dialogs[0];
 
-    // First attempt: Strength 1 -> 2, Sleepy deletion vetoed -> fails
-    await applyBtn.callback(null, { form: fakeForm }, { form: fakeForm, close: async () => {} });
+    await dialog.submit();
     assert.equal(retryActor.system.attribute.strength.value, 2);
     assert.equal(retryActor.effects.length, 1);
+    assert.equal(dialog.closed, false);
 
-    // Second attempt after veto clears: Strength MUST stay 2 (NOT jump to 3), and Sleepy effect is deleted
     vetoDelete = false;
-    await applyBtn.callback(null, { form: fakeForm }, { form: fakeForm, close: async () => {} });
+    await dialog.submit();
     const finalResult = await dialogPromise;
     assert.equal(retryActor.system.attribute.strength.value, 2, "retry must not apply Strength recovery a second time");
     assert.equal(retryActor.effects.length, 0, "retry must finish deleting Sleepy ActiveEffect");
@@ -529,8 +392,8 @@ test("PR26: BIO retains pending draft on cancelled Actor.update and ownership lo
   }
 });
 
-test("PR26: Reputation keeps the newest failed edit visible after reopening", async testContext => {
-  const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement", "document", "Roll"]);
+test("Reputation publishes rolls from current entries and keeps failed edits visible after reopening", async testContext => {
+  const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement", "document", "Roll", "ChatMessage"]);
   try {
     testContext.mock.method(console, "error", () => {});
     const savedSnapshots = [];
@@ -654,7 +517,8 @@ test("PR26: Reputation keeps the newest failed edit visible after reopening", as
       createElement: (tag) => new FakeDomNode(tag)
     };
     class FakeDialogV2 {
-      constructor() {
+      constructor({ content }) {
+        this.content = content;
         this.element = new FakeDomNode("div");
         this.rowsRoot = new FakeDomNode("div");
         this.rowsRoot.classList.add("fblqa-reputation-rows");
@@ -680,6 +544,25 @@ test("PR26: Reputation keeps the newest failed edit visible after reopening", as
     };
 
     const rep = await import(`../scripts/reputation.js?rep-rev=${Date.now()}`);
+    const untouched = rep.openReputationDialog(null, actor);
+    assert.match(untouched.content, /data-role="save-status"/);
+    assert.match(untouched.content, /data-role="limit-warning"/);
+    const published = [];
+    const rolled = [];
+    globalThis.Roll = class {
+      constructor(formula) { this.formula = formula; rolled.push(this); }
+      async evaluate() { this.dice = [{ results: [{ result: 6 }] }]; return this; }
+    };
+    globalThis.ChatMessage = { create: async message => { published.push(message); } };
+    untouched.rollButton.dispatch("click", {});
+    await nextTurn();
+    assert.equal(rolled[0]?.formula, "1d6cs=6");
+    assert.equal(published.length, 1);
+    assert.equal(published[0].rolls[0], rolled[0]);
+    await untouched.close();
+    await nextTurn();
+    assert.deepEqual(savedSnapshots, []);
+
     const dialog = rep.openReputationDialog(null, actor);
     assert.ok(dialog);
     const { rowsRoot } = dialog;
@@ -796,9 +679,9 @@ test("PR26: Money transfer persists GM-visible reconciliation record on partial 
 
     const senderActor = new FakeActor("sender", "Alice", 5);
     const targetActor = new FakeActor("target", "Bob", 1);
-    const gm = { id: "u-gm", name: "GM", isGM: true, active: true, _flags: {}, getFlag(s, k) { return this._flags?.[s]?.[k]; }, async setFlag(s, k, v) { this._flags[s] ??= {}; this._flags[s][k] = structuredClone(v); }, async unsetFlag(s, k) { delete this._flags?.[s]?.[k]; } };
-    const senderUser = { id: "u-sender", name: "Sender", isGM: false, active: true, character: senderActor, _flags: {}, getFlag(s, k) { return this._flags?.[s]?.[k]; }, async setFlag(s, k, v) { this._flags[s] ??= {}; this._flags[s][k] = structuredClone(v); }, async unsetFlag(s, k) { delete this._flags?.[s]?.[k]; } };
-    const targetUser = { id: "u-target", name: "Target", isGM: false, active: true, character: targetActor, _flags: {}, getFlag(s, k) { return this._flags?.[s]?.[k]; }, async setFlag(s, k, v) { this._flags[s] ??= {}; this._flags[s][k] = structuredClone(v); }, async unsetFlag(s, k) { delete this._flags?.[s]?.[k]; } };
+    const gm = makeFoundryUser({ id: "u-gm", name: "GM", isGM: true });
+    const senderUser = makeFoundryUser({ id: "u-sender", name: "Sender", character: senderActor });
+    const targetUser = makeFoundryUser({ id: "u-target", name: "Target", character: targetActor });
 
     const actors = [senderActor, targetActor];
     actors.get = (id) => actors.find((a) => a.id === id) ?? null;

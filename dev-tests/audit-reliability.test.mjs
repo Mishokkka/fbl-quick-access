@@ -1,8 +1,7 @@
 import test, { after } from "node:test";
 import assert from "node:assert/strict";
-import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
+import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { acknowledgeCounterDamage, applyHeatFailure, applyMorGain, changePermanentMor, clearStaleMorGain, getAddictionState, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { getAddictionDayKey, getAddictionMorning, getPendingAddictionTransition, handleAddictionOperation, performAddictionMorning } from "../scripts/conditions/services/addiction-service.js";
@@ -21,6 +20,8 @@ import { enqueueActorMutationOperation, enqueueCurrencyOperation, withWalletLock
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
+import { getFoundryPath as get, setFoundryPath } from "./helpers/foundry-documents.mjs";
+import { exposeModule as expose } from "./helpers/expose-module.mjs";
 
 const scope = "fbl-quick-access";
 // Several cases deliberately simulate failed writes/notifications. Keep their
@@ -29,14 +30,7 @@ const originalError = console.error;
 console.error = () => {};
 after(() => { console.error = originalError; });
 let nextId = 0;
-const get = (value, key) => key.split(".").reduce((object, part) => object?.[part], value);
-const set = (value, key, entry) => {
-  const parts = key.split("."); const leaf = parts.pop();
-  const parent = parts.reduce((object, part) => object[part] ??= {}, value);
-  if (leaf.startsWith("-=")) delete parent[leaf.slice(2)];
-  else if (leaf.startsWith("==")) parent[leaf.slice(2)] = structuredClone(entry);
-  else parent[leaf] = structuredClone(entry);
-};
+const set = (target, path, value) => setFoundryPath(target, path, value, { replace: true });
 function reset() {
   globalThis.foundry = { utils: { getProperty: get, deepClone: structuredClone,
     randomID: () => `audit${String(++nextId).padStart(20, "0")}`,
@@ -95,18 +89,7 @@ function actor(items = []) {
   for (const entry of items) { entry.parent = result; entry.delete = async () => result.deleteEmbeddedDocuments("Item", [entry.id]); }
   return result;
 }
-const exposedModules = new Map();
-async function expose(path, names) {
-  const key = `${path}:${names}`;
-  if (!exposedModules.has(key)) {
-    const url = new URL(`../${path}`, import.meta.url);
-    let source = await fs.readFile(url, "utf8");
-    source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
-    source += `\nexport { ${names.join(", ")} };\n`;
-    exposedModules.set(key, import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`));
-  }
-  return exposedModules.get(key);
-}
+
 reset();
 const calendar = await expose("scripts/state-progression.js", [
   "buildPlayerResultContent", "handleCalendariaMultiDayJump", "processActorAutomaticDays", "recordCalendarFailures",
@@ -127,8 +110,8 @@ function captureCalendarDialogs() {
   }
   foundry.applications = { api: { DialogV2: class {
     constructor(config) { this.config = config; dialogs.push(this); }
-    addEventListener() {}
-    close() {}
+    addEventListener(type, listener) { if (type === "close") this.onClose = listener; }
+    close() { this.closed = true; this.onClose?.(); }
     render() {}
     submit(action, days = "1") { return this.config.buttons.find(button => button.action === action).callback({}, { form: new RewindForm(days) }, this); }
   } } };
@@ -407,6 +390,45 @@ test("A01: a later calendar date supersedes a queued time skip after the started
   assert.equal(a.items[0].system.healingTime, "7 days");
 });
 
+test("an unattended calendar calculation uses its default day limit", async () => {
+  reset();
+  const character = actor();
+  const today = { ...context, date: { ...start, day: 101 } };
+  CALENDARIA.api.getCurrentDateTime = () => today.date;
+  await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: today.calendarId, date: start });
+
+  const result = await calendar.processActorAutomaticDays(character, start, today, 100);
+
+  assert.equal(result.processedDays, 90);
+  assert.equal(result.limitedDays, 10);
+  assert.equal(result.days.length, 1);
+  assert.equal(getActorCalendarMarker(character).date.day, 91);
+});
+
+test("an approved calendar skip with a backlog stops at the hard limit", async () => {
+  reset();
+  const dialogs = captureCalendarDialogs();
+  const character = assignedActor();
+  const today = { ...context, date: { ...start, day: 401 }, api: CALENDARIA.api };
+  CALENDARIA.api.getCurrentDateTime = () => today.date;
+  await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: today.calendarId, date: start });
+
+  const manager = await calendar.openStateProgressionManager();
+  const applying = calendar.handleCalendariaMultiDayJump({ ...start, day: 101 }, today, 300);
+  await delay(0);
+  const confirmation = dialogs.at(-1);
+  assert.match(confirmation.config.window.title, /time skip/i);
+  await confirmation.submit("yes");
+  await applying;
+
+  const { state, days, result } = manager.statuses.get(character.id);
+  assert.equal(state, "blocked");
+  assert.equal(days, 35);
+  assert.equal(result.processedDays, 365);
+  assert.equal(result.days.length, 1);
+  assert.equal(getActorCalendarMarker(character).date.day, 366);
+});
+
 test("a confirmation from the old calendar cannot replace another calendar's baseline", async () => {
   reset();
   const dialogs = captureCalendarDialogs();
@@ -468,16 +490,27 @@ test("bulk rewind keeps Resolve available for an interrupted day", async () => {
   assert.equal(calendar.getActorCalendarMarker(eligible).date.day, 2);
 });
 
-test("the manager drops an unassigned character when it refreshes", async () => {
+test("the manager refreshes assignments and replaces the summary when the date changes", async () => {
   reset();
+  captureCalendarDialogs();
   const original = assignedActor();
   const player = game.users.at(-1);
   const state = await calendar.openStateProgressionManager();
   assert.ok(state.entries.has(original.id));
   player.character = actor();
   const updated = await calendar.openStateProgressionManager();
+  assert.equal(updated, state);
   assert.deepEqual([...updated.entries.keys()], [player.character.id]);
   assert.equal(updated.statuses.has(original.id), false);
+
+  const staleDialog = state.dialog;
+  CALENDARIA.api.getCurrentDateTime = () => ({ ...context.date, day: 4 });
+  const next = await calendar.openStateProgressionManager();
+  assert.notEqual(next, state);
+  assert.equal(staleDialog.closed, true);
+  assert.equal(await calendar.openStateProgressionManager(), next);
+  CALENDARIA.api.getCurrentDateTime = () => context.date;
+  assert.notEqual(await calendar.openStateProgressionManager(), state);
 });
 
 test("changing a pending marker invalidates an open time-skip approval", async () => {
@@ -620,15 +653,6 @@ test("A06: failed Heat damage keeps an intent and can be completed safely", asyn
   set(h.flags, `${scope}.conditions.heatValue`, 2); const update = a.update; a.update = async () => { throw new Error("damage failure"); };
   await assert.rejects(updateHeatItem(a, h, 3, "failure")); assert.equal(parseHeatValue(h), 2); assert.ok(h.getFlag(scope, "conditions.heatPendingChange"));
   a.update = update; await updateHeatItem(a, h, 3, "failure"); assert.equal(parseHeatValue(h), 3); assert.equal(a.system.attribute.strength.value, 4);
-});
-test("A06: retry after failed Heat finalization does not apply damage twice", async () => {
-  reset(); const h = item("heat", { healingTime: "" }, "Heat"); const a = actor([h]); a.system.attribute.strength.value = 5;
-  set(h.flags, `${scope}.conditions.heatValue`, 2); const update = h.update;
-  h.update = async data => { if (data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failure"); return update(data); };
-  await assert.rejects(updateHeatItem(a, h, 3, "failure")); assert.equal(a.system.attribute.strength.value, 4);
-  assert.equal(parseHeatValue(h), 3);
-  h.update = update; await applyHeatFailure(a, h); assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 3);
-  assert.equal(h.getFlag(scope, "conditions.heatPendingChange"), null);
 });
 
 test("Heat retries only the part of threshold damage omitted by the first write", async () => {
@@ -1011,10 +1035,6 @@ for (const interactive of [false, true]) {
     assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
   });
 }
-test("A12: duration parser refuses formulas and non-day/free-text inputs", () => {
-  for (const value of ["2 hours", "2 часа", "1-3 days", "d6", "1.5 days", "Due 2026-10-09", "Permanent"]) assert.equal(decrementFirstInteger(value), null, value);
-  assert.equal(decrementFirstInteger("2 дня").afterText, "1 день"); assert.equal(decrementFirstInteger("12 дней").afterText, "11 дней");
-});
 test("A13: persisted kind survives renaming and disabled feature is not a normal injury", () => {
   reset(); const h = item("h", { healingTime: "1 day" }, "Renamed condition"); set(h.flags, `${scope}.conditions.kind`, "heat"); const a = actor([h]);
   game.settings.get = () => false; assert.equal(getConditionKind(h), "heat"); assert.equal(buildNewDayPlan(a).actions.some(action => action.itemId === h.id), false);

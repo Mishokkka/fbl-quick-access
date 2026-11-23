@@ -24,16 +24,22 @@ const newDay = await import("../scripts/new-day.js");
 const addiction = await import("../scripts/conditions/services/addiction-service.js");
 const addictionChat = await import("../scripts/conditions/services/chat-service.js");
 
-for (const [text, after] of [["1 day(s)", "0 days"], ["2 day(s)", "1 day"], ["4 day(s)", "3 days"], ["2 DAY(S)", "1 day"]]) {
-  test(`resolved day(s) duration ${text} is recognized and normalized`, () => {
+test("resolved English and Russian day durations are recognized and normalized", () => {
+  for (const [text, after] of [
+    ["1 day(s)", "0 days"], ["2 day(s)", "1 day"], ["4 day(s)", "3 days"], ["2 DAY(S)", "1 day"],
+    ["2 дня", "1 день"], ["12 дней", "11 дней"]
+  ]) {
     const result = newDay.decrementFirstInteger(text);
-    assert.equal(result?.afterText, after);
+    assert.equal(result?.afterText, after, text);
     assert.equal(result.beforeText, text);
-  });
-}
+  }
+});
 
-test("day(s) support preserves unresolved formulas and non-day durations for manual resolution", () => {
-  for (const text of ["[[1d3]] day(s)", "[[2D3]] days", "1d6 day(s)", "2 hours", "3 rounds", "2 day(s) + 1"]) {
+test("unresolved formulas and non-day durations are left for manual resolution", () => {
+  for (const text of [
+    "[[1d3]] day(s)", "[[2D3]] days", "1d6 day(s)", "d6", "2 day(s) + 1", "1-3 days",
+    "1.5 days", "2 hours", "2 часа", "3 rounds", "Due 2026-10-09", "Permanent"
+  ]) {
     assert.equal(newDay.decrementFirstInteger(text), null, text);
   }
 });

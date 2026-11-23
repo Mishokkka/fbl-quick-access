@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { readFile } from "node:fs/promises";
+import { exposeModule } from "./helpers/expose-module.mjs";
 import {
   getAddictionMorning, getAddictionDayKey, performAddictionMorning,
   processAddictionNewDay, resolveAddictionMorning, relapseAddiction, handleAddictionOperation, correctAddictionState
@@ -268,16 +268,10 @@ test("a pending morning blocks other daily timers and stays visible in the seria
   assert.equal(buildNewDayPlan(owner).blockedByAddiction, false);
 });
 
-let progression;
-async function calendarWorker({ fresh = false } = {}) {
-  if (progression && !fresh) return progression;
-  const url = new URL("../scripts/state-progression.js", import.meta.url);
-  let source = await readFile(url, "utf8");
-  source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
-  source += "\nexport { processActorAutomaticDays, handleCalendariaApplyRequest, handleCalendariaPendingReport, resolveCalendarOperationFromSummary };\n";
-  const worker = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}#${++id}`);
-  if (!fresh) progression = worker;
-  return worker;
+function calendarWorker(options) {
+  return exposeModule("scripts/state-progression.js", [
+    "processActorAutomaticDays", "handleCalendariaApplyRequest", "handleCalendariaPendingReport", "resolveCalendarOperationFromSummary"
+  ], options);
 }
 
 test("a calendar skip consumes only the started day and resumes after its manual outcome", async () => {
@@ -463,17 +457,32 @@ test("manual Heat correction and cooling never damage or heal attributes, and pr
   assert.deepEqual(owner.system.attribute, values);
 });
 
-test("retrying failed Heat finalization does not repeat damage or omit the level-4 penalties", async () => {
-  setup(); const heat = item("Жара"); const owner = actor(heat); set(heat, `flags.${scope}.conditions.heatValue`, 3);
-  const update = heat.update.bind(heat); let fail = true;
-  heat.update = async data => { if (fail && data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failed"); return update(data); };
-  await assert.rejects(applyHeatFailure(owner, heat), /finalize failed/);
-  assert.equal(owner.system.attribute.strength.value, 5);
-  assert.equal(parseHeatValue(heat), 4);
-  await assert.rejects(updateHeatItem(owner, heat, 2, "rest"));
-  fail = false; await applyHeatFailure(owner, heat);
-  assert.equal(owner.system.attribute.strength.value, 5); assert.equal(parseHeatValue(heat), 4);
-  assert.equal(heat.system.rollModifiers.fblecHeatMove.value, "-1");
+test("retrying failed Heat finalization preserves both damage thresholds and clears recovery", async () => {
+  for (const level of [3, 4]) {
+    setup();
+    const heat = item("Жара");
+    const owner = actor(heat);
+    set(heat, `flags.${scope}.conditions.heatValue`, level - 1);
+    const update = heat.update;
+    heat.update = async data => {
+      if (data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failed");
+      return update.call(heat, data);
+    };
+    await assert.rejects(applyHeatFailure(owner, heat), /finalize failed/);
+    const { strength, wits } = owner.system.attribute;
+    assert.equal(strength.value, 5);
+    assert.equal(wits.value, level === 4 ? 5 : 6);
+    assert.equal(parseHeatValue(heat), level);
+    await assert.rejects(updateHeatItem(owner, heat, 2, "rest"));
+
+    heat.update = update;
+    await applyHeatFailure(owner, heat);
+    assert.equal(strength.value, 5);
+    assert.equal(wits.value, level === 4 ? 5 : 6);
+    assert.equal(parseHeatValue(heat), level);
+    assert.equal(heat.getFlag(scope, "conditions.heatPendingChange"), null);
+    assert.equal(heat.system.rollModifiers.fblecHeatMove?.value, level === 4 ? "-1" : undefined);
+  }
 });
 
 test("migration adds level-4 penalties without damage and is idempotent", async () => {
@@ -513,11 +522,8 @@ test("STAT renders the phase, pending result and disabled morning until resoluti
 });
 
 test("the native dose dialog distinguishes dose, no-dose, cancel and closing the window", async () => {
-  setup(); const url = new URL("../scripts/conditions/main.js", import.meta.url);
-  let source = await readFile(url, "utf8");
-  source = source.replace(/from\s+(["'])(\.[^"']+)\1/g, (_match, _quote, specifier) => `from ${JSON.stringify(new URL(specifier, url).href)}`);
-  source += "\nexport { askAddictionDose };\n";
-  const controller = await import(`data:text/javascript;base64,${Buffer.from(source).toString("base64")}`);
+  setup();
+  const controller = await exposeModule("scripts/conditions/main.js", ["askAddictionDose"]);
   let current;
   foundry.applications = { api: { DialogV2: class {
     constructor(config) { this.config = config; this.events = {}; current = this; }

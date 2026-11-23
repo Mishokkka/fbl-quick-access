@@ -75,9 +75,9 @@ let observedMode = null;
 let revertingMode = false;
 let calendariaUnavailableWarned = false;
 let lastAheadWarningKey = "";
+let gmSummary = null;
 
 const activePlayerPrompts = new Set();
-const gmSummaryWindows = new Map();
 const activeSummaryOperations = new Map();
 const enqueueStateProgressionOperation = createObjectOperationQueue();
 
@@ -93,12 +93,10 @@ export function handleStateProgressionActorDeleted(actor) {
   const actorId = String(actor?.id ?? "");
   if (!actorId) return;
   activeSummaryOperations.delete(actorId);
-  for (const state of gmSummaryWindows.values()) {
-    if (!state.entries.has(actorId)) continue;
-    state.entries.delete(actorId);
-    state.statuses.delete(actorId);
-    refreshGMSummaryDom(state);
-  }
+  const state = gmSummary;
+  if (!state?.entries.delete(actorId)) return;
+  state.statuses.delete(actorId);
+  refreshGMSummaryDom(state);
 }
 
 export function initializeStateProgression() {
@@ -118,35 +116,33 @@ export function initializeStateProgression() {
   });
   const refreshMorningSummary = item => {
     const actor = item?.parent;
-    if (!actor || !isActiveQuickAccessGM()) return;
-    for (const state of gmSummaryWindows.values()) {
-      if (!state.entries.has(actor.id)) continue;
-      const old = state.statuses.get(actor.id);
-      if (old?.state === "processing" && activeSummaryOperations.has(actor.id)) continue;
-      const recovery = calendarOperationSummaryStatus(actor, state.context);
-      if (recovery) {
-        updateGMSummaryStatus(state, actor.id, recovery);
-        continue;
-      }
-      const pendingCount = getPendingAddictions(actor).length;
-      if (!pendingCount && old?.pendingManual) {
-        const marker = getActorCalendarMarker(actor);
-        const status = calculateActorCalendarStatus(marker, state.context);
-        const nextState = old?.state === "error"
-          ? "error"
-          : status.status === "ahead"
-            ? "ahead"
-            : status.days > 0 ? "pending" : "done";
-        updateGMSummaryStatus(state, actor.id, {
-          state: nextState,
-          days: status.status === "ahead" ? Math.abs(status.days) : Math.max(0, status.days ?? 0),
-          pendingManual: 0,
-          detail: old?.state === "error" ? old.detail : (status.status === "ahead" ? aheadDetail(marker, status.days) : ""),
-          result: old?.state === "error" ? old.result : null
-        });
-      } else if (pendingCount) {
-        updateGMSummaryStatus(state, actor.id, { ...old, pendingManual: pendingCount });
-      }
+    const state = gmSummary;
+    if (!actor || !state?.entries.has(actor.id) || !isActiveQuickAccessGM()) return;
+    const old = state.statuses.get(actor.id);
+    if (old?.state === "processing" && activeSummaryOperations.has(actor.id)) return;
+    const recovery = calendarOperationSummaryStatus(actor, state.context);
+    if (recovery) {
+      updateGMSummaryStatus(state, actor.id, recovery);
+      return;
+    }
+    const pendingCount = getPendingAddictions(actor).length;
+    if (!pendingCount && old?.pendingManual) {
+      const marker = getActorCalendarMarker(actor);
+      const status = calculateActorCalendarStatus(marker, state.context);
+      const nextState = old?.state === "error"
+        ? "error"
+        : status.status === "ahead"
+          ? "ahead"
+          : status.days > 0 ? "pending" : "done";
+      updateGMSummaryStatus(state, actor.id, {
+        state: nextState,
+        days: status.status === "ahead" ? Math.abs(status.days) : Math.max(0, status.days ?? 0),
+        pendingManual: 0,
+        detail: old?.state === "error" ? old.detail : (status.status === "ahead" ? aheadDetail(marker, status.days) : ""),
+        result: old?.state === "error" ? old.result : null
+      });
+    } else if (pendingCount) {
+      updateGMSummaryStatus(state, actor.id, { ...old, pendingManual: pendingCount });
     }
   };
   globalThis.Hooks?.on?.("updateItem", refreshMorningSummary);
@@ -171,7 +167,7 @@ export async function readyStateProgression() {
   }
 
   if (isActiveQuickAccessGM()) {
-    await ensureMissingPlayerBaselines(context);
+    await baselinePlayerActors(context);
     warnIfAnyMarkersAhead(context);
     warnIfCalendarRecoveryNeeded();
   }
@@ -310,7 +306,7 @@ async function handleCalendariaReady() {
   }
 
   if (isActiveQuickAccessGM()) {
-    await ensureMissingPlayerBaselines(context);
+    await baselinePlayerActors(context);
     warnIfAnyMarkersAhead(context);
     warnIfCalendarRecoveryNeeded();
   }
@@ -373,7 +369,7 @@ async function handleCalendariaDayChange(data) {
   }
 
   if (isActiveQuickAccessGM()) {
-    await prepareGMSummary(context, { reason: "day-change" });
+    await prepareGMSummary(context);
     warnIfAnyMarkersAhead(context);
   }
   if (!game.user?.isGM) await checkCurrentPlayerPending({ context });
@@ -383,7 +379,7 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
   const entries = getAssignedPlayerActors();
   if (!entries.length) return;
 
-  const summary = await prepareGMSummary(context, { reason: "time-skip", skipBaselineMutation: true });
+  const summary = await prepareGMSummary(context, { skipBaselineMutation: true });
   if (delta > MAX_AUTOMATIC_CALENDAR_DAYS) {
     for (const entry of entries) {
       updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? {
@@ -511,21 +507,8 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
       continue;
     }
 
-    const releaseProcessing = beginSummaryOperation(entry.actor.id);
-    updateGMSummaryStatus(summary, entry.actor.id, { state: "processing", days });
     try {
-      const result = await processActorAutomaticDays(entry.actor, marker.date, context, days, {
-        approvedMarker: marker,
-        requireAssignment: true,
-        maxDays: days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
-      });
-      updateGMSummaryStatus(summary, entry.actor.id, result.failedDays > 0
-        ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-        : result.limitedDays > 0
-          ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
-          : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
-
-      await sendPlayerResults(entry, context, result);
+      await applyAutomaticDaysFromSummary(summary, entry, marker, context, days);
     } catch (error) {
       if (error?.code === "stale-calendar-day") {
         updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? {
@@ -535,14 +518,25 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
         return;
       }
       console.error(`${MODULE_ID} | automatic Calendaria time skip failed for ${entry.actor?.name}`, error);
-      updateGMSummaryStatus(summary, entry.actor.id, calendarOperationSummaryStatus(entry.actor, context) ?? {
-        state: "error",
-        days: pendingDaysForActor(entry.actor, context),
-        detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
-      });
-    } finally {
-      releaseProcessing();
+      updateGMSummaryStatus(summary, entry.actor.id, calendarApplyFailureStatus(entry.actor, context));
     }
+  }
+}
+
+async function applyAutomaticDaysFromSummary(state, entry, marker, context, days) {
+  const { actor } = entry;
+  const releaseProcessing = beginSummaryOperation(actor.id);
+  try {
+    updateGMSummaryStatus(state, actor.id, { state: "processing", days });
+    const result = await processActorAutomaticDays(actor, marker.date, context, days, {
+      approvedMarker: marker,
+      requireAssignment: true,
+      maxDays: Math.max(days, DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT)
+    });
+    updateGMSummaryStatus(state, actor.id, calendarResultSummaryStatus(result));
+    await sendPlayerResults(entry, context, result);
+  } finally {
+    releaseProcessing();
   }
 }
 
@@ -875,26 +869,10 @@ async function handleCalendariaApplyRequest(payload, context) {
         ...(operation ? { recoveredMarkerDate: operation.through } : {}),
         days
       };
-      updateCurrentGMSummary(actor.id, calendaria, failedActions
-        ? {
-            state: "error",
-            days: 0,
-            result: calendarResult,
-            detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: failedActions })
-          }
-        : {
-            state: "done",
-            days: 0,
-            result: calendarResult,
-            detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: calendarResult.processedDays })
-          });
+      updateCurrentGMSummary(actor.id, calendaria, calendarResultSummaryStatus(calendarResult));
       return { status: failedActions ? "processed-with-errors" : "processed", calendarResult };
     } catch (error) {
-      updateCurrentGMSummary(actor.id, calendaria, calendarOperationSummaryStatus(actor, calendaria) ?? {
-        state: "error",
-        days: pendingDaysForActor(actor, calendaria),
-        detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
-      });
+      updateCurrentGMSummary(actor.id, calendaria, calendarApplyFailureStatus(actor, calendaria));
       throw error;
     } finally {
       releaseProcessing();
@@ -936,17 +914,17 @@ async function handleCalendariaPendingReport(payload, context) {
 
   const actor = actorEntry.actor;
   await ensureActorCalendarBaseline(actor, calendaria);
-  await prepareGMSummary(calendaria, { reason: "player-report", skipBaselineMutation: true });
+  await prepareGMSummary(calendaria, { skipBaselineMutation: true });
   const recovery = calendarOperationSummaryStatus(actor, calendaria);
   if (recovery) return { status: recovery.state, days: recovery.days };
   const status = calculateActorCalendarStatus(getActorCalendarMarker(actor), calendaria);
   return { status: status.status, days: status.days ?? 0 };
 }
 
-async function prepareGMSummary(context, { reason = "day-change", skipBaselineMutation = false } = {}) {
+async function prepareGMSummary(context, { skipBaselineMutation = false } = {}) {
   if (!isActiveQuickAccessGM()) return null;
   const entries = getAssignedPlayerActors();
-  const summary = openOrRefreshGMSummary(context, entries, reason);
+  const summary = openOrRefreshGMSummary(context, entries);
 
   for (const entry of entries) {
     const existing = summary.statuses.get(entry.actor.id);
@@ -1003,36 +981,23 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
   return summary;
 }
 
-function openOrRefreshGMSummary(context, entries, reason) {
+function openOrRefreshGMSummary(context, entries) {
   const key = summaryKey(context);
-
-  // Only one calendar-progression summary is useful at a time. Close and drop
-  // older dates before opening a newer one, including stale map entries from
-  // environments where the Foundry dialog API was unavailable.
-  for (const [existingKey, existingState] of gmSummaryWindows) {
-    if (existingKey === key) continue;
-    gmSummaryWindows.delete(existingKey);
+  const entriesById = new Map(entries.map(entry => [entry.actor.id, entry]));
+  let state = gmSummary;
+  if (state?.key !== key) {
+    const previous = state;
+    state = {
+      key, context, entries: entriesById, statuses: new Map(), dialog: null, root: null
+    };
+    gmSummary = state;
     try {
-      existingState.dialog?.close?.();
+      previous?.dialog?.close?.();
     } catch (error) {
       console.warn(`${MODULE_ID} | could not close stale state progression summary`, error);
     }
-  }
-
-  let state = gmSummaryWindows.get(key);
-  if (!state) {
-    state = {
-      key,
-      context,
-      entries: new Map(entries.map((entry) => [entry.actor.id, entry])),
-      statuses: new Map(),
-      dialog: null,
-      root: null,
-      reason
-    };
-    gmSummaryWindows.set(key, state);
   } else {
-    state.entries = new Map(entries.map(entry => [entry.actor.id, entry]));
+    state.entries = entriesById;
     for (const id of state.statuses.keys()) {
       if (!state.entries.has(id)) state.statuses.delete(id);
     }
@@ -1059,7 +1024,7 @@ function openOrRefreshGMSummary(context, entries, reason) {
       refreshGMSummaryDom(state);
     },
     close: () => {
-      if (gmSummaryWindows.get(key) === state) gmSummaryWindows.delete(key);
+      if (gmSummary === state) gmSummary = null;
     }
   }, {
     classes: ["fblqa-rest-dialog", "fblqa-state-progression-summary"],
@@ -1203,8 +1168,27 @@ function updateGMSummaryStatus(state, actorId, status) {
 
 function updateCurrentGMSummary(actorId, context, status) {
   if (!isActiveQuickAccessGM()) return;
-  const state = gmSummaryWindows.get(summaryKey(context));
-  if (state) updateGMSummaryStatus(state, actorId, status);
+  const state = gmSummary;
+  if (state?.key === summaryKey(context)) updateGMSummaryStatus(state, actorId, status);
+}
+
+function calendarResultSummaryStatus(result) {
+  const days = result.limitedDays ?? 0;
+  if (result.failedActions) {
+    return { state: "error", days, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) };
+  }
+  if (days > 0) {
+    return { state: "blocked", days, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: days }) };
+  }
+  return { state: "done", days, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) };
+}
+
+function calendarApplyFailureStatus(actor, context) {
+  return calendarOperationSummaryStatus(actor, context) ?? {
+    state: "error",
+    days: pendingDaysForActor(actor, context),
+    detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
+  };
 }
 
 function refreshGMSummaryDom(state) {
@@ -1396,20 +1380,8 @@ async function resolveActorFromGMSummary(state, actorId) {
       approvedDays = liveDays;
     }
 
-    const releaseProcessing = beginSummaryOperation(actorId);
-    updateGMSummaryStatus(state, actorId, { state: "processing", days: liveDays });
     try {
-      const result = await processActorAutomaticDays(entry.actor, liveMarker.date, liveContext, liveDays, {
-        approvedMarker: liveMarker,
-        requireAssignment: true,
-        maxDays: liveDays > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT ? liveDays : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT
-      });
-      updateGMSummaryStatus(state, actorId, result.failedActions
-        ? { state: "error", days: result.limitedDays, result, detail: qaLocalize("StateProgression.CompletedWithErrors", "Processed with {count} failed daily actions.", { count: result.failedActions }) }
-        : result.limitedDays > 0
-          ? { state: "blocked", days: result.limitedDays, result, detail: qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days; {remaining} days remain pending.", { processed: result.processedDays, remaining: result.limitedDays }) }
-          : { state: "done", days: 0, result, detail: qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }) });
-      await sendPlayerResults(entry, liveContext, result);
+      await applyAutomaticDaysFromSummary(state, entry, liveMarker, liveContext, liveDays);
     } catch (error) {
       if (error?.code === "stale-calendar-day") {
         const latest = getCalendariaContext();
@@ -1428,13 +1400,7 @@ async function resolveActorFromGMSummary(state, actorId) {
       }
       console.error(`${MODULE_ID} | GM multi-day resolve failed`, error);
       ui.notifications?.error?.(qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression."));
-      updateGMSummaryStatus(state, actorId, calendarOperationSummaryStatus(entry.actor, liveContext) ?? {
-        state: "error",
-        days: pendingDaysForActor(entry.actor, liveContext),
-        detail: qaLocalize("StateProgression.ApplyFailed", "Could not apply Calendaria state progression.")
-      });
-    } finally {
-      releaseProcessing();
+      updateGMSummaryStatus(state, actorId, calendarApplyFailureStatus(entry.actor, liveContext));
     }
     return;
   }
@@ -1460,16 +1426,12 @@ async function resolveActorFromGMSummary(state, actorId) {
 }
 
 async function resetActorFromGMSummary(state, actorId) {
-  if (!isActiveQuickAccessGM()) return;
   const entry = state.entries.get(actorId);
   if (!entry) return;
-  const context = getCalendariaContext();
-  if (!context) {
-    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
-    return;
-  }
+  const context = getMarkerManagerContext();
+  if (!context) return;
   if (summaryKey(context) !== summaryKey(state.context)) {
-    await prepareGMSummary(context, { reason: "manager", skipBaselineMutation: true });
+    await prepareGMSummary(context, { skipBaselineMutation: true });
     ui.notifications?.warn?.(pendingChangedDetail());
     return;
   }
@@ -1494,16 +1456,7 @@ async function resetActorFromGMSummary(state, actorId) {
 
   try {
     await resetCalendarMarker(entry.actor, context, { approvedOperation: operation, requireCurrentDay: true });
-    updateGMSummaryStatus(state, actorId, {
-      state: "done",
-      days: 0,
-      skippedDays: 0,
-      undoAvailable: false,
-      result: null,
-      detail: qaLocalize("StateProgression.ResetCurrentDone", "Marker reset to the current date ({date}).", {
-        date: formatCalendariaDate(context.date)
-      })
-    });
+    showResetMarker(state, actorId, formatCalendariaDate(context.date));
   } catch (error) {
     console.error(`${MODULE_ID} | could not reset Calendaria marker`, error);
     ui.notifications?.error?.(qaLocalize("StateProgression.ResetCurrentFailed", "Could not reset the marker to the current date."));
@@ -1511,35 +1464,14 @@ async function resetActorFromGMSummary(state, actorId) {
 }
 
 async function rewindActorFromGMSummary(state, actorId) {
-  if (!isActiveQuickAccessGM()) return;
   const entry = state.entries.get(actorId);
   if (!entry) return;
-  const context = getCalendariaContext();
-  if (!context) {
-    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
-    return;
-  }
-  const days = await promptRewindDays({ actorName: entry.actor.name ?? "" });
-  if (!days) return;
-  const liveContext = getCalendariaContext();
-  if (!liveContext || summaryKey(liveContext) !== summaryKey(context)) {
-    ui.notifications?.warn?.(pendingChangedDetail());
-    return;
-  }
+  const approved = await confirmRewind(entry.actor.name);
+  if (!approved) return;
+  const { context, days } = approved;
   try {
-    const rewound = await rewindActorCalendarMarker(entry.actor, days, liveContext, liveContext.api, { requireCurrentDay: true });
-    const pending = calculateActorCalendarStatus(getActorCalendarMarker(entry.actor), liveContext);
-    updateGMSummaryStatus(state, actorId, {
-      state: entry.primaryUser?.active ? "pending" : "offline",
-      days: Math.max(0, Number(pending.days) || 0),
-      skippedDays: 0,
-      undoAvailable: false,
-      result: null,
-      detail: qaLocalize("StateProgression.RewindDone", "Marker rewound by {days} day(s) (to {date}). Days are pending again.", {
-        days: rewound.days,
-        date: formatCalendariaDate(rewound.marker?.date)
-      })
-    });
+    const rewound = await rewindActorCalendarMarker(entry.actor, days, context, context.api, { requireCurrentDay: true });
+    showRewoundMarker(state, entry, context, rewound.days, rewound.marker);
   } catch (error) {
     console.error(`${MODULE_ID} | could not rewind Calendaria marker`, error);
     ui.notifications?.error?.(rewindFailureDetail(error));
@@ -1547,12 +1479,8 @@ async function rewindActorFromGMSummary(state, actorId) {
 }
 
 async function resetAllFromGMSummary(state) {
-  if (!isActiveQuickAccessGM()) return;
-  const context = getCalendariaContext();
-  if (!context) {
-    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
-    return;
-  }
+  const context = getMarkerManagerContext();
+  if (!context) return;
   const dateLabel = formatCalendariaDate(context.date);
   const confirmed = await confirmDangerAction({
     title: qaLocalize("StateProgression.ResetAllConfirmTitle", "Reset all Calendaria markers?"),
@@ -1566,8 +1494,7 @@ async function resetAllFromGMSummary(state) {
   });
   if (!confirmed) return;
 
-  const liveContext = getCalendariaContext();
-  if (!liveContext || summaryKey(liveContext) !== summaryKey(context)) {
+  if (!isCurrentCalendarDay(context)) {
     ui.notifications?.warn?.(pendingChangedDetail());
     return;
   }
@@ -1575,15 +1502,7 @@ async function resetAllFromGMSummary(state) {
   try {
     const { count, succeededActorIds, skippedActorIds, failedActorIds } = await resetAllCalendarMarkersToCurrent(context, { requireCurrentDay: true });
     for (const actorId of succeededActorIds) {
-      if (!state.entries.has(actorId)) continue;
-      updateGMSummaryStatus(state, actorId, {
-        state: "done",
-        days: 0,
-        skippedDays: 0,
-        undoAvailable: false,
-        result: null,
-        detail: qaLocalize("StateProgression.ResetCurrentDone", "Marker reset to the current date ({date}).", { date: dateLabel })
-      });
+      if (state.entries.has(actorId)) showResetMarker(state, actorId, dateLabel);
     }
     for (const actorId of [...skippedActorIds, ...failedActorIds]) {
       const entry = state.entries.get(actorId);
@@ -1608,45 +1527,22 @@ async function resetAllFromGMSummary(state) {
 }
 
 async function rewindAllFromGMSummary(state) {
-  if (!isActiveQuickAccessGM()) return;
-  const context = getCalendariaContext();
-  if (!context) {
-    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
-    return;
-  }
-  const days = await promptRewindDays({ actorName: null });
-  if (!days) return;
-  const liveContext = getCalendariaContext();
-  if (!liveContext || summaryKey(liveContext) !== summaryKey(context)) {
-    ui.notifications?.warn?.(pendingChangedDetail());
-    return;
-  }
+  const approved = await confirmRewind();
+  if (!approved) return;
+  const { context, days } = approved;
 
   try {
-    const outcome = await rewindAllCalendarMarkers(days, liveContext, liveContext.api, { requireCurrentDay: true });
+    const outcome = await rewindAllCalendarMarkers(days, context, context.api, { requireCurrentDay: true });
     for (const item of outcome.succeeded) {
       const entry = state.entries.get(item.actorId);
-      if (!entry) continue;
-      const marker = getActorCalendarMarker(entry.actor);
-      const pending = calculateActorCalendarStatus(marker, liveContext);
-      updateGMSummaryStatus(state, item.actorId, {
-        state: entry.primaryUser?.active ? "pending" : "offline",
-        days: Math.max(0, Number(pending.days) || 0),
-        skippedDays: 0,
-        undoAvailable: false,
-        result: null,
-        detail: qaLocalize("StateProgression.RewindDone", "Marker rewound by {days} day(s) (to {date}). Days are pending again.", {
-          days,
-          date: formatCalendariaDate(marker?.date)
-        })
-      });
+      if (entry) showRewoundMarker(state, entry, context, days);
     }
     for (const item of outcome.failed) {
       const entry = state.entries.get(item.actorId);
       if (!entry) continue;
-      updateGMSummaryStatus(state, item.actorId, calendarOperationSummaryStatus(entry.actor, liveContext) ?? {
+      updateGMSummaryStatus(state, item.actorId, calendarOperationSummaryStatus(entry.actor, context) ?? {
         state: "error",
-        days: pendingDaysForActor(entry.actor, liveContext),
+        days: pendingDaysForActor(entry.actor, context),
         detail: rewindFailureDetail(item.error)
       });
     }
@@ -1666,6 +1562,49 @@ async function rewindAllFromGMSummary(state) {
     console.error(`${MODULE_ID} | could not rewind all Calendaria markers`, error);
     ui.notifications?.error?.(qaLocalize("StateProgression.RewindFailed", "Could not rewind Calendaria processed days."));
   }
+}
+
+function getMarkerManagerContext() {
+  if (!isActiveQuickAccessGM()) return null;
+  const context = getCalendariaContext();
+  if (!context) {
+    ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
+  }
+  return context;
+}
+
+async function confirmRewind(actorName) {
+  const approved = getMarkerManagerContext();
+  if (!approved) return null;
+  const days = await promptRewindDays({ actorName });
+  if (!days) return null;
+  const context = getCalendariaContext();
+  if (!context || summaryKey(context) !== summaryKey(approved)) {
+    ui.notifications?.warn?.(pendingChangedDetail());
+    return null;
+  }
+  return { context, days };
+}
+
+function showResetMarker(state, actorId, date) {
+  updateMarkerStatus(state, actorId, {
+    state: "done", days: 0,
+    detail: qaLocalize("StateProgression.ResetCurrentDone", "Marker reset to the current date ({date}).", { date })
+  });
+}
+
+function showRewoundMarker(state, entry, context, days, marker = getActorCalendarMarker(entry.actor)) {
+  updateMarkerStatus(state, entry.actor.id, {
+    state: entry.primaryUser?.active ? "pending" : "offline",
+    days: pendingDaysForActor(entry.actor, context),
+    detail: qaLocalize("StateProgression.RewindDone", "Marker rewound by {days} day(s) (to {date}). Days are pending again.", {
+      days, date: formatCalendariaDate(marker?.date)
+    })
+  });
+}
+
+function updateMarkerStatus(state, actorId, status) {
+  updateGMSummaryStatus(state, actorId, { skippedDays: 0, undoAvailable: false, result: null, ...status });
 }
 
 function rewindFailureDetail(error) {
@@ -1748,7 +1687,7 @@ export async function openStateProgressionManager() {
     ui.notifications?.warn?.(qaLocalize("StateProgression.ManagerUnavailable", "Calendaria day management is unavailable."));
     return null;
   }
-  return prepareGMSummary(context, { reason: "manager", skipBaselineMutation: true });
+  return prepareGMSummary(context, { skipBaselineMutation: true });
 }
 
 export async function resetActorCalendarMarkerToCurrent(actor, context = getCalendariaContext()) {
@@ -1936,10 +1875,6 @@ async function collectMarkerWriteOutcomes(write) {
     }
   }
   return { count: succeededActorIds.length, succeededActorIds, skippedActorIds, failedActorIds };
-}
-
-async function ensureMissingPlayerBaselines(context) {
-  return baselinePlayerActors(context, { force: false });
 }
 
 function ensureActorCalendarBaseline(actor, context, { force = false, approvedMarker } = {}) {

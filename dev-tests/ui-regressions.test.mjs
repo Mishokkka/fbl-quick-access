@@ -3,6 +3,8 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { makeFoundryActor, saveGlobals } from "./helpers/foundry-documents.mjs";
+import { captureRestDialogs } from "./helpers/rest-dialog.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -80,56 +82,9 @@ test("Rest switching is state-driven, keeps circular radios, and reads the Dialo
 });
 
 test("Rest Apply consumes the native DialogV2 button.form and performs the actor update", async () => {
-  const previous = {
-    game: globalThis.game,
-    foundry: globalThis.foundry,
-    HTMLElement: globalThis.HTMLElement,
-    ui: globalThis.ui,
-    ChatMessage: globalThis.ChatMessage
-  };
-  let dialogConfig = null;
-  const updates = [];
-  let pendingRest = null;
-
-  class FakeElement {
-    matches(selector) { return selector === "form"; }
-    querySelector() { return null; }
-  }
-
-  class FakeForm extends FakeElement {
-    constructor() {
-      super();
-      this.controls = {
-        restType: { value: "long", checked: true },
-        hasHeatSource: { checked: false },
-        startsNewDay: { checked: false },
-        useShortRecovery: { checked: false },
-        shortAttribute: { value: "strength" },
-        shortConsumable: { value: "" },
-        resetShortQuarter: { checked: false }
-      };
-    }
-    querySelector(selector) {
-      if (selector === 'input[name="restType"]:checked') return this.controls.restType;
-      const name = selector.match(/name="([^"]+)"/)?.[1];
-      return name ? this.controls[name] ?? null : null;
-    }
-  }
-
-  class FakeDialogV2 {
-    constructor(config) {
-      dialogConfig = config;
-      this.element = new FakeElement();
-      this.form = new FakeForm();
-      this.listeners = new Map();
-    }
-    addEventListener(type, listener) { this.listeners.set(type, listener); }
-    render() { return Promise.resolve(this); }
-    close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
-  }
-
+  const restore = saveGlobals(["game", "foundry", "HTMLElement", "ui", "ChatMessage"]);
   try {
-    globalThis.HTMLElement = FakeElement;
+    const dialogs = captureRestDialogs();
     globalThis.game = {
       user: { id: "gm", isGM: true },
       i18n: { localize: (key) => key, format: (_key, data) => JSON.stringify(data) },
@@ -137,44 +92,25 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
       time: { worldTime: 0 },
       modules: new Map()
     };
-    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
     delete globalThis.ChatMessage;
 
-    const actor = {
+    const actor = makeFoundryActor({
       id: "rest-dialog-actor",
       name: "Rest Tester",
-      isOwner: true,
-      system: {
-        attribute: {
-          strength: { value: 2, max: 3 },
-          agility: { value: 3, max: 3 },
-          wits: { value: 3, max: 3 },
-          empathy: { value: 3, max: 3 }
-        },
-        condition: {}
-      },
-      effects: [],
-      getFlag: (_scope, key) => key === "pendingRestCleanup" ? pendingRest : null,
-      async update(update) {
-        updates.push(update);
-        if ("system.attribute.strength.value" in update) this.system.attribute.strength.value = update["system.attribute.strength.value"];
-        if ("flags.fbl-quick-access.==pendingRestCleanup" in update) pendingRest = update["flags.fbl-quick-access.==pendingRestCleanup"];
-        if ("flags.fbl-quick-access.pendingRestCleanup" in update) pendingRest = update["flags.fbl-quick-access.pendingRestCleanup"];
-      },
-      async deleteEmbeddedDocuments() {},
-      async setFlag() {},
-      async unsetFlag() {}
+      system: { attribute: { strength: { value: 2, max: 3 } }, condition: {} }
+    });
+    const updates = [];
+    const update = actor.update;
+    actor.update = async patch => {
+      updates.push(patch);
+      return update.call(actor, patch);
     };
 
-    const rest = await import(`../scripts/rest.js?dialog-apply=${Date.now()}`);
+    const rest = await import("../scripts/rest.js");
     const completion = rest.openRestDialog(null, actor, null);
-    assert.ok(dialogConfig, "Rest DialogV2 configuration must be created synchronously");
-    const apply = dialogConfig.buttons.find((button) => button.action === "apply");
-    assert.ok(apply, "Rest Apply button must exist");
-
-    const fakeButton = { form: new FakeForm() };
-    await apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => {} });
+    assert.equal(dialogs.length, 1);
+    await dialogs[0].submit();
     assert.equal(actor.system.attribute.strength.value, 3);
     const result = await completion;
 
@@ -183,11 +119,7 @@ test("Rest Apply consumes the native DialogV2 button.form and performs the actor
       [{ path: "system.attribute.strength.value", before: 2, target: 3 }]);
     assert.deepEqual(updates.slice(1), [{ "system.attribute.strength.value": 3 }, { "flags.fbl-quick-access.pendingRestCleanup": null }]);
   } finally {
-    globalThis.game = previous.game;
-    globalThis.foundry = previous.foundry;
-    globalThis.HTMLElement = previous.HTMLElement;
-    globalThis.ui = previous.ui;
-    globalThis.ChatMessage = previous.ChatMessage;
+    restore();
   }
 });
 

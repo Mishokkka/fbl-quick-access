@@ -3,22 +3,11 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { captureRestDialogs } from "./helpers/rest-dialog.mjs";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
+import { getFoundryPath, makeFoundryActor, makeFoundryUser, saveGlobals, setFoundryPath } from "./helpers/foundry-documents.mjs";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-
-function saveGlobals(keys) {
-  const snapshot = new Map();
-  for (const key of keys) {
-    snapshot.set(key, { existed: Object.prototype.hasOwnProperty.call(globalThis, key), value: globalThis[key] });
-  }
-  return () => {
-    for (const [key, entry] of snapshot.entries()) {
-      if (entry.existed) globalThis[key] = entry.value;
-      else delete globalThis[key];
-    }
-  };
-}
 
 function makeOrdinalApi() {
   const toOrdinal = (d) => d.year * 360 + (d.month - 1) * 30 + (d.day - 1);
@@ -36,155 +25,13 @@ function makeOrdinalApi() {
   };
 }
 
-function getNested(obj, key) {
-  if (!obj || typeof obj !== "object") return undefined;
-  if (Object.hasOwn(obj, key)) return obj[key];
-  let cursor = obj;
-  for (const part of String(key).split(".")) {
-    if (!cursor || typeof cursor !== "object" || !Object.hasOwn(cursor, part)) return undefined;
-    cursor = cursor[part];
-  }
-  return cursor;
-}
-
-function setNested(obj, key, value) {
-  const parts = String(key).split(".");
-  let cursor = obj;
-  for (let i = 0; i < parts.length - 1; i += 1) {
-    if (!cursor[parts[i]] || typeof cursor[parts[i]] !== "object") cursor[parts[i]] = {};
-    cursor = cursor[parts[i]];
-  }
-  const last = parts[parts.length - 1];
-  if (last.startsWith("-=")) delete cursor[last.slice(2)];
-  else cursor[last] = structuredClone(value);
-}
-
 function expandUpdateInPlace(update, id) {
   for (const [key, value] of Object.entries(update)) {
     if (!key.includes(".")) continue;
     delete update[key];
-    setNested(update, key, value);
+    setFoundryPath(update, key, value, { replace: true });
   }
   update._id = id;
-}
-
-function deleteNested(obj, key) {
-  if (!obj || typeof obj !== "object") return;
-  if (Object.hasOwn(obj, key)) {
-    delete obj[key];
-    return;
-  }
-  const parts = String(key).split(".");
-  let cursor = obj;
-  for (let i = 0; i < parts.length - 1; i += 1) {
-    if (!cursor || typeof cursor !== "object") return;
-    cursor = cursor[parts[i]];
-  }
-  if (cursor && typeof cursor === "object") delete cursor[parts[parts.length - 1]];
-}
-
-function makeFlaggedUser(overrides = {}) {
-  const flags = overrides._flags ?? {};
-  return {
-    id: overrides.id ?? "user-1",
-    name: overrides.name ?? "User",
-    isGM: Boolean(overrides.isGM),
-    active: overrides.active !== false,
-    character: overrides.character ?? null,
-    getFlag(scope, key) {
-      return getNested(flags[scope], key);
-    },
-    async setFlag(scope, key, value) {
-      flags[scope] ??= {};
-      setNested(flags[scope], key, value);
-      return this;
-    },
-    async unsetFlag(scope, key) {
-      deleteNested(flags[scope], key);
-      return this;
-    }
-  };
-}
-
-function mergeFoundryObject(target, source) {
-  if (!source || typeof source !== "object" || Array.isArray(source)) return structuredClone(source);
-  const base = target && typeof target === "object" && !Array.isArray(target) ? structuredClone(target) : {};
-  for (const [k, v] of Object.entries(source)) {
-    if (v && typeof v === "object" && !Array.isArray(v) && base[k] && typeof base[k] === "object" && !Array.isArray(base[k])) {
-      base[k] = mergeFoundryObject(base[k], v);
-    } else {
-      base[k] = structuredClone(v);
-    }
-  }
-  return base;
-}
-
-function setNestedFoundry(obj, path, value, { forceReplace = false } = {}) {
-  const parts = String(path).split(".");
-  let leaf = parts.pop();
-  let cur = obj;
-  for (const p of parts) {
-    if (!cur[p] || typeof cur[p] !== "object") cur[p] = {};
-    cur = cur[p];
-  }
-  if (leaf.startsWith("-=")) {
-    delete cur[leaf.slice(2)];
-    return;
-  }
-  const replace = forceReplace || leaf.startsWith("==");
-  if (leaf.startsWith("==")) leaf = leaf.slice(2);
-  if (!replace && value && typeof value === "object" && !Array.isArray(value) && cur[leaf] && typeof cur[leaf] === "object" && !Array.isArray(cur[leaf])) {
-    cur[leaf] = mergeFoundryObject(cur[leaf], value);
-  } else {
-    cur[leaf] = structuredClone(value);
-  }
-}
-
-function makeFlaggedActor(overrides = {}) {
-  const flags = overrides._flags ?? {};
-  const { _flags, cancelSetFlag, cancelUnsetFlag, cancelUpdate, ...rest } = overrides;
-  return {
-    id: rest.id ?? "actor-1",
-    uuid: rest.uuid ?? `Actor.${rest.id ?? "actor-1"}`,
-    name: rest.name ?? "Tester",
-    documentName: "Actor",
-    type: "character",
-    isOwner: true,
-    pack: null,
-    system: rest.system ?? {},
-    items: rest.items ?? [],
-    effects: rest.effects ?? [],
-    getFlag(scope, key) {
-      return getNested(flags[scope], key);
-    },
-    async setFlag(scope, key, value) {
-      if (cancelSetFlag) return undefined;
-      flags[scope] ??= {};
-      setNestedFoundry(flags[scope], key, value, { forceReplace: false });
-      return this;
-    },
-    async unsetFlag(scope, key) {
-      if (cancelUnsetFlag) return undefined;
-      deleteNested(flags[scope], key);
-      return this;
-    },
-    async update(data) {
-      if (cancelUpdate) return undefined;
-      for (const [path, value] of Object.entries(data ?? {})) {
-        const parts = path.split(".");
-        if (parts[0] === "flags" && parts.length >= 3) {
-          const scope = parts[1];
-          const key = parts.slice(2).join(".");
-          flags[scope] ??= {};
-          setNestedFoundry(flags[scope], key, value);
-          continue;
-        }
-        setNestedFoundry(this, path, value);
-      }
-      return this;
-    },
-    ...rest
-  };
 }
 
 test("BIO saves languages and rumors when Foundry expands the update in place", async () => {
@@ -204,7 +51,7 @@ test("BIO saves languages and rumors when Foundry expands the update in place", 
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
 
     const bio = await import(`../scripts/biography.js?bio-array-fix=${Date.now()}`);
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "bio-array-actor",
       system: { bio: { kin: { value: "Human" }, profession: { value: "Hunter" }, pride: { value: "" }, darkSecret: { value: "" }, note: { value: "" } } }
     });
@@ -246,7 +93,7 @@ test("BIO saves languages and rumors when Foundry expands the update in place", 
     assert.equal(await bio.saveBiographyProfile(actor, { ...saved, publicNote: "<p>Vetoed</p>" }), false);
     assert.equal(actor.system.bio.note.value, saved.publicNote);
 
-    const readonlyActor = makeFlaggedActor({ id: "bio-readonly", isOwner: false });
+    const readonlyActor = makeFoundryActor({ id: "bio-readonly", isOwner: false });
     const writeResult = await bio.saveBiographyProfile(readonlyActor, saved);
     assert.equal(writeResult, false, "non-owner saveBiographyProfile must refuse write");
     assert.equal(readonlyActor.getFlag("fbl-quick-access", "biographyProfile"), undefined);
@@ -267,14 +114,14 @@ test("STAT verifies embedded injury order independently of Foundry's mutated upd
       id: "wound-1", name: "Broken leg", type: "criticalInjury", system: {},
       getFlag: (_scope, key) => key === "conditions.order" ? order : undefined
     };
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "stat-order-actor", documentName: "Actor", items: [injury],
       async updateEmbeddedDocuments(type, updates) {
         assert.equal(type, "Item");
         assert.equal(updates.length, 1);
         for (const update of updates) {
           expandUpdateInPlace(update, injury.id);
-          if (!veto) order = getNested(update, "flags.fbl-quick-access.conditions.order");
+          if (!veto) order = getFoundryPath(update, "flags.fbl-quick-access.conditions.order");
         }
       }
     });
@@ -290,64 +137,6 @@ test("STAT verifies embedded injury order independently of Foundry's mutated upd
   }
 });
 
-test("Reputation dialog separates save-status from limit-warning, skips non-dirty close writes, and passes rolls to ChatMessage", async () => {
-  const restore = saveGlobals(["game", "foundry", "ui", "Roll", "ChatMessage"]);
-  try {
-    let dialogConfig = null;
-    const updates = [];
-
-    class FakeDialogV2 {
-      constructor(config) {
-        dialogConfig = config;
-        this.listeners = new Map();
-      }
-      addEventListener(type, listener) { this.listeners.set(type, listener); }
-      render() { return Promise.resolve(this); }
-      close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
-    }
-
-    globalThis.game = {
-      user: { id: "player-1", isGM: false },
-      i18n: { localize: (k) => k, format: (k) => k },
-      modules: new Map(),
-      settings: { get: () => false }
-    };
-    globalThis.foundry = {
-      applications: { api: { DialogV2: FakeDialogV2 } },
-      utils: { deepClone: (v) => structuredClone(v) }
-    };
-    globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
-
-    const actor = makeFlaggedActor({
-      id: "rep-actor",
-      system: { bio: { reputation: { value: 2 } } },
-      _flags: {
-        "fbl-quick-access": {
-          reputationEntries: [{ id: "r1", amount: 2, description: "Monster Slayer", location: "Alderland", selected: true }]
-        }
-      },
-      async update(data) {
-        updates.push(data);
-        return this;
-      }
-    });
-
-    const rep = await import(`../scripts/reputation.js?rep-fix=${Date.now()}`);
-    const dialog = rep.openReputationDialog(null, actor);
-    assert.ok(dialogConfig, "Reputation dialog should be instantiated");
-    assert.match(dialogConfig.content, /data-role="save-status"/);
-    assert.match(dialogConfig.content, /data-role="limit-warning"/);
-
-    await dialog.close();
-    assert.equal(updates.length, 0, "closing an unmodified reputation dialog must not write to actor");
-
-    const repSource = readFileSync(join(root, "scripts", "reputation.js"), "utf8");
-    assert.match(repSource, /createMessage\.call\(globalThis\.ChatMessage,\s*\{[\s\S]*?rolls:\s*\[roll\]/);
-  } finally {
-    restore();
-  }
-});
-
 test("Willpower treats empty/null max as uncapped and unranked Kin talent as rank 1", async () => {
   const restore = saveGlobals(["game"]);
   try {
@@ -358,7 +147,7 @@ test("Willpower treats empty/null max as uncapped and unranked Kin talent as ran
     };
 
     const wp = await import(`../scripts/willpower.js?wp-fix=${Date.now()}`);
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "wp-actor",
       system: {
         attribute: { empathy: { value: 4, max: 4 } },
@@ -394,18 +183,18 @@ test("Money transfer rejects third-party decision abort and surfaces update-inco
     const emitted = [];
     let socketListener = null;
 
-    const gmUser = makeFlaggedUser({ id: "gm-1", name: "GM", isGM: true });
-    const senderUser = makeFlaggedUser({ id: "player-sender", name: "Sender", character: { id: "actor-sender" } });
-    const recipientUser = makeFlaggedUser({ id: "player-recipient", name: "Recipient", character: { id: "actor-recipient" } });
-    const attackerUser = makeFlaggedUser({ id: "player-attacker", name: "Attacker" });
+    const gmUser = makeFoundryUser({ id: "gm-1", name: "GM", isGM: true });
+    const senderUser = makeFoundryUser({ id: "player-sender", name: "Sender", character: { id: "actor-sender" } });
+    const recipientUser = makeFoundryUser({ id: "player-recipient", name: "Recipient", character: { id: "actor-recipient" } });
+    const attackerUser = makeFoundryUser({ id: "player-attacker", name: "Attacker" });
 
-    const senderActor = makeFlaggedActor({
+    const senderActor = makeFoundryActor({
       id: "actor-sender",
       name: "Sender PC",
       testUserPermission: (u) => u.id === "player-sender" || u.isGM,
       system: { currency: { gold: { value: 5 }, silver: { value: 0 }, copper: { value: 0 } } }
     });
-    const recipientActor = makeFlaggedActor({
+    const recipientActor = makeFoundryActor({
       id: "actor-recipient",
       name: "Recipient PC",
       cancelUpdate: true,
@@ -546,7 +335,7 @@ test("Wash transition preserves old wash item when create is cancelled and fails
     // Case 1: createEmbeddedDocuments returns [] (cancelled) -> must NOT delete old wash item.
     const deletedIds = [];
     const oldWash = { id: "old-wash", name: "Помытый", type: "criticalInjury", getFlag: () => undefined };
-    const actorCreateCancelled = makeFlaggedActor({
+    const actorCreateCancelled = makeFoundryActor({
       id: "wash-actor-1",
       items: [oldWash],
       async createEmbeddedDocuments() { return []; },
@@ -560,7 +349,7 @@ test("Wash transition preserves old wash item when create is cancelled and fails
     // Case 2: create succeeds, but deleteEmbeddedDocuments is cancelled -> returns cleanup-failed.
     const itemsList = [oldWash];
     itemsList.get = (id) => itemsList.find((i) => i.id === id) ?? null;
-    const actorDeleteCancelled = makeFlaggedActor({
+    const actorDeleteCancelled = makeFoundryActor({
       id: "wash-actor-2",
       items: itemsList,
       async createEmbeddedDocuments(_type, docs) {
@@ -619,7 +408,7 @@ test("New Day: zero timers are not proposed as expired, Russian суток is pa
     const items = [zeroInjury, activeInjury];
     items.get = (id) => items.find((i) => i.id === id) ?? null;
 
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "nd-actor-1",
       items,
       _flags: {
@@ -703,8 +492,8 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
     };
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
 
-    const gm = makeFlaggedUser({ id: "gm-1", isGM: true });
-    const player = makeFlaggedUser({ id: "p-1", isGM: false });
+    const gm = makeFoundryUser({ id: "gm-1", isGM: true });
+    const player = makeFoundryUser({ id: "p-1", isGM: false });
     const users = [gm, player];
     users.get = (id) => users.find((u) => u.id === id) ?? null;
 
@@ -730,14 +519,14 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
         name,
         type: "criticalInjury",
         system: { description: "" },
-        getFlag(scope, key) { return getNested(itemFlags[scope], key); },
+        getFlag(scope, key) { return getFoundryPath(itemFlags[scope], key); },
         async update(patch) {
           for (const [k, v] of Object.entries(patch)) {
             if (k.startsWith("flags.fbl-quick-access.")) {
               const fk = k.slice("flags.fbl-quick-access.".length);
-              setNestedFoundry(itemFlags["fbl-quick-access"], fk, v);
+              setFoundryPath(itemFlags["fbl-quick-access"], fk, v);
             } else if (k.startsWith("system.")) {
-              setNestedFoundry(this, k, v);
+              setFoundryPath(this, k, v);
             }
           }
           return this;
@@ -750,7 +539,7 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
     const items = [add1, add2];
     items.get = (id) => items.find((i) => i.id === id) ?? null;
 
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "multi-add-actor",
       items,
       testUserPermission: (u) => u.id === "p-1" || u.isGM
@@ -792,7 +581,7 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
     const delAdd2 = makeAddictionItem("del-add-2", "Зависимость: Пыль 2");
     const delItems = [delAdd1, delAdd2];
     delItems.get = (id) => delItems.find((i) => i.id === id) ?? null;
-    const delActor = makeFlaggedActor({
+    const delActor = makeFoundryActor({
       id: "multi-add-delegated-actor",
       items: delItems,
       testUserPermission: (u) => u.id === "p-1" || u.isGM
@@ -821,40 +610,11 @@ test("Multi-addiction New Day on active GM advances both addictions cleanly for 
 test("Rest detects ActiveEffect even when system.condition value is false, and serializes parallel Short Rests per actor", async () => {
   const restore = saveGlobals(["game", "foundry", "ui", "HTMLElement"]);
   try {
-    const dialogs = [];
-    class FakeElement {
-      matches(selector) { return selector === "form"; }
-      querySelector() { return null; }
-    }
-    class FakeShortForm extends FakeElement {
-      querySelector(selector) {
-        if (selector === 'input[name="restType"]:checked') return { value: "short" };
-        const map = {
-          useShortRecovery: { checked: true },
-          shortAttribute: { value: "strength" },
-          shortConsumable: { value: "food" },
-          resetShortQuarter: { checked: false }
-        };
-        const name = selector.match(/name="([^"]+)"/)?.[1];
-        return name ? map[name] ?? null : null;
-      }
-    }
-    class FakeDialogV2 {
-      constructor(config) {
-        this.config = config;
-        this.element = new FakeElement();
-        this.form = new FakeShortForm();
-        this.listeners = new Map();
-        this.closed = false;
-        dialogs.push(this);
-      }
-      addEventListener(type, listener) { this.listeners.set(type, listener); }
-      render() { return Promise.resolve(this); }
-      close() { this.closed = true; this.listeners.get("close")?.(); return Promise.resolve(this); }
-    }
-
-    globalThis.HTMLElement = FakeElement;
-    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+    const dialogs = captureRestDialogs({
+      restType: { value: "short" },
+      useShortRecovery: { checked: true },
+      shortConsumable: { value: "food" }
+    });
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
     globalThis.game = {
       user: { id: "gm", isGM: true },
@@ -866,7 +626,7 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
 
     const rest = await import(`../scripts/rest.js?rest-fixes=${Date.now()}`);
 
-    const hungryEffectActor = makeFlaggedActor({
+    const hungryEffectActor = makeFoundryActor({
       id: "rest-effect-actor",
       system: { condition: { hungry: { value: false } } },
       effects: [{ disabled: false, statuses: new Set(["hungry"]) }]
@@ -875,7 +635,7 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
     assert.equal(condState.hungry, true, "ActiveEffect must still mark Hungry active even when boolean field is false");
 
     let strengthUpdates = 0;
-    const baseActor = makeFlaggedActor({
+    const baseActor = makeFoundryActor({
       id: "rest-race-actor",
       system: {
         attribute: {
@@ -899,8 +659,7 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
 
     const p1 = rest.openRestDialog(null, actor, null);
     const p2 = rest.openRestDialog(null, actor, null);
-    await Promise.all(dialogs.map(dialog => dialog.config.buttons.find(button => button.action === "apply")
-      .callback({}, { form: dialog.form }, dialog)));
+    await Promise.all(dialogs.map(dialog => dialog.submit()));
     assert.equal(dialogs[0].closed, true);
     assert.equal(dialogs[1].closed, false);
     await dialogs[1].close();
@@ -913,7 +672,7 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
 
     const started = Promise.withResolvers();
     const resume = Promise.withResolvers();
-    const anotherActor = makeFlaggedActor({
+    const anotherActor = makeFoundryActor({
       id: "rest-close-actor",
       system: { attribute: { strength: { value: 1, max: 4 } }, condition: {} }
     });
@@ -925,12 +684,10 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
     };
     const restResult = rest.openRestDialog(null, anotherActor, null);
     const submitted = dialogs.at(-1);
-    const submit = action => submitted.config.buttons.find(button => button.action === action)
-      .callback({}, { form: submitted.form }, submitted);
-    const apply = submit("apply");
+    const apply = submitted.submit();
     await started.promise;
     try {
-      await submit("cancel");
+      await submitted.submit("cancel");
       assert.equal(submitted.closed, false);
       const unsettled = Symbol();
       await submitted.close();
@@ -952,7 +709,7 @@ test("World migration detects cancelled writes, notifies failure, and refuses to
     globalThis.foundry = { utils: { deepClone: (v) => structuredClone(v) } };
     globalThis.ui = { notifications: { info() {}, warn() {}, error: (msg) => errors.push(msg) } };
 
-    const gm = makeFlaggedUser({ id: "gm-1", isGM: true });
+    const gm = makeFoundryUser({ id: "gm-1", isGM: true });
     const users = [gm];
     users.get = (id) => users.find((u) => u.id === id) ?? null;
 
@@ -964,7 +721,7 @@ test("World migration detects cancelled writes, notifies failure, and refuses to
       getFlag: () => undefined,
       async update() { return undefined; }
     };
-    const actor = makeFlaggedActor({
+    const actor = makeFoundryActor({
       id: "mig-actor",
       items: [heatItem],
       async updateEmbeddedDocuments() { return []; }
@@ -1004,9 +761,9 @@ test("Calendaria day manager fixes +300-year future markers, rewinds processed d
     const currentDate = { year: 882, month: 4, day: 12 };
     const context = { calendarId: "air-islands", date: currentDate, api };
 
-    const gm = makeFlaggedUser({ id: "gm-1", isGM: true });
-    const p1 = makeFlaggedUser({ id: "p-1", isGM: false, character: { id: "pc-1" } });
-    const p2 = makeFlaggedUser({ id: "p-2", isGM: false, character: { id: "pc-2" } });
+    const gm = makeFoundryUser({ id: "gm-1", isGM: true });
+    const p1 = makeFoundryUser({ id: "p-1", isGM: false, character: { id: "pc-1" } });
+    const p2 = makeFoundryUser({ id: "p-2", isGM: false, character: { id: "pc-2" } });
     const users = [gm, p1, p2];
     users.get = (id) => users.find((u) => u.id === id) ?? null;
 
@@ -1024,7 +781,7 @@ test("Calendaria day manager fixes +300-year future markers, rewinds processed d
     const pc1Items = [injury];
     pc1Items.get = (id) => pc1Items.find((i) => i.id === id) ?? null;
 
-    const pc1 = makeFlaggedActor({
+    const pc1 = makeFoundryActor({
       id: "pc-1",
       name: "Varg",
       items: pc1Items,
@@ -1034,7 +791,7 @@ test("Calendaria day manager fixes +300-year future markers, rewinds processed d
         }
       }
     });
-    const pc2 = makeFlaggedActor({
+    const pc2 = makeFoundryActor({
       id: "pc-2",
       name: "Sera",
       _flags: {
@@ -1104,7 +861,7 @@ test("Calendaria day manager fixes +300-year future markers, rewinds processed d
     assert.deepEqual(sp.getActorCalendarMarker(pc2).date, currentDate);
 
     // 5. Cancelled marker write must reject instead of silently succeeding
-    const vetoedActor = makeFlaggedActor({ id: "pc-veto", cancelSetFlag: true, cancelUpdate: true });
+    const vetoedActor = makeFoundryActor({ id: "pc-veto", cancelSetFlag: true, cancelUpdate: true });
     await assert.rejects(
       sp.setActorCalendarMarker(vetoedActor, context),
       (err) => err?.code === "write-not-persisted"

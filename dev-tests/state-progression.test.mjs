@@ -268,21 +268,6 @@ test("Absent and Undo are serialized per Actor so near-simultaneous GM actions c
   });
 });
 
-test("PR11: automatic multi-day work has a low default cap and a hard ceiling", () => {
-  assert.match(source, /DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT\s*=\s*90/);
-  assert.match(source, /MAX_AUTOMATIC_CALENDAR_DAYS\s*=\s*365/);
-  assert.match(source, /const effectiveLimit = Math\.min\(configuredLimit, MAX_AUTOMATIC_CALENDAR_DAYS\)/);
-  assert.match(source, /let remaining = Math\.min\(requested, effectiveLimit\)/);
-  assert.match(source, /maxDays:\s*days > DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT \? days : DEFAULT_AUTOMATIC_CALENDAR_DAY_LIMIT/);
-});
-
-test("PR11: a newer GM progression summary closes and evicts stale summary windows", () => {
-  assert.match(source, /for \(const \[existingKey, existingState\] of gmSummaryWindows\)/);
-  assert.match(source, /if \(existingKey === key\) continue/);
-  assert.match(source, /gmSummaryWindows\.delete\(existingKey\)/);
-  assert.match(source, /existingState\.dialog\?\.close\?\.\(\)/);
-});
-
 test("PR11: Calendaria public current date is not double-converted", testContext => {
   const previousGame = globalThis.game;
   const previousCalendaria = globalThis.CALENDARIA;
@@ -294,13 +279,4 @@ test("PR11: Calendaria public current date is not double-converted", testContext
     daysBetween: () => 0, addDays: () => date
   } };
   assert.deepEqual(getCalendariaContext().date, date);
-});
-
-test("PR11 follow-up: automatic progression reports logical marker advancement and never marks limited work done", () => {
-  assert.match(source, /const markerAdvance = Number\(api\?\.daysBetween\?\.\(initialDate, cursor\)\)/);
-  assert.match(source, /processedDays = Math\.max\(0, Math\.min\(requested, Math\.floor\(markerAdvance\)\)\)/);
-  assert.match(source, /limitedDays:\s*Math\.max\(0, requested - processedDays\)/);
-  assert.match(source, /result\.limitedDays > 0[\s\S]*?state:\s*"blocked"[\s\S]*?days:\s*result\.limitedDays/);
-  assert.doesNotMatch(source, /processedDays:\s*dayResults\.length/);
-  assert.doesNotMatch(source, /limitedDays:\s*Math\.max\(0, requested - dayResults\.length\)/);
 });
