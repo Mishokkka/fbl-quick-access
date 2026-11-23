@@ -233,9 +233,7 @@ export function releaseBiographyState(actorOrId) {
   closeBiographyDrawer(key, { discardPending: true });
   SAVE_PENDING.delete(key);
   PILGRIM_PENDING.delete(key);
-  const timer = SAVE_TIMERS.get(key);
-  if (timer) globalThis.clearTimeout?.(timer);
-  SAVE_TIMERS.delete(key);
+  clearProfileSaveTimer(key);
   // Do not drop an in-flight save chain here. A rapid close/reopen could let a
   // newer write bypass it and then be overwritten by the older request. The
   // queue removes itself only after the promise actually settles.
@@ -1387,8 +1385,7 @@ export function queueProfileSave(actor, state, status, delay = 350, path = null)
   appendBiographyPatch(pending.patches, persistedPath, value);
   SAVE_PENDING.set(key, pending);
 
-  const existing = SAVE_TIMERS.get(key);
-  if (existing) globalThis.clearTimeout?.(existing);
+  clearProfileSaveTimer(key);
   setSaveStatus(status, t("Bio.Save.Saving", "Сохранение…"), "is-saving");
   const timeout = globalThis.setTimeout?.(() => flushProfileSave(key), delay);
   SAVE_TIMERS.set(key, timeout);
@@ -1410,12 +1407,17 @@ function getBiographyDraft(actor) {
   return profile;
 }
 
-function flushProfileSave(key) {
+function clearProfileSaveTimer(key) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
+}
+
+function flushProfileSave(key) {
+  clearProfileSaveTimer(key);
   if (!SAVE_PENDING.has(key)) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
-  const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false).then(async () => {
+  const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve(true)).then(async (saved) => {
+    if (!saved) return false;
     const pending = SAVE_PENDING.get(key);
     if (!pending) return true;
     SAVE_PENDING.delete(key);
@@ -1435,6 +1437,7 @@ function flushProfileSave(key) {
       return true;
     } catch (error) {
       if (DELETED_ACTORS.has(pending.actor)) return false;
+      clearProfileSaveTimer(key);
       const newer = SAVE_PENDING.get(key);
       if (newer) {
         const patches = new Map(pending.patches);
@@ -1442,18 +1445,20 @@ function flushProfileSave(key) {
         newer.patches = patches;
       } else {
         SAVE_PENDING.set(key, pending);
-        const message = t("Bio.Save.Error", "Ошибка сохранения");
-        setSaveStatus(pending.status, message, "is-error");
-        if (!pending.status) globalThis.ui?.notifications?.error?.(message);
       }
+      const status = (newer ?? pending).status;
+      const message = t("Bio.Save.Error", "Ошибка сохранения");
+      setSaveStatus(status, message, "is-error");
+      if (!status || status.isConnected === false) globalThis.ui?.notifications?.error?.(message);
       console.error(`${MODULE_ID} | biography save failed`, error);
       return false;
     } finally {
       SAVE_RUNNING.delete(key);
     }
+  }).finally(() => {
+    if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key);
   });
   SAVE_CHAINS.set(key, chain);
-  chain.finally(() => { if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key); });
   return chain;
 }
 

@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { buildSlots } from "../scripts/quick-access.js";
 import { setupGearOrdering } from "../scripts/gear-order.js";
+import { performEquipmentAction } from "../scripts/integration/equipment-api.js";
 
 class ElementFixture {
   constructor() {
@@ -131,6 +132,50 @@ for (const change of ["capacity", "deleted Item", "changed target slot"]) {
     await pending;
     assert.deepEqual(flags.slots, preservedSlots);
     assert.equal(writes.length, 0);
+  });
+}
+
+for (const [action, apiCommand, expected] of [
+  ["removal", { type: "assignSlot", index: 1, itemId: "bow" }, [null, "bow"]],
+  ["inventory drop", { type: "clearSlot", index: 0 }, [null, "bow"]],
+  ["drop onto a changed target", { type: "clearSlot", index: 1 }, ["sword", null]],
+  ["move from a changed source", { type: "clearSlot", index: 0 }, [null, "shield"]]
+]) {
+  test(`quick-slot ${action} uses the Equipment API's actor queue`, async t => {
+    const { actor, flags } = fixture(t);
+    let start, unblock;
+    const started = new Promise(resolve => { start = resolve; });
+    const blocked = new Promise(resolve => { unblock = resolve; });
+    Object.assign(actor, {
+      documentName: "Actor", type: "character",
+      async update(patch) {
+        start();
+        await blocked;
+        await this.setFlag("fbl-quick-access", "slots", patch["flags.fbl-quick-access.slots"]);
+        return this;
+      }
+    });
+    const rows = quickSlots(actor);
+    const apiWrite = performEquipmentAction(actor, apiCommand);
+    await started;
+
+    let uiWrite;
+    if (action === "removal") {
+      const remove = rows[0].children.find(child => child.classList.contains("fblqa-remove"));
+      uiWrite = remove.listeners.get("click")(dragEvent({}));
+    } else if (action === "move from a changed source") {
+      uiWrite = rows[1].listeners.get("drop")(dragEvent({ type: "FBLQuickAccess", actorUuid: actor.uuid, slotIndex: 0, itemId: "sword" }));
+    } else {
+      const { pending, finish } = pendingInventoryDrop(actor, rows[1]);
+      finish();
+      uiWrite = pending;
+    }
+    await new Promise(resolve => setImmediate(resolve));
+    const beforeRelease = [...flags.slots];
+    unblock();
+    await Promise.all([apiWrite, uiWrite]);
+    assert.deepEqual(beforeRelease, ["sword", "shield"]);
+    assert.deepEqual(flags.slots, expected);
   });
 }
 

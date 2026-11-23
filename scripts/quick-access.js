@@ -6,6 +6,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { getActorAttributeMaximum } from "./actor-data.js";
 import { firstFiniteNumber } from "./utils.js";
 import { getEquipmentGrip } from "./equipment-hands.js";
+import { enqueueEquipmentOperation } from "./equipment-operation-queue.js";
 
 export function getQuickCapacity(actor) {
   const system = actor.system ?? {};
@@ -49,10 +50,12 @@ export async function saveSlots(actor, slots) {
   await actor.setFlag(MODULE_ID, FLAG_SLOTS, slots.map((entry) => entry ?? null));
 }
 
-async function removeSlot(actor, index) {
-  const slots = getStoredSlots(actor);
-  slots[index] = null;
-  await saveSlots(actor, slots);
+function removeSlot(actor, index) {
+  return enqueueEquipmentOperation(actor, async () => {
+    const slots = getStoredSlots(actor);
+    slots[index] = null;
+    await saveSlots(actor, slots);
+  });
 }
 
 export function buildSlots(app, actor, capacity, storedSlots) {
@@ -241,46 +244,46 @@ async function handleDrop(app, actor, event, targetIndex) {
   const initialCapacity = getQuickCapacity(actor).capacity;
   if (targetIndex < 0 || targetIndex >= initialCapacity) return;
 
-  if (data.type === "FBLQuickAccess") {
-    const slots = normalizeSlots(actor, initialCapacity);
-    await moveQuickSlot(app, actor, slots, data, targetIndex);
-    return;
-  }
+  const isSlotMove = data.type === "FBLQuickAccess";
+  // Compare against the target as it was before UUID resolution and queueing.
+  const expectedTarget = isSlotMove ? null : normalizeSlots(actor, initialCapacity)[targetIndex];
+  const item = isSlotMove ? null : await resolveDroppedItem(actor, data);
+  if (!isSlotMove && !item) return;
 
-  const expectedTarget = normalizeSlots(actor, initialCapacity)[targetIndex];
-  const item = await resolveDroppedItem(actor, data);
-  if (!item) return;
+  await enqueueEquipmentOperation(actor, async () => {
+    if (!canModifyActor(actor)) {
+      warnCannotModifyActor();
+      return;
+    }
+    const liveCapacity = getQuickCapacity(actor).capacity;
+    if (targetIndex >= liveCapacity) return;
 
-  // Re-read live actor permissions, capacity, inventory, and slots after
-  // asynchronous UUID resolution so concurrent edits are never overwritten.
-  if (!canModifyActor(actor)) {
-    warnCannotModifyActor();
-    return;
-  }
-  const liveCapacity = getQuickCapacity(actor).capacity;
-  if (targetIndex < 0 || targetIndex >= liveCapacity) return;
+    const slots = normalizeSlots(actor, liveCapacity);
+    if (isSlotMove) {
+      await moveQuickSlot(app, actor, slots, data, targetIndex);
+      return;
+    }
+    if (slots[targetIndex] !== expectedTarget) return;
 
-  const liveItem = actor.items?.get?.(item.id);
-  if (!liveItem) return;
+    const liveItem = actor.items?.get?.(item.id);
+    if (!liveItem) return;
 
-  if (!isAllowedQuickItem(liveItem)) {
-    const reason = isQuickAccessItemType(liveItem)
-      ? qaLocalize("QuickAccess.WeightReject", "в быстрый доступ можно класть только предметы весом Normal или меньше")
-      : qaLocalize("QuickAccess.TypeReject", "в быстрый доступ можно класть только Weapon, Armor, Gear и Raw Material");
-    ui.notifications?.warn(`${liveItem.name}: ${reason}.`);
-    return;
-  }
+    if (!isAllowedQuickItem(liveItem)) {
+      const reason = isQuickAccessItemType(liveItem)
+        ? qaLocalize("QuickAccess.WeightReject", "в быстрый доступ можно класть только предметы весом Normal или меньше")
+        : qaLocalize("QuickAccess.TypeReject", "в быстрый доступ можно класть только Weapon, Armor, Gear и Raw Material");
+      ui.notifications?.warn(`${liveItem.name}: ${reason}.`);
+      return;
+    }
 
-  const slots = normalizeSlots(actor, liveCapacity);
-  if (slots[targetIndex] !== expectedTarget) return;
+    // A single item can only occupy one Quick Access slot.
+    for (let i = 0; i < slots.length; i += 1) {
+      if (slots[i] === liveItem.id && i !== targetIndex) slots[i] = null;
+    }
 
-  // A single item can only occupy one Quick Access slot.
-  for (let i = 0; i < slots.length; i += 1) {
-    if (slots[i] === liveItem.id && i !== targetIndex) slots[i] = null;
-  }
-
-  slots[targetIndex] = liveItem.id;
-  await saveSlots(actor, slots);
+    slots[targetIndex] = liveItem.id;
+    await saveSlots(actor, slots);
+  });
 }
 
 function isSameQuickSlotActor(actor, data) {

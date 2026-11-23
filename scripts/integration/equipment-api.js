@@ -2,13 +2,12 @@ import { MODULE_ID, FLAG_SLOTS } from "../constants.js";
 import { getQuickCapacity, getStoredSlots, normalizeSlots } from "../quick-access.js";
 import { getItemCarryState, getItemWeightValue, isAllowedQuickItem, isHandInventoryItem } from "../item-utils.js";
 import { canModifyActor } from "../permissions.js";
-import { createObjectOperationQueue } from "../operation-queue.js";
+import { enqueueEquipmentOperation } from "../equipment-operation-queue.js";
 import { readEquipmentHands } from "../equipment-hands.js";
 
 export const EQUIPMENT_API_VERSION = 1;
 const HANDS_FLAG = "equipmentHands";
 const RECEIPTS_FLAG = "equipmentReceipts";
-const enqueue = createObjectOperationQueue();
 let equipmentHooksRegistered = false;
 
 function assertActor(actor) {
@@ -188,7 +187,7 @@ export async function performEquipmentAction(actor, action, { expectedRevision, 
   assertActor(actor);
   const command = captureCommand(action);
   if (operationId !== undefined && (typeof operationId !== "string" || !/^[a-zA-Z0-9_-]{1,64}$/.test(operationId))) throw new TypeError("Invalid equipment operation id.");
-  return enqueue(actor, async () => {
+  return enqueueEquipmentOperation(actor, async () => {
     assertActor(actor);
     if (!canModifyActor(actor)) throw new Error("No permission to modify this character.");
     const previous = operationId ? getEquipmentReceipt(actor, operationId) : null;

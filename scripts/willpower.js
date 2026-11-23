@@ -242,8 +242,10 @@ function openWillpowerTalentPopover(app, actor, anchor) {
 
 export function closeWillpowerTalentPopover(actorOrKey = null) {
   if (actorOrKey && activePopover) {
-    const key = typeof actorOrKey === "string" ? actorOrKey : actorKey(actorOrKey);
-    if (activePopover.dataset.actorKey !== key && activePopover.dataset.actorId !== key) return;
+    const isString = typeof actorOrKey === "string";
+    const key = isString ? actorOrKey : actorKey(actorOrKey);
+    const matchesId = isString && activePopover.dataset.actorId === key;
+    if (activePopover.dataset.actorKey !== key && !matchesId) return;
   }
   if (activeOutsideClickHandler) document.removeEventListener("mousedown", activeOutsideClickHandler, true);
   if (activeKeydownHandler) document.removeEventListener("keydown", activeKeydownHandler, true);

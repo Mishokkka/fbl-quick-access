@@ -59,6 +59,52 @@ test("only the newest overlapping BIO edit wins", async () => {
   assert.deepEqual({ appearance, hair }, { appearance: "Latest", hair: "Black" });
 });
 
+for (const continuation of ["queued flush", "pending debounce"]) {
+  test(`a failed BIO batch stops a ${continuation} and retains the latest draft`, async t => {
+    t.mock.method(console, "error", () => {});
+    const actor = biographyActor(`bio-failure-${continuation}`, {});
+    let start, fail;
+    const started = new Promise(resolve => { start = resolve; });
+    const blocked = new Promise((_resolve, reject) => { fail = reject; });
+    const update = actor.update;
+    let attempts = 0;
+    actor.update = async patch => {
+      attempts += 1;
+      if (attempts === 2) {
+        start();
+        await blocked;
+      }
+      return update(patch);
+    };
+    const profile = getBiographyProfile(actor);
+    Object.assign(profile.physical, { height: "180", eyes: "green", hair: "red" });
+    for (const path of ["physical.height", "physical.eyes", "physical.hair"]) {
+      queueProfileSave(actor, profile, null, 10_000, path);
+    }
+    const first = flushBiographySaves(actor);
+    await started;
+
+    const status = {};
+    profile.physical.eyes = "blue";
+    queueProfileSave(actor, profile, status, 0, "physical.eyes");
+    const queued = continuation === "queued flush" ? flushBiographySaves(actor) : null;
+    fail(new Error("Second write failed"));
+
+    assert.deepEqual(await first, [false, true]);
+    if (queued) assert.deepEqual(await queued, [false, true]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(attempts, 2);
+    assert.match(status.className, /\bis-error\b/);
+    assert.ok(status.textContent);
+    const { height, eyes, hair } = getBiographyProfile(actor).physical;
+    assert.deepEqual({ height, eyes, hair }, { height: "180", eyes: "", hair: "" });
+
+    assert.deepEqual(await flushBiographySaves(actor), [true, true]);
+    const saved = getBiographyProfile(actor).physical;
+    assert.deepEqual([saved.height, saved.eyes, saved.hair], ["180", "blue", "red"]);
+  });
+}
+
 test("normalizes imported biography rows while keeping rumor truth out of the visible row model", () => {
   const profile = normalizeBiographyProfile({
     identity: { name: "Люсьен", subrace: "Конквист", citizenship: "Сангрен" },

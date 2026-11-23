@@ -322,6 +322,7 @@ test("A02: a new special kind or lethal flag invalidates a previously ordinary i
 });
 test("CodeRabbit: partial BIO retry preserves a newer edit to the committed field", async () => {
   reset(); const a = actor(); const state = getBiographyProfile(a);
+  const status = {};
   state.physical.height = "180"; state.physical.eyes = "green"; state.physical.hair = "red";
   const originalUpdate = a.update; let rejectEyes = true;
   a.update = async patch => {
@@ -330,8 +331,9 @@ test("CodeRabbit: partial BIO retry preserves a newer edit to the committed fiel
     }
     return originalUpdate(patch);
   };
-  for (const path of ["physical.height", "physical.eyes", "physical.hair"]) queueProfileSave(a, state, null, 10_000, path);
+  for (const path of ["physical.height", "physical.eyes", "physical.hair"]) queueProfileSave(a, state, status, 10_000, path);
   await flushBiographySaves(a);
+  assert.match(status.className, /\bis-error\b/);
   assert.equal(getBiographyProfile(a).physical.height, "180");
   assert.equal(getBiographyProfile(a).physical.eyes, "");
   assert.equal(getBiographyProfile(a).physical.hair, "");
@@ -340,6 +342,36 @@ test("CodeRabbit: partial BIO retry preserves a newer edit to the committed fiel
   const saved = getBiographyProfile(a); assert.equal(saved.physical.height, "190");
   assert.equal(saved.physical.eyes, "green"); assert.equal(saved.physical.hair, "red");
   assert.equal(a.updates.slice(retryStart).some(patch => Object.hasOwn(patch, `flags.${scope}.biographyProfile.physical.height`)), false);
+});
+
+test("closing the base Actor sheet keeps the synthetic Actor's Willpower popover open", async () => {
+  reset();
+  const { openWillpowerTalentPopover, closeWillpowerTalentPopover } = await expose("scripts/willpower.js", ["openWillpowerTalentPopover"]);
+  const { document, window } = globalThis;
+  let removes = 0;
+  const popover = {
+    dataset: {}, style: {}, classList: { add() {} },
+    querySelector: () => null, remove: () => { removes += 1; }
+  };
+  globalThis.document = { createElement: () => popover, body: { appendChild() {} }, removeEventListener() {} };
+  globalThis.window = { innerWidth: 800, innerHeight: 600 };
+  const actor = { id: "same", uuid: "Scene.scene.Token.token.Actor.same" };
+  const anchor = { getBoundingClientRect: () => ({ top: 80, bottom: 100, left: 100 }) };
+
+  try {
+    openWillpowerTalentPopover(null, actor, anchor);
+    closeWillpowerTalentPopover({ id: "same", uuid: "Actor.same" });
+    assert.equal(removes, 0);
+    closeWillpowerTalentPopover("same");
+    assert.equal(removes, 1);
+
+    openWillpowerTalentPopover(null, actor, anchor);
+    closeWillpowerTalentPopover({ ...actor });
+    assert.equal(removes, 2);
+  } finally {
+    closeWillpowerTalentPopover();
+    Object.assign(globalThis, { document, window });
+  }
 });
 test("CodeRabbit: over-limit reputation stays visible and unchanged until explicitly corrected", async () => {
   for (const amount of [1500, Number.MAX_SAFE_INTEGER + 1]) {

@@ -165,3 +165,121 @@ test("native header Reputation control opens the ledger dialog", () => {
     globalThis.ui = previous.ui;
   }
 });
+
+const rollActions = ["roll-selected", "roll-half", "roll-third"];
+
+function ledgerFixture(t) {
+  class Element {
+    dataset = {};
+    children = [];
+    listeners = new Map();
+    classes = new Set();
+    classList = {
+      add: name => this.classes.add(name),
+      remove: (...names) => names.forEach(name => this.classes.delete(name)),
+      toggle: (name, force) => force ? this.classes.add(name) : this.classes.delete(name)
+    };
+    append(...children) { this.children.push(...children); }
+    setAttribute() {}
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+    querySelector(selector) {
+      return this.children.flatMap(child => [child, ...child.children])
+        .find(child => selector === `input[data-field='${child.dataset.field}']`) ?? null;
+    }
+    querySelectorAll(selector) {
+      return this.children.filter(child => child.classes.has(selector.slice(1)));
+    }
+  }
+
+  let rolls = 0;
+  const globals = {
+    HTMLElement: Element,
+    document: { createElement: () => new Element() },
+    Dialog: class {
+      constructor(config) { this.config = config; }
+      render() {
+        this.rows = new Element();
+        this.status = new Element();
+        this.buttons = Object.fromEntries(rollActions.map(action => [action, new Element()]));
+        const controls = new Map([
+          [".fblqa-reputation-rows", this.rows], ["[data-role='save-status']", this.status],
+          ...rollActions.map(action => [`[data-action='${action}']`, this.buttons[action]])
+        ]);
+        const root = new Element();
+        root.querySelector = selector => controls.get(selector) ?? null;
+        this.config.render(root);
+      }
+      close() { this.config.close(); }
+      edit(amount) {
+        const target = this.rows.children[0].querySelector("input[data-field='amount']");
+        target.value = String(amount);
+        this.rows.listeners.get("change")({ target });
+      }
+      roll(action) { return this.buttons[action].listeners.get("click")(); }
+    },
+    foundry: undefined,
+    Roll: class { async evaluate() { return this; } },
+    ChatMessage: { async create() { rolls += 1; } }
+  };
+  const previous = Object.fromEntries(Object.keys(globals).map(key => [key, globalThis[key]]));
+  Object.assign(globalThis, globals);
+  const actor = { uuid: "Actor.ledger-test", isOwner: true, system: { bio: { reputation: { value: 6 } } } };
+  t.after(() => {
+    reputation.closeReputationDialog(actor);
+    Object.assign(globalThis, previous);
+  });
+  t.mock.method(console, "error", () => {});
+  return { actor, rollCount: () => rolls };
+}
+
+test("all reputation rolls wait for a successful save and still work read-only", async t => {
+  const { actor, rollCount } = ledgerFixture(t);
+  let attempts = 0;
+  actor.update = async () => { attempts += 1; throw new Error("Write failed"); };
+  const dialog = reputation.openReputationDialog(null, actor);
+  dialog.edit(9);
+  for (const action of rollActions) {
+    await dialog.roll(action);
+    assert.ok(dialog.status.classes.has("is-error"));
+  }
+  assert.equal(rollCount(), 0);
+  assert.equal(attempts, rollActions.length);
+
+  actor.update = async () => actor;
+  await dialog.roll("roll-selected");
+  assert.equal(rollCount(), 1);
+  dialog.close();
+  actor.isOwner = false;
+  actor.update = () => assert.fail("A read-only roll must not write");
+  const readOnly = reputation.openReputationDialog(null, actor);
+  for (const action of rollActions) await readOnly.roll(action);
+  assert.equal(rollCount(), 1 + rollActions.length);
+});
+
+test("closing and reopening a reputation dialog preserves write order for the actor", async t => {
+  const { actor } = ledgerFixture(t);
+  const writes = [];
+  let start, unblock;
+  const started = new Promise(resolve => { start = resolve; });
+  const blocked = new Promise(resolve => { unblock = resolve; });
+  actor.update = async patch => {
+    const amount = patch["system.bio.reputation.value"];
+    if (amount === 7) {
+      start();
+      await blocked;
+    }
+    writes.push(amount);
+  };
+  const first = reputation.openReputationDialog(null, actor);
+  first.edit(7);
+  first.close();
+  await started;
+
+  const second = reputation.openReputationDialog(null, { ...actor });
+  second.edit(9);
+  const saved = second.roll("roll-selected");
+  await new Promise(resolve => setImmediate(resolve));
+  unblock();
+  await saved;
+  assert.deepEqual(writes, [7, 9]);
+});

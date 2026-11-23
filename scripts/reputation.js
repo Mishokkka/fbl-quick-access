@@ -7,6 +7,7 @@ import { findNoteTab } from "./sheet-adapter/forbidden-lands-v1.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
+const SAVE_CHAINS = new Map();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
 export const MAX_REPUTATION_POINTS = 1000;
 
@@ -206,7 +207,6 @@ export function openReputationDialog(app, actor) {
   const editable = canModifyActor(actor);
   const content = buildDialogContent(actor, editable);
   let saveTimeout = null;
-  let saveChain = Promise.resolve();
   let dialogRoot = null;
   let revision = 0;
   let dirty = false;
@@ -220,8 +220,7 @@ export function openReputationDialog(app, actor) {
     if (!dirty && serialized === lastSerialized) return Promise.resolve(true);
     setStatus(status, qaLocalize("Reputation.Saving", "Сохранение…"), "is-saving");
 
-    saveChain = saveChain
-      .catch(() => false)
+    const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve())
       .then(async () => {
         const saved = await saveReputationEntries(actor, entries, { render: false });
         if (saved) {
@@ -244,9 +243,13 @@ export function openReputationDialog(app, actor) {
           ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
           : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
         return false;
+      })
+      .finally(() => {
+        if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key);
       });
 
-    return saveChain;
+    SAVE_CHAINS.set(key, chain);
+    return chain;
   };
 
   const dialog = createFoundryDialog({
@@ -444,19 +447,19 @@ function setupDialogInteractions({ app, actor, root, editable, scheduleSave, sav
     const selections = states
       .filter((state) => state.selected)
       .map((state) => ({ entry: state.entry, amount: state.entry.amount }));
-    await saveNow(rowsRoot, status);
+    if (!(await saveNow(rowsRoot, status))) return;
     await rollReputation(actor, states.map((state) => state.entry), selections);
   }));
 
   root.querySelector("[data-action='roll-half']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (!(await saveNow(rowsRoot, status))) return;
     await rollRandomReputation(actor, entries, 2);
   }));
 
   root.querySelector("[data-action='roll-third']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (!(await saveNow(rowsRoot, status))) return;
     await rollRandomReputation(actor, entries, 3);
   }));
 
