@@ -92,7 +92,7 @@ The New Day plan proposes daily changes for injury healing timers, day-based let
 
 Calendaria mode handles only `character` Actors assigned to non-GM users through `user.character`. Each online player receives only the prompt/result for their own character. The deterministic active GM receives one live summary for the group. Quick Access suppresses its New Day chat card, Addiction roll/chat output, wash notifications and provider private-summary chat while processing calendar-driven days. Registered New Day providers receive `context.suppressChat === true` so integrations can suppress their own presentation as well.
 
-No polling is used. The module sleeps until Calendaria emits a day-change hook. A per-Actor marker records the processed calendar date, making normal reload/reconnect and duplicate hook delivery idempotent. A multi-day jump is confirmed once by the GM and then simulated day-by-day; a backwards calendar move never rolls states back. Addiction can stop that simulation at a manual Endurance: the started day's other changes remain applied once, while later days stay pending. Record the outcome in STAT, then resume remaining days from the GM summary. Switching into Calendaria mode sets the current date as the baseline instead of processing old calendar history.
+No polling is used. The module sleeps until Calendaria emits a day-change hook. A per-Actor marker records the processed calendar date, making normal reload/reconnect and duplicate hook delivery idempotent. A multi-day jump is confirmed once by the GM and then simulated day-by-day; a backwards calendar move never rolls states back. Addiction can stop that simulation at a manual Endurance: the started day's other changes remain applied once, while later days stay pending. Record the outcome in STAT, then resume remaining days from the GM summary. Switching into Calendaria mode sets the current date as the baseline instead of processing old calendar history. If calendar edits ever leave markers ahead of the current date or a GM wants to re-process recent days, **Manage Calendaria days** in module settings (and the GM summary toolbar) lets the active GM reset individual or all markers to the current date or rewind processed days.
 
 Short Rest is treated as a 15 minute breather. It can be used for extended actions outside this module. Once per Quarter Day, the actor may restore 1 point in one damaged and unblocked attribute if the player enters an appropriate consumable or justification. The module records the once-per-Quarter-Day use in an actor flag and uses Foundry world time in 6-hour blocks when available. A manual reset checkbox is included for tables that do not advance world time. It is GM-only by default; a world setting can allow actor owners to use it.
 
@@ -167,6 +167,11 @@ Available methods in 1.7.36:
 - `buildNewDayPlan(actor)`
 - `buildNewDayPlanWithProviders(actor)`
 - `getStateProgressionMode()`
+- `openStateProgressionManager()`
+- `resetActorCalendarMarkerToCurrent(actor)`
+- `rewindActorCalendarMarker(actor, days)`
+- `resetAllCalendarMarkersToCurrent()`
+- `rewindAllCalendarMarkers(days)`
 - `openMoneyTransferDialog(app, actor)`
 - `getReputationEntries(actor)`
 - `saveReputationEntries(actor, entries, options?)`
@@ -428,4 +433,4 @@ Use `api.capabilities` to detect provider, active-GM, character-import, biograph
 
 ## Weapon ribbon integration (1.7.30)
 
-YZE widget **1.5.0+** optionally reads `getHeldItemPresentation(actor)` to show grips, stats, ammo and properties in separate compact groups. It provides native attacks and manually configurable load/top-off progress with a price chosen per operation. Quick Access owns slots/grips; FL Firearms owns magazines/ammunition. Equipment API version 1 remains compatible. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md).
+YZE widget **1.5.0+** optionally reads `getHeldItemPresentation(actor)` to show grips, stats, ammo and properties in separate compact groups. It provides native attacks and manually configurable load/top-off progress with a price chosen per operation. Quick Access owns slots/grips; FL Firearms owns magazines/ammunition. Equipment API version 1 remains compatible. See [WEAPON_RIBBON_DESIGN.md](docs/WEAPON_RIBBON_DESIGN.md).

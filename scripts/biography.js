@@ -3,9 +3,11 @@ import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
 import { findApplicationRoot, findBiographyTab } from "./sheet-adapter/forbidden-lands-v1.js";
-import { escapeHtml, stripHtml } from "./utils.js";
+import { actorKey, decodeHtmlEntities, escapeHtml, stripHtml } from "./utils.js";
+import { clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 
 const PROFILE_VERSION = 1;
+const BIOGRAPHY_REPLACE_PATH = flagReplaceUpdatePath(MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
 const QUESTION_FIELDS = Object.freeze([
   ["bestFriend", "Bio.Questions.BestFriend", "Лучший друг или самый близкий человек"],
   ["favoriteFood", "Bio.Questions.FavoriteFood", "Любимое блюдо и причина"],
@@ -24,8 +26,9 @@ const LANGUAGE_LEVELS = Object.freeze({
 const DRAWERS = new Map();
 const SAVE_TIMERS = new Map();
 const SAVE_CHAINS = new Map();
-const SAVE_DIRTY_PATHS = new Map();
 const SAVE_PENDING = new Map();
+const SAVE_RUNNING = new Map();
+const UNSAFE_PATH_KEYS = new Set(["__proto__", "constructor", "prototype"]);
 const COLLAPSED_SECTIONS = new Map();
 const FLOATING_ACTIONS = new WeakMap();
 const ACTIVE_RICH_EDITORS = new WeakMap();
@@ -37,6 +40,7 @@ const LANGUAGE_LAYOUT_OBSERVERS = new WeakMap();
 const PILGRIM_SAVE_TIMERS = new Map();
 const PILGRIM_SAVE_CHAINS = new Map();
 const PILGRIM_PENDING = new Map();
+const PILGRIM_RUNNING = new Map();
 const DELETED_ACTORS = new WeakSet();
 
 export function normalizeBiographyProfile(value = {}) {
@@ -128,11 +132,16 @@ export function getPilgrimCardProfile(actor, fallbackBiography = null) {
 
 export async function savePilgrimCardProfile(actor, value, { render = false } = {}) {
   if (!actor?.update) return false;
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return false;
+  }
   const profile = normalizePilgrimCardProfile(value);
   await actor.update({
-    [`flags.${MODULE_ID}.${FLAG_PILGRIM_CARD_PROFILE}`]: profile
+    [flagReplaceUpdatePath(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE)]: profile
   }, { render });
-  return true;
+  const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
+  return plainValuesEqual(persisted ?? null, profile);
 }
 
 export function getBiographyProfile(actor) {
@@ -166,11 +175,15 @@ export function getBiographyProfile(actor) {
 
 export async function saveBiographyProfile(actor, value, { render = false } = {}) {
   if (!actor?.update) return false;
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return false;
+  }
   const profile = sanitizeBiographyProfile(normalizeBiographyProfile(value));
   profile.identity.name = String(profile.identity.name || actor.name || "").trim();
 
   const update = {
-    [`flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}`]: profile,
+    [BIOGRAPHY_REPLACE_PATH]: profile,
     "system.bio.kin.value": profile.identity.kin,
     "system.bio.profession.value": profile.identity.profession,
     "system.bio.pride.value": normalizeRichText(profile.pride),
@@ -178,7 +191,28 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
     "system.bio.note.value": normalizeRichText(profile.publicNote)
   };
   if (profile.identity.name && profile.identity.name !== actor.name) update.name = profile.identity.name;
-  await actor.update(update, { render });
+  return writeBiographyUpdate(actor, update, render);
+}
+
+async function writeBiographyUpdate(actor, update, render) {
+  await actor.update(clonePlainJson(update), { render });
+  for (const [path, expected] of Object.entries(update)) {
+    if (path === BIOGRAPHY_REPLACE_PATH) {
+      const persisted = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
+      if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+      continue;
+    }
+    const prefix = `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}.`;
+    if (path.startsWith(prefix)) {
+      const stored = readDocumentFlag(actor, MODULE_ID, FLAG_BIOGRAPHY_PROFILE);
+      const subPath = path.slice(prefix.length);
+      const persisted = getPathValue(stored, subPath);
+      if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+      continue;
+    }
+    const persisted = getPathValue(actor, path);
+    if (!plainValuesEqual(persisted ?? null, expected ?? null)) return false;
+  }
   return true;
 }
 
@@ -190,7 +224,7 @@ export function setupBiographyTab(app, actor, root) {
   const headingSpec = captureNativeHeadingSpec(bioTab);
   bioTab.classList.add("fblqa-biography-tab");
   const editable = canModifyActor(actor);
-  const state = getBiographyProfile(actor);
+  const state = editable ? getBiographyDraft(actor) : getBiographyProfile(actor);
 
   const render = () => {
     commitActiveRichEditor(bioTab);
@@ -216,8 +250,10 @@ export function cleanupBiographyTab(root) {
 }
 
 export function releaseBiographyState(actorOrId) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
-  const actor = typeof actorOrId === "string" ? SAVE_PENDING.get(key)?.actor ?? PILGRIM_PENDING.get(key)?.actor : actorOrId;
+  const key = drawerKey(actorOrId);
+  const actor = typeof actorOrId === "string"
+    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key)?.actor ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)?.actor
+    : actorOrId;
   if (actor && typeof actor === "object") DELETED_ACTORS.add(actor);
   closeBiographyDrawer(key, { discardPending: true });
   SAVE_PENDING.delete(key);
@@ -225,7 +261,6 @@ export function releaseBiographyState(actorOrId) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
-  SAVE_DIRTY_PATHS.delete(key);
   // Do not drop an in-flight save chain here. A rapid close/reopen could let a
   // newer write bypass it and then be overwritten by the older request. The
   // queue removes itself only after the promise actually settles.
@@ -237,14 +272,14 @@ export function releaseBiographyState(actorOrId) {
 }
 
 export function closeBiographyDrawer(actorOrId, { discardPending = false } = {}) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  const key = drawerKey(actorOrId);
   if (!discardPending) flushPilgrimSave(key);
   const record = DRAWERS.get(key);
   if (!record) return;
   const drawer = record.element ?? record;
   record.cleanup?.();
   drawer.classList.remove("is-open");
-  window.setTimeout(() => drawer.remove(), 180);
+  globalThis.setTimeout?.(() => drawer.remove(), 180);
   DRAWERS.delete(key);
 }
 
@@ -439,7 +474,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
         button.classList.add("is-copied");
         const oldTitle = button.title;
         button.title = t("Bio.Archive.Copied", "Скопировано");
-        window.setTimeout(() => {
+        globalThis.setTimeout?.(() => {
           button.classList.remove("is-copied");
           button.title = oldTitle;
         }, 1200);
@@ -460,7 +495,9 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   for (const button of bioTab.querySelectorAll('[data-bio-action="remove-language"]')) {
     button.addEventListener("click", () => {
       if (!editable) return;
-      state.languages.splice(Number(button.dataset.index), 1);
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= state.languages.length) return;
+      state.languages.splice(index, 1);
       render();
       queueProfileSave(actor, state, null, 0, "languages");
     });
@@ -475,7 +512,9 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   for (const button of bioTab.querySelectorAll('[data-bio-action="remove-rumor"]')) {
     button.addEventListener("click", () => {
       if (!editable) return;
-      state.rumors.splice(Number(button.dataset.index), 1);
+      const index = Number(button.dataset.index);
+      if (!Number.isInteger(index) || index < 0 || index >= state.rumors.length) return;
+      state.rumors.splice(index, 1);
       render();
       queueProfileSave(actor, state, null, 0, "rumors");
     });
@@ -485,13 +524,13 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
 function openPilgrimCard(actor, root, biographyState, editable) {
   closeBiographyDrawer(actor);
   const application = findApplicationRoot(root) ?? root;
+  const key = drawerKey(actor);
   const stored = actor?.getFlag?.(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
-  const cardState = getPilgrimCardProfile(actor, biographyState);
+  const draft = editable ? PILGRIM_PENDING.get(key) ?? PILGRIM_RUNNING.get(key) : null;
+  const cardState = draft ? cloneProfileValue(draft.state) : getPilgrimCardProfile(actor, biographyState);
 
-  // Persist the one-time migration snapshot immediately. The same mutable state
-  // object is used by later edits, so a quick edit before this timer fires cannot
-  // overwrite the user's newer value with the migration seed.
-  if (!(stored && typeof stored === "object") && editable) queuePilgrimSave(actor, cardState, 0);
+  // Persist the one-time migration snapshot if a prior save has not started.
+  if (editable && !draft && !(stored && typeof stored === "object")) queuePilgrimSave(actor, cardState, 0);
 
   const drawer = document.createElement("aside");
   drawer.className = "fblqa-pilgrim-drawer";
@@ -502,7 +541,7 @@ function openPilgrimCard(actor, root, biographyState, editable) {
   applyPilgrimCardFont(drawer, getPilgrimCardFontFamily());
 
   const cleanup = setupPilgrimMovement(drawer, application);
-  DRAWERS.set(drawerKey(actor), { element: drawer, cleanup });
+  DRAWERS.set(key, { element: drawer, cleanup });
   positionPilgrimDrawer(drawer, application);
   updatePilgrimAttachmentUi(drawer);
   requestAnimationFrame(() => drawer.classList.add("is-open"));
@@ -614,10 +653,18 @@ function setupPilgrimMovement(drawer, application) {
   const dragHandle = drawer.querySelector("[data-pilgrim-drag]");
   let drag = null;
   let dragFrame = 0;
+  let syncFrame = 0;
   let pendingPointer = null;
 
   const sync = () => {
-    if (drawer.dataset.attached === "true") positionPilgrimDrawer(drawer, application);
+    if (drawer.dataset.attached !== "true") return;
+    if (syncFrame) return;
+    syncFrame = requestAnimationFrame(() => {
+      syncFrame = 0;
+      if (drawer.isConnected && drawer.dataset.attached === "true") {
+        positionPilgrimDrawer(drawer, application);
+      }
+    });
   };
   const onResize = () => {
     if (drawer.dataset.attached === "true") positionPilgrimDrawer(drawer, application);
@@ -695,7 +742,9 @@ function setupPilgrimMovement(drawer, application) {
 
   return () => {
     if (dragFrame) cancelAnimationFrame(dragFrame);
+    if (syncFrame) cancelAnimationFrame(syncFrame);
     dragFrame = 0;
+    syncFrame = 0;
     pendingPointer = null;
     dragHandle?.removeEventListener("pointerdown", startDrag);
     dragHandle?.removeEventListener("pointermove", onPointerMove);
@@ -875,7 +924,7 @@ function mountNativePrideRoll(bioTab, button) {
   if (!(slot instanceof HTMLElement) || !(button instanceof HTMLElement)) return;
   const label = t("Bio.PrideRoll", "Бросить Гордость");
 
-  button.className = "fblqa-native-pride-roll-source";
+  button.classList.add("fblqa-native-pride-roll-source");
   button.hidden = true;
   button.tabIndex = -1;
   button.setAttribute("aria-hidden", "true");
@@ -923,7 +972,7 @@ function bindPilgrimControls(scope, actor, state, editable) {
   }
 }
 
-function bindSimpleControls(scope, actor, state, editable, saveState, twinScope = null) {
+function bindSimpleControls(scope, actor, state, editable, saveState) {
   for (const control of scope.querySelectorAll("[data-bio-path]:not(prose-mirror)")) {
     if (control.matches("textarea[data-bio-autosize]")) schedulePlainTextareaResize(control);
     const discreteControl = control.matches("select, input[type='checkbox'], input[type='number']");
@@ -941,7 +990,6 @@ function bindSimpleControls(scope, actor, state, editable, saveState, twinScope 
       const value = control.type === "checkbox" ? control.checked : control.value;
       const path = control.dataset.bioPath;
       setPath(state, path, value);
-      syncTwinControl(twinScope, path, value, control);
       if (control.closest?.(".fblqa-language-list")) scheduleLanguageLayout(scope);
       // Discrete choices should be persisted immediately. Free-text fields keep
       // the debounce so typing does not create an Actor update per keystroke.
@@ -951,14 +999,14 @@ function bindSimpleControls(scope, actor, state, editable, saveState, twinScope 
   setupLanguageLayout(scope);
 }
 
-function bindRichEditors(scope, actor, state, editable, saveState, twinScope = null) {
+function bindRichEditors(scope, actor, state, editable, saveState) {
   for (const control of scope.querySelectorAll("[data-bio-rich-control]")) {
     const open = (event) => {
       if (event.target?.closest?.("a.content-link, a.inline-roll, a[href]")) return;
       if (!editable) return warnCannotModifyActor();
       if (event.type === "keydown" && !["Enter", " "].includes(event.key)) return;
       event.preventDefault();
-      activateRichEditor({ scope, control, actor, state, saveState, twinScope });
+      activateRichEditor({ scope, control, actor, state, saveState });
     };
     control.querySelectorAll('[data-bio-action="edit-rich"]').forEach((trigger) => {
       trigger.addEventListener("click", open);
@@ -967,7 +1015,7 @@ function bindRichEditors(scope, actor, state, editable, saveState, twinScope = n
   }
 }
 
-function activateRichEditor({ scope, control, actor, state, saveState, twinScope }) {
+function activateRichEditor({ scope, control, actor, state, saveState }) {
   if (!(control instanceof HTMLElement) || control.classList.contains("is-editing")) return;
   commitActiveRichEditor(scope);
 
@@ -1035,13 +1083,17 @@ function activateRichEditor({ scope, control, actor, state, saveState, twinScope
       const value = sanitizeRichHtml(normalizeRichText(rawValue));
       setPath(state, path, value);
       control.dataset.bioValue = value;
-      if (preview instanceof HTMLElement) preview.innerHTML = richTextHasContent(value) ? value : "<p><br></p>";
-      syncTwinControl(twinScope, path, value, control);
+      if (preview instanceof HTMLElement) {
+        preview.innerHTML = richTextHasContent(value) ? biographyDisplayHtml(value, actor) : "<p><br></p>";
+      }
       queueProfileSave(actor, state, saveState, 0, path);
     }
     shell.remove();
     control.classList.remove("is-editing");
-    if (preview instanceof HTMLElement) preview.hidden = false;
+    if (preview instanceof HTMLElement) {
+      preview.hidden = false;
+      if (save) void enrichSingleBiographyPreview(actor, preview);
+    }
     if (editButton instanceof HTMLElement) editButton.hidden = false;
     const active = ACTIVE_RICH_EDITORS.get(scope);
     if (active?.control === control) ACTIVE_RICH_EDITORS.delete(scope);
@@ -1076,9 +1128,7 @@ function createBiographyProseMirror({ name, path, value, enriched }) {
   if (typeof ElementClass?.create === "function") {
     try {
       const created = ElementClass.create({ name, value, enriched, toggled: false });
-      // A fresh clone avoids retaining disconnected custom-element state from
-      // HTMLProseMirrorElement.create before the editor is mounted in the sheet.
-      if (created instanceof HTMLElement) editor = created.cloneNode(true);
+      if (created instanceof HTMLElement) editor = created;
     } catch (error) {
       console.warn(`${MODULE_ID} | could not create Foundry ProseMirror element; using markup fallback`, error);
     }
@@ -1149,7 +1199,7 @@ function estimateRichEditorHeight(value) {
 
 function schedulePlainTextareaResize(textarea) {
   requestAnimationFrame(() => autoSizePlainTextarea(textarea));
-  window.setTimeout(() => autoSizePlainTextarea(textarea), 60);
+  globalThis.setTimeout?.(() => autoSizePlainTextarea(textarea), 60);
 }
 
 function autoSizePlainTextarea(textarea) {
@@ -1270,7 +1320,11 @@ function restoreBiographyViewport(bioTab, actor, viewport) {
       const control = bioTab.querySelector(`[data-bio-path="${cssEscape(target.activePath)}"]`);
       control?.focus?.({ preventScroll: true });
       if (Number.isInteger(target.selectionStart) && typeof control?.setSelectionRange === "function") {
-        control.setSelectionRange(target.selectionStart, target.selectionEnd ?? target.selectionStart);
+        try {
+          control.setSelectionRange(target.selectionStart, target.selectionEnd ?? target.selectionStart);
+        } catch (_error) {
+          // Non-text inputs (e.g. number) reject setSelectionRange.
+        }
       }
       focusRestored = true;
     }
@@ -1337,38 +1391,20 @@ function setupFloatingBiographyActions(bioTab) {
   FLOATING_ACTIONS.set(bioTab, cleanup);
 }
 
-function syncTwinControl(scope, path, value, source) {
-  if (!scope || !path) return;
-  const twin = scope.querySelector(`[data-bio-path="${cssEscape(path)}"]`);
-  if (!twin || twin === source) return;
-  if (twin.type === "checkbox") twin.checked = Boolean(value);
-  else if (twin.matches?.("[data-bio-rich-control]")) {
-    const richValue = sanitizeRichHtml(normalizeRichText(String(value ?? "")));
-    twin.dataset.bioValue = richValue;
-    const preview = twin.querySelector(".fblqa-rich-preview");
-    if (preview instanceof HTMLElement) preview.innerHTML = richTextHasContent(richValue) ? sanitizeRichHtml(richValue) : "<p><br></p>";
-  } else if (twin.tagName?.toLowerCase() === "prose-mirror") {
-    twin.value = String(value ?? "");
-    twin.setAttribute("value", String(value ?? ""));
-  } else twin.value = value;
-}
-
 export function queueProfileSave(actor, state, status, delay = 350, path = null) {
   if (DELETED_ACTORS.has(actor)) return;
   const key = drawerKey(actor);
-  const dirty = SAVE_DIRTY_PATHS.get(key) ?? new Set();
   const persistedPath = normalizeBiographySavePath(path);
-  dirty.add(persistedPath);
-  SAVE_DIRTY_PATHS.set(key, dirty);
   const pending = SAVE_PENDING.get(key) ?? { actor, patches: new Map(), status };
   pending.status = status;
+  if (persistedPath === "*") pending.patches.clear();
   pending.patches.set(persistedPath, cloneProfileValue(persistedPath === "*" ? state : getPathValue(state, persistedPath)));
   SAVE_PENDING.set(key, pending);
 
   const existing = SAVE_TIMERS.get(key);
-  if (existing) window.clearTimeout(existing);
+  if (existing) globalThis.clearTimeout?.(existing);
   setSaveStatus(status, t("Bio.Save.Saving", "Сохранение…"), "is-saving");
-  const timeout = window.setTimeout(() => flushProfileSave(key), delay);
+  const timeout = globalThis.setTimeout?.(() => flushProfileSave(key), delay);
   SAVE_TIMERS.set(key, timeout);
 }
 
@@ -1376,41 +1412,55 @@ function cloneProfileValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function getBiographyDraft(actor) {
+  let state = getBiographyProfile(actor);
+  const key = drawerKey(actor);
+  for (const draft of [SAVE_RUNNING.get(key), SAVE_PENDING.get(key)]) {
+    for (const [path, value] of draft?.patches ?? []) {
+      if (path === "*") state = cloneProfileValue(value);
+      else setPath(state, path, value);
+    }
+  }
+  return state;
+}
+
 function flushProfileSave(key) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   SAVE_TIMERS.delete(key);
-  SAVE_DIRTY_PATHS.delete(key);
-  const pending = SAVE_PENDING.get(key);
-  if (!pending) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
-  SAVE_PENDING.delete(key);
+  if (!SAVE_PENDING.has(key)) return SAVE_CHAINS.get(key) ?? Promise.resolve(true);
   const chain = (SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false).then(async () => {
+    const pending = SAVE_PENDING.get(key);
+    if (!pending) return true;
+    SAVE_PENDING.delete(key);
     if (DELETED_ACTORS.has(pending.actor)) return false;
-    // Merge only independently captured edits with the live profile. A second
-    // sheet's snapshot must never overwrite fields edited by the first sheet.
-    const profile = getBiographyProfile(pending.actor);
-    for (const [path, value] of pending.patches) {
-      if (path === "*") Object.assign(profile, normalizeBiographyProfile(value));
-      else setPath(profile, path, value);
+    SAVE_RUNNING.set(key, pending);
+    try {
+      for (const [path, value] of pending.patches) {
+        if (DELETED_ACTORS.has(pending.actor)) return false;
+        const profile = path === "*" ? value : getBiographyProfile(pending.actor);
+        if (path !== "*") setPath(profile, path, value);
+        const saved = await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
+        if (!saved) throw createCodedError("write-not-persisted", `Biography save for ${path} was not persisted.`);
+        pending.patches.delete(path);
+      }
+      if (!SAVE_PENDING.has(key)) setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
+      return true;
+    } catch (error) {
+      if (DELETED_ACTORS.has(pending.actor)) return false;
+      const newer = SAVE_PENDING.get(key);
+      if (!newer) SAVE_PENDING.set(key, pending);
+      else if (!newer.patches.has("*")) newer.patches = new Map([...pending.patches, ...newer.patches]);
+      console.error(`${MODULE_ID} | biography save failed`, error);
+      if (!newer) {
+        const errorMessage = t("Bio.Save.Error", "Ошибка сохранения");
+        setSaveStatus(pending.status, errorMessage, "is-error");
+        if (!pending.status) globalThis.ui?.notifications?.error?.(errorMessage);
+      }
+      return false;
+    } finally {
+      SAVE_RUNNING.delete(key);
     }
-    for (const path of [...pending.patches.keys()]) {
-      await saveBiographyProfilePath(pending.actor, profile, path === "*" ? null : path, { render: false });
-      // A later failure must not retry a path that has already committed.
-      pending.patches.delete(path);
-    }
-    setSaveStatus(pending.status, t("Bio.Save.Saved", "Сохранено"), "is-saved");
-    return true;
-  }).catch(error => {
-    // Retain the draft; explicit flush or later editing can retry it after close.
-    if (DELETED_ACTORS.has(pending.actor)) return false;
-    const newer = SAVE_PENDING.get(key);
-    if (newer) for (const [path, value] of pending.patches) {
-      if (!newer.patches.has(path)) newer.patches.set(path, value);
-    }
-    else SAVE_PENDING.set(key, pending);
-    console.error(`${MODULE_ID} | biography save failed`, error);
-    setSaveStatus(pending.status, t("Bio.Save.Error", "Ошибка сохранения"), "is-error");
-    return false;
   });
   SAVE_CHAINS.set(key, chain);
   chain.finally(() => { if (SAVE_CHAINS.get(key) === chain) SAVE_CHAINS.delete(key); });
@@ -1418,7 +1468,7 @@ function flushProfileSave(key) {
 }
 
 export function flushBiographySaves(actorOrId) {
-  const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
+  const key = drawerKey(actorOrId);
   return Promise.all([flushProfileSave(key), flushPilgrimSave(key)]);
 }
 
@@ -1432,6 +1482,10 @@ function normalizeBiographySavePath(path) {
 
 async function saveBiographyProfilePath(actor, state, path, { render = false } = {}) {
   if (!actor?.update) return false;
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return false;
+  }
 
   // The first write must persist the complete migration/fallback snapshot. Once
   // a profile exists, editing one field no longer needs to sanitize and send the
@@ -1475,8 +1529,7 @@ async function saveBiographyProfilePath(actor, state, path, { render = false } =
     update["system.bio.note.value"] = normalizeRichText(value);
   }
 
-  await actor.update(update, { render });
-  return true;
+  return writeBiographyUpdate(actor, update, render);
 }
 
 function isBiographyRichPath(path) {
@@ -1487,7 +1540,7 @@ function isBiographyRichPath(path) {
 function getPathValue(target, path) {
   let current = target;
   for (const part of String(path).split(".")) {
-    if (current == null) return undefined;
+    if (current == null || UNSAFE_PATH_KEYS.has(part)) return undefined;
     current = Array.isArray(current) ? current[Number(part)] : current[part];
   }
   return current;
@@ -1497,9 +1550,9 @@ function queuePilgrimSave(actor, state, delay = 350) {
   if (DELETED_ACTORS.has(actor)) return;
   const key = drawerKey(actor);
   const existing = PILGRIM_SAVE_TIMERS.get(key);
-  if (existing) window.clearTimeout(existing);
+  if (existing) globalThis.clearTimeout?.(existing);
   PILGRIM_PENDING.set(key, { actor, state: cloneProfileValue(state) });
-  const timeout = window.setTimeout(() => flushPilgrimSave(key), delay);
+  const timeout = globalThis.setTimeout?.(() => flushPilgrimSave(key), delay);
   PILGRIM_SAVE_TIMERS.set(key, timeout);
 }
 
@@ -1507,46 +1560,88 @@ function flushPilgrimSave(key) {
   const timer = PILGRIM_SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
   PILGRIM_SAVE_TIMERS.delete(key);
-  const pending = PILGRIM_PENDING.get(key);
-  if (!pending) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
-  PILGRIM_PENDING.delete(key);
+  if (!PILGRIM_PENDING.has(key)) return PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve(true);
   const chain = (PILGRIM_SAVE_CHAINS.get(key) ?? Promise.resolve()).catch(() => false)
-    .then(() => DELETED_ACTORS.has(pending.actor) ? false : savePilgrimCardProfile(pending.actor, pending.state, { render: false }))
-    .catch(error => {
+    .then(async () => {
+      const pending = PILGRIM_PENDING.get(key);
+      if (!pending) return true;
+      PILGRIM_PENDING.delete(key);
       if (DELETED_ACTORS.has(pending.actor)) return false;
-      if (!PILGRIM_PENDING.has(key)) PILGRIM_PENDING.set(key, pending);
-      console.error(`${MODULE_ID} | pilgrim card save failed`, error);
-      return false;
+      PILGRIM_RUNNING.set(key, pending);
+      try {
+        const saved = await savePilgrimCardProfile(pending.actor, pending.state, { render: false });
+        if (!saved) throw createCodedError("write-not-persisted", "Pilgrim card save was not persisted.");
+        return true;
+      } catch (error) {
+        if (DELETED_ACTORS.has(pending.actor)) return false;
+        console.error(`${MODULE_ID} | pilgrim card save failed`, error);
+        if (!PILGRIM_PENDING.has(key)) {
+          PILGRIM_PENDING.set(key, pending);
+          globalThis.ui?.notifications?.error?.(t("Bio.Save.Error", "Ошибка сохранения"));
+        }
+        return false;
+      } finally {
+        PILGRIM_RUNNING.delete(key);
+      }
     });
   PILGRIM_SAVE_CHAINS.set(key, chain);
   chain.finally(() => { if (PILGRIM_SAVE_CHAINS.get(key) === chain) PILGRIM_SAVE_CHAINS.delete(key); });
   return chain;
 }
 
-export function biographyDisplayHtml(value, actor) {
-  const html = sanitizeRichHtml(normalizeRichText(value));
-  if (actor?.isOwner) return html;
+function stripUnrevealedSecrets(html, actor) {
+  const content = String(html ?? "");
+  if (!content || actor?.isOwner) return content;
   if (typeof document === "undefined") {
     // Fail closed without a DOM: a server/test preview must not leak a secret.
-    return /class\s*=\s*["'][^"']*\bsecret\b/iu.test(html) ? "" : html;
+    return /class\s*=\s*(?:["'][^"']*\bsecret\b|secret(?:\s|>|\/|$))/iu.test(content) ? "" : content;
   }
   const template = document.createElement("template");
-  template.innerHTML = html;
+  template.innerHTML = content;
   for (const secret of template.content.querySelectorAll(".secret:not(.revealed)")) secret.remove();
   return template.innerHTML;
 }
 
+export function biographyDisplayHtml(value, actor) {
+  const html = sanitizeRichHtml(normalizeRichText(value));
+  return stripUnrevealedSecrets(html, actor);
+}
+
+function getBiographyTextEditor() {
+  return globalThis.foundry?.applications?.ux?.TextEditor?.implementation
+    ?? globalThis.foundry?.applications?.ux?.TextEditor
+    ?? globalThis.TextEditor
+    ?? null;
+}
+
+async function enrichSingleBiographyPreview(actor, preview) {
+  const editor = getBiographyTextEditor();
+  if (typeof editor?.enrichHTML !== "function") return;
+  const control = preview.closest?.("[data-bio-rich-control]");
+  const source = control?.dataset.bioValue ?? preview.innerHTML;
+  const sanitizedSource = sanitizeRichHtml(normalizeRichText(source));
+  if (!richTextHasContent(sanitizedSource)) {
+    preview.innerHTML = "<p><br></p>";
+    return;
+  }
+  try {
+    const html = await editor.enrichHTML(sanitizedSource, {
+      secrets: Boolean(actor.isOwner),
+      relativeTo: actor,
+      rollData: actor.getRollData?.() ?? {}
+    });
+    if (!preview.isConnected || control?.querySelector("prose-mirror") || (control && control.dataset.bioValue !== source)) return;
+    preview.innerHTML = stripUnrevealedSecrets(html, actor);
+  } catch (error) {
+    console.warn(`${MODULE_ID} | biography enrichment failed`, error);
+  }
+}
+
 async function enrichBiographyPreviews(actor, root) {
-  const editor = globalThis.foundry?.applications?.ux?.TextEditor ?? globalThis.TextEditor;
+  const editor = getBiographyTextEditor();
   if (typeof editor?.enrichHTML !== "function") return;
   for (const preview of root.querySelectorAll(".fblqa-rich-preview, .fblqa-legacy-content")) {
-    const source = preview.closest("[data-bio-rich-control]")?.dataset.bioValue ?? preview.innerHTML;
-    try {
-      const html = await editor.enrichHTML(source, { secrets: Boolean(actor.isOwner), relativeTo: actor, rollData: actor.getRollData?.() ?? {} });
-      const control = preview.closest("[data-bio-rich-control]");
-      if (!preview.isConnected || control?.querySelector("prose-mirror") || (control && control.dataset.bioValue !== source)) continue;
-      preview.innerHTML = biographyDisplayHtml(html, actor);
-    } catch (error) { console.warn(`${MODULE_ID} | biography enrichment failed`, error); }
+    await enrichSingleBiographyPreview(actor, preview);
   }
 }
 
@@ -1554,7 +1649,7 @@ function setSaveStatus(element, text, className) {
   if (!element) return;
   element.textContent = text;
   element.className = `fblqa-bio-save-state ${className}`;
-  if (className === "is-saved") window.setTimeout(() => {
+  if (className === "is-saved") globalThis.setTimeout?.(() => {
     if (element.textContent === text) element.textContent = "";
   }, 1400);
 }
@@ -1749,13 +1844,13 @@ function sanitizeRichHtml(value) {
   const template = document.createElement("template");
   template.innerHTML = html;
   for (const element of template.content.querySelectorAll(
-    "script, style, iframe, object, embed, link, meta, base, svg, math, form, input, button, select, textarea, option"
+    "script, style, iframe, object, embed, link, meta, base, svg, math, form, input, button, select, textarea, option, template, noscript"
   )) element.remove();
 
   for (const element of template.content.querySelectorAll("*")) {
     for (const attribute of [...element.attributes]) {
       const name = attribute.name.toLowerCase();
-      if (/^on/iu.test(name) || ["srcdoc", "style", "xmlns", "formaction", "action"].includes(name)) {
+      if (/^on/iu.test(name) || ["srcdoc", "style", "xmlns", "formaction", "action", "srcset", "ping", "background"].includes(name)) {
         element.removeAttribute(attribute.name);
         continue;
       }
@@ -1779,19 +1874,19 @@ function sanitizeBiographyProfile(profile) {
 
 function sanitizeRichHtmlWithoutDom(html) {
   return String(html)
-    .replace(/<(script|style|iframe|object|embed|link|meta|base|svg|math|form)\b[^>]*>[\s\S]*?<\/\1>/giu, "")
-    .replace(/<(script|style|iframe|object|embed|link|meta|base|svg|math|form|input|button|select|textarea|option)\b[^>]*\/?>/giu, "")
-    .replace(/\s+(?:on[a-z]+|srcdoc|style|xmlns|formaction|action)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/giu, "")
-    .replace(/\s+(href|src|poster|xlink:href)\s*=\s*(["'])([\s\S]*?)\2/giu, (match, name, quote, url) => (
+    .replace(/<(script|style|iframe|object|embed|link|meta|base|svg|math|form|template|noscript)\b[^>]*>[\s\S]*?<\/\1>/giu, "")
+    .replace(/<(script|style|iframe|object|embed|link|meta|base|svg|math|form|input|button|select|textarea|option|template|noscript)\b[^>]*\/?>/giu, "")
+    .replace(/[\s/]+(?:on[a-z0-9_-]+|srcdoc|style|xmlns|formaction|action|srcset|ping|background)\s*=\s*("[^"]*"|'[^']*'|[^\s>]+)/giu, "")
+    .replace(/[\s/]+(href|src|poster|xlink:href)\s*=\s*(["'])([\s\S]*?)\2/giu, (match, name, _quote, url) => (
       isSafeRichUrl(url, String(name).toLowerCase()) ? match : ""
     ))
-    .replace(/\s+(href|src|poster|xlink:href)\s*=\s*([^\s"'`=<>]+)/giu, (match, name, url) => (
+    .replace(/[\s/]+(href|src|poster|xlink:href)\s*=\s*([^\s"'`=<>]+)/giu, (match, name, url) => (
       isSafeRichUrl(url, String(name).toLowerCase()) ? match : ""
     ));
 }
 
 function isSafeRichUrl(value, attributeName) {
-  const raw = String(value ?? "")
+  const raw = decodeHtmlEntities(String(value ?? ""))
     .replace(/[\u0000-\u001F\u007F\s]+/gu, "")
     .replaceAll("\\", "/")
     .trim();
@@ -1823,30 +1918,47 @@ function cleanupBiographyMount(bioTab) {
 }
 
 function setPath(target, path, value) {
-  const parts = String(path).split(".");
+  const normalizedPath = String(path ?? "");
+  if (!normalizedPath) return;
+  const parts = normalizedPath.split(".");
+  if (parts.some((part) => !part || UNSAFE_PATH_KEYS.has(part))) return;
   let current = target;
   for (let index = 0; index < parts.length - 1; index += 1) {
+    if (current == null || typeof current !== "object") return;
     const part = parts[index];
     const next = parts[index + 1];
-    if (Array.isArray(current)) current = current[Number(part)];
-    else {
+    if (Array.isArray(current)) {
+      const idx = Number(part);
+      if (!Number.isInteger(idx) || idx < 0 || idx >= current.length) return;
+      current = current[idx];
+    } else {
       if (current[part] === undefined || current[part] === null) current[part] = /^\d+$/.test(next) ? [] : {};
       current = current[part];
     }
   }
+  if (current == null || typeof current !== "object") return;
   const final = parts.at(-1);
-  if (Array.isArray(current)) current[Number(final)] = coercePathValue(path, value);
-  else current[final] = coercePathValue(path, value);
+  if (Array.isArray(current)) {
+    const idx = Number(final);
+    if (!Number.isInteger(idx) || idx < 0 || idx > current.length) return;
+    current[idx] = coercePathValue(normalizedPath, value);
+  } else {
+    current[final] = coercePathValue(normalizedPath, value);
+  }
 }
 
 function coercePathValue(path, value) {
+  if (path === "languages") return normalizeLanguages(value);
+  if (path === "rumors") return normalizeRumors(value);
+  if (path === "identity.birthDate") return normalizeBirthDate(value);
   if (/\.cost$/u.test(path)) return Math.max(0, Number(value) || 0);
   if (/\.native$/u.test(path)) return Boolean(value);
+  if (Array.isArray(value) || (value && typeof value === "object")) return cloneProfileValue(value);
   return String(value ?? "");
 }
 
 function drawerKey(actor) {
-  return String(actor?.uuid ?? actor?.id ?? actor ?? "unknown");
+  return actorKey(actor);
 }
 
 function makeId(prefix = "entry") {

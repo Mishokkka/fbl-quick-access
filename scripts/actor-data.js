@@ -1,4 +1,5 @@
 import { CURRENCIES } from "./constants.js";
+import { readNumericValue } from "./document-writes.js";
 
 /**
  * Shared accessors for Forbidden Lands actor data paths.
@@ -35,10 +36,6 @@ export function getActorAttributeState(actor, attributeKey) {
     hasMax,
     canRecover: hasValue && hasMax && value < max
   };
-}
-
-export function getActorAttributeValuePath(actor, attributeKey) {
-  return getActorAttributeState(actor, attributeKey).valuePath;
 }
 
 export function getActorAttributeMaximum(actor, attributeKey) {
@@ -112,6 +109,5 @@ function normalizeKey(value) {
 }
 
 function readFiniteNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : Number.NaN;
+  return readNumericValue(value);
 }

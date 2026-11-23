@@ -491,7 +491,7 @@ Condition Items use `flags.fbl-quick-access.conditions.kind` (`heat`, `mor`, `ad
 
 From 1.7.32, Addiction stores its daily craving/outcome in `conditions.addictionMorning` on the Item; Long Rest also records the numbered day in the Actor's `conditions.addictionDay`. Pending Endurance is resolved manually in STAT. A pending morning blocks future native and provider daily plans. New Day results include `pending` action entries; `serializeNewDayResult` includes `pendingCount` and each entry's `pending` boolean. These indicate required player action, separately from failed document writes. Calendaria completes the started day's writes once, then pauses later days until the manual outcome. With an active GM, player Addiction actions use a permission-checked GM operation and the same per-Item queue as calendar processing. Migration 8 synchronizes owned Heat skill modifiers at level 4 without applying damage. Manual Heat correction and cooling cause no damage; only a final recorded Endurance failure applies the configured threshold or overcap damage.
 
-Calendar provider build failures leave the day pending. Partial apply failures retain the existing consumed-day policy to avoid rerunning successful actions; `stateProgressionFailures` retains at most 100 date/calendar/action-ID records for manual diagnosis. It does not contain private provider text and is not an automatic retry queue. A page reload during an uncommitted cross-document operation is still outside a database transaction.
+Calendar provider build failures leave the day pending. Partial apply failures retain the existing consumed-day policy to avoid rerunning successful actions; `stateProgressionFailures` retains at most 100 date/calendar/action-ID records for manual diagnosis. It does not contain private provider text and is not an automatic retry queue. Calendaria records an operation on the Actor before applying daily actions. If the record still matches the marker, **Resolve** saves the recorded end date and leaves later days pending. For an interrupted application, review the character's states before confirming **Resolve**. If the record no longer matches the marker or calendar, **Set to current date** clears the record and skips all remaining pending days after individual confirmation.
 
 BIO retry removes committed paths from the pending map immediately; failed and unsent paths alone remain retryable. Finite reputation amounts above the 1,000-point cap are preserved when read for display, including oversized legacy/imported values. Validation still rejects them on save and before random/dice allocation. Reading a profile never clamps existing reputation to the cap.
 
@@ -507,4 +507,36 @@ From 1.7.34, firearm `description` and rich property tooltips share the same liv
 
 Optional active FL Firearms data includes reloadType/reloadValue/type, normalized MAG magazine {current, capacity}, armorPiercing {value, operator}, load/topOff eligibility and features in Item order. Non-MAG has no invented loaded flag; TopOff requires MAG, API support and the property. Absent/incompatible optional API falls back to native fields.
 
-This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.
+This provider owns no costs, ammo or progress. See [WEAPON_RIBBON_DESIGN.md](docs/WEAPON_RIBBON_DESIGN.md) and the companion widget 1.5.0's operation contract.
+
+## Calendaria processed-day manager helpers
+
+Active GMs can open the Calendaria day-management window or inspect/adjust `flags.fbl-quick-access.stateProgressionCalendaria` markers directly through the public API:
+
+```js
+await qa.openStateProgressionManager();
+await qa.resetActorCalendarMarkerToCurrent(actor);
+await qa.rewindActorCalendarMarker(actor, 3);
+await qa.resetAllCalendarMarkersToCurrent();
+await qa.rewindAllCalendarMarkers(3);
+```
+
+- `resetActorCalendarMarkerToCurrent` and `resetAllCalendarMarkersToCurrent` stamp the processed-day marker with the date captured when called, or the explicit context date. The bulk API uses one date for the entire batch. The GM manager checks the confirmed date before each write.
+- `rewindActorCalendarMarker` and `rewindAllCalendarMarkers` move the marker backwards by `days`. They start from a usable marker in the active calendar when it is on or before the current date. They start from the current date for missing, unusable, ahead, or different-calendar markers. The resulting backlog may contain up to 365 days. Rewinding changes the marker only.
+- A bulk rewind returns `succeeded`, `failed`, and `targetDates`. To retry failed writes at their original targets, pass `{ targetDates: outcome.targetDates }` as the fourth argument to `rewindAllCalendarMarkers`. The retry checks the original marker before writing and treats an actor already at the target date as complete. Review unfinished days in the GM manager before retrying affected characters individually.
+- Ordinary reset, rewind and absence actions cannot overwrite an unfinished day. The bulk reset returns `skippedActorIds` for characters with an unfinished day.
+
+## Money transfer reconciliation
+
+Wallet writes, Mor changes, and custom-condition list writes share one queue per Actor in each client. A disabled `Quick Access — Operation in progress` effect holds the same lock across clients. Foundry v13 rejects a duplicate embedded ID on the server. If a client disconnects mid-write, a GM can remove the effect after checking the affected data and confirming the operation has stopped.
+
+The recovery journal stays in the browser profile of the GM client that processed the transfer. It is keyed by world and GM user, but is not synchronized to other GM clients or devices and is not an access-control boundary between accounts sharing a browser profile. Do not clear Foundry site data while transfers are unresolved. New reconciliation notices contain only the transfer ID, not wallet snapshots. If testing an earlier build that wrote snapshots to chat, remove those old notices separately; removing them cannot revoke copies already received.
+
+In that same GM session, use the Foundry developer console to list pending transfers by ID:
+
+```js
+const qa = game.modules.get("fbl-quick-access").api;
+qa.getPendingMoneyTransferReconciliations();
+```
+
+Compare the saved and current balances before acting. The active GM can call `qa.resolveMoneyTransferReconciliation(requestId, { applyRemaining: true })` for a verified incomplete update; it only writes a missing side whose balance remains unchanged. If a transfer was interrupted or the records disagree, inspect and correct the wallets manually, then call `qa.resolveMoneyTransferReconciliation(requestId)` to close it without moving money. If closing fails after the wallets were updated, a retry checks the saved and current balances before writing again.

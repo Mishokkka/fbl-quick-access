@@ -4,7 +4,6 @@ import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
 import { runWorldMigration } from "./migrations.js";
 import {
-  applyActorAttributeDamage,
   canUserEditActor,
   createChatMessage,
   escapeHTML,
@@ -14,16 +13,18 @@ import {
   normalizeCustomConditionList,
   rollToMessage
 } from "./utils.js";
-import { removeOtherWashStates, transitionWashLevel, isWashCondition } from "./features/wash.js";
+import { getNextWashName, removeOtherWashStates, transitionWashLevel, isWashCondition } from "./features/wash.js";
 import {
   getAddictionState,
   applyHeatFailure,
+  applyMorGain,
   buildHeatModifierUpdate,
-  getMorState,
+  changePermanentMor,
+  clearStaleMorGain,
   normalizeAddictionSeverityChange,
   parseHeatValue,
-  updateHeatItem,
-  updateMorItem
+  removeCurrentMor,
+  updateHeatItem
 } from "./features/special-counters.js";
 import {
   activateConditionsTab,
@@ -43,17 +44,34 @@ import {
 import { correctAddictionState, getAddictionMorning, initializeAddictionOperations, performAddictionMorning, relapseAddiction, resolveAddictionMorning } from "./services/addiction-service.js";
 import { activateStatProviderListeners, renderStatProviderSections } from "../integration/stat-providers.js";
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
+import { setDocumentFlagVerified } from "../document-writes.js";
 import { decrementFirstInteger } from "../new-day.js";
+import { enqueueActorMutationOperation } from "../operation-queue.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
+const STAT_DRAG_CLEANUPS = new WeakMap();
 const SPECIAL_ACTION_ITEMS = new WeakSet();
+const UNSUPPORTED_STEP_DURATION_PATTERN = /(?:\b\d*\s*d\s*\d+\b|\d+\s*[-\u2013]\s*\d+)/i;
+
+function canStepDurationText(value) {
+  const text = String(value ?? "").trim();
+  if (!text || UNSUPPORTED_STEP_DURATION_PATTERN.test(text)) return false;
+  return /(\d+)/.test(text);
+}
 
 function setConditionDetailsExpanded(row, expanded) {
   row.children(".injury-desc, .condition-desc").stop(true, true).toggle(expanded);
   const title = row.find(".condition-details-toggle");
   title.attr("aria-expanded", String(expanded));
-  title.find(".collapse-icon").toggleClass("fa-chevron-right", !expanded).toggleClass("fa-chevron-down", expanded);
+  if (row.is(".special-addiction-row, .special-heat-row")) {
+    title.find(".collapse-icon").toggleClass("fa-chevron-right", !expanded).toggleClass("fa-chevron-down", expanded);
+  } else {
+    const icon = row.find(".injury-header .collapse-icon, .condition-header .collapse-icon");
+    if (!icon.hasClass("fa-pills") && !icon.hasClass("fa-biohazard") && !icon.hasClass("fa-temperature-high")) {
+      icon.toggleClass("fa-chevron-down", !expanded).toggleClass("fa-chevron-up", expanded);
+    }
+  }
   row.find(".heat-check").attr("aria-expanded", String(expanded));
 }
 
@@ -75,7 +93,7 @@ function askAddictionDose(failure = true) {
         cancel: { label: localize("Delete.ConfirmNo", "Cancel"), callback: () => resolve(null) }
       },
       close: () => resolve(null)
-    }, { classes: ["fblqa-rest-dialog"], width: 440 });
+    }, { classes: ["fblqa-condition-dialog"], width: 440 });
     if (!dialog) { resolve(null); return; }
     dialog.render(true);
   });
@@ -119,14 +137,18 @@ function editAddictionState(state) {
         cancel: { label: localize("Delete.ConfirmNo", "Cancel"), callback: () => resolve(null) }
       },
       close: () => resolve(null)
-    }, { classes: ["fblqa-rest-dialog"], width: 360 });
+    }, { classes: ["fblqa-condition-dialog"], width: 360 });
     if (!dialog) return resolve(null);
     dialog.render(true);
   });
 }
 
 export function invalidateExpandedConditionsRender(app) {
-  if (app && typeof app === "object") STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
+  if (app && typeof app === "object") {
+    STAT_RENDER_GENERATIONS.set(app, (STAT_RENDER_GENERATIONS.get(app) ?? 0) + 1);
+    STAT_DRAG_CLEANUPS.get(app)?.();
+    STAT_DRAG_CLEANUPS.delete(app);
+  }
 }
 
 export function initExpandedConditions() {
@@ -156,13 +178,6 @@ export async function handleExpandedConditionsCreateItem(item, options, userId) 
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return;
 
   await removeOtherWashStates(actor, item);
-}
-
-
-export async function persistNormalizedCustomConditions(actor, customConditions, { changed, editable } = {}) {
-  if (!editable || !changed) return false;
-  await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-  return true;
 }
 
 export async function renderExpandedConditions(app, html) {
@@ -247,43 +262,59 @@ export async function renderExpandedConditions(app, html) {
   bindStatScrollCapture(html, captureScroll);
   restoreScroll();
 
-  async function saveCustom() {
-    if (!editable) return;
+  function getLiveCustomConditions() {
+    return normalizeCustomConditionList(foundry.utils.deepClone(app.actor.getFlag(MODULE_ID, FLAGS.LIST) || [])).list;
+  }
 
-    const rowsById = new Map();
+  async function mutateCustomConditions(mutate, afterSave) {
+    if (!editable) return false;
+    try {
+      return await enqueueActorMutationOperation(app.actor, async () => {
+        if (!canUserEditActor(app.actor)) return false;
+        const list = getLiveCustomConditions();
+        const changed = mutate(list);
+        if (changed) {
+          list.sort((left, right) => left.order - right.order);
+          await setDocumentFlagVerified(app.actor, MODULE_ID, FLAGS.LIST, list, { render: false });
+        }
+        customConditions = list;
+        if (afterSave) await afterSave();
+        return Boolean(changed);
+      });
+    } catch (error) {
+      console.error(`${MODULE_ID} | custom condition save failed`, error);
+      ui.notifications?.error?.(error?.fblqaUserMessage ?? localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+      return false;
+    }
+  }
 
-    html.find(".conditions-rows > .condition-row[data-condition-id]").each((i, el) => {
-      const row = $(el);
-      const id = String(row.data("condition-id") || "");
-      const previous = foundry.utils.deepClone(customConditions.find(condition => condition.id === id) || { id });
-      const order = Number(row.data("order") ?? i * 10);
-
-      if (row.hasClass("arc-row")) {
-        previous.desc = row.find(".condition-desc-input").val() ?? previous.desc ?? "";
-        previous.order = Number.isFinite(order) ? order : i * 10;
-        rowsById.set(id, makeCustomCondition(previous));
-        return;
-      }
-
-      rowsById.set(id, makeCustomCondition({
-        id,
-        order: Number.isFinite(order) ? order : i * 10,
-        name: row.find(".condition-name").val() ?? previous.name ?? "",
-        time: row.find(".condition-time").val() ?? previous.time ?? "0",
-        notes: row.find(".condition-notes").val() ?? previous.notes ?? "",
-        desc: row.find(".condition-desc-input").val() ?? previous.desc ?? ""
-      }));
+  function editCustomField(input, field, edit, updateInput = false) {
+    const id = String(input.closest(".condition-row").data("condition-id") || "");
+    let value;
+    return mutateCustomConditions(list => {
+      const entry = list.find(condition => condition.id === id);
+      if (!entry) return false;
+      value = edit(entry[field]);
+      if (value === entry[field]) return false;
+      entry[field] = value;
+      return true;
+    }, () => {
+      if (updateInput && value !== undefined) input.val(value);
     });
+  }
 
-    const updated = Array.from(rowsById.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    customConditions = updated;
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: updated }, { render: false });
+  function saveCustom(event) {
+    const input = $(event.currentTarget);
+    const field = input.hasClass("condition-name") ? "name" : input.hasClass("condition-time") ? "time"
+      : input.hasClass("condition-notes") ? "notes" : "desc";
+    const value = String(input.val() ?? "");
+    return editCustomField(input, field, () => value);
   }
 
   async function persistRowOrder() {
     if (!editable) return;
 
-    const customMap = new Map(customConditions.map(condition => [condition.id, foundry.utils.deepClone(condition)]));
+    const customOrders = new Map();
     const itemUpdates = [];
 
     html.find(".conditions-rows > [data-row-kind]").each((i, el) => {
@@ -294,17 +325,25 @@ export async function renderExpandedConditions(app, html) {
       const kind = String(row.data("row-kind") || "");
       if (kind === "custom") {
         const id = String(row.data("condition-id") || "");
-        const condition = customMap.get(id);
-        if (condition) condition.order = order;
+        if (id) customOrders.set(id, order);
       } else if (kind === "item") {
         const itemId = String(row.data("item-id") || "");
         if (itemId) itemUpdates.push({ _id: itemId, [flagUpdatePath(FLAGS.ORDER)]: order });
       }
     });
 
-    customConditions = Array.from(customMap.values()).sort((a, b) => Number(a.order || 0) - Number(b.order || 0));
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    await mutateCustomConditions(list => {
+      let changed = false;
+      for (const condition of list) {
+        const order = customOrders.get(condition.id);
+        if (order === undefined || condition.order === order) continue;
+        condition.order = order;
+        changed = true;
+      }
+      return changed;
+    }, async () => {
+      if (itemUpdates.length) await app.actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    });
   }
 
 
@@ -361,7 +400,8 @@ export async function renderExpandedConditions(app, html) {
   function syncAttributeDamageInputs(appliedDamage = []) {
     for (const entry of appliedDamage) {
       if (!entry?.path) continue;
-      html.find(`[name="${entry.path}"]`).val(entry.value);
+      const current = foundry.utils.getProperty(app.actor, entry.path);
+      if (current !== undefined) html.find(`[name="${entry.path}"]`).val(current);
     }
   }
 
@@ -382,7 +422,8 @@ export async function renderExpandedConditions(app, html) {
     try { result = await operation(item); }
     catch (error) {
       console.error(`${MODULE_ID} | condition action failed`, error);
-      ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+      const userMessage = error?.fblqaUserMessage || localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry.");
+      ui.notifications?.error?.(userMessage);
     } finally {
       SPECIAL_ACTION_ITEMS.delete(item);
       await refreshAfterSpecialItemAction(item, row, result);
@@ -449,7 +490,8 @@ export async function renderExpandedConditions(app, html) {
     const item = getRowItem(btn.closest(".injury-row"));
     if (!item) return;
 
-    const timeStr = item.system.healingTime || "0";
+    const timeStr = String(item.system.healingTime || "0");
+    if (!canStepDurationText(timeStr)) return;
     const match = timeStr.match(/(\d+)/);
     if (!match) return;
 
@@ -457,8 +499,9 @@ export async function renderExpandedConditions(app, html) {
     if (btn.hasClass("heal-plus")) currentVal += 1;
     else currentVal = Math.max(0, currentVal - 1);
 
-    if (currentVal === 0 && isWashCondition(item) && btn.hasClass("heal-minus")) {
-      await transitionWashLevel(app.actor, getWashStage(item) ?? item.name, { render: false });
+    const washStage = isWashCondition(item) ? (getWashStage(item) ?? item.name) : null;
+    if (currentVal === 0 && washStage && getNextWashName(washStage) && btn.hasClass("heal-minus")) {
+      await transitionWashLevel(app.actor, washStage, { render: false });
       await refreshRows();
     } else {
       const newStr = timeStr.replace(/(\d+)/, currentVal);
@@ -471,7 +514,7 @@ export async function renderExpandedConditions(app, html) {
     const item = app.actor.items.get($(ev.currentTarget).data("item-id"));
     if (item) {
       await updateItemAndRefresh(item, { "system.lethal": "no" }, $(ev.currentTarget).closest(".injury-row"));
-      ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: escapeHTML(item.name) }));
+      ui.notifications.info(localize("Notifications.InjuryStabilized", "Injury “{name}” has been stabilized and is no longer lethal.", { name: item.name }));
     }
   });
 
@@ -481,7 +524,8 @@ export async function renderExpandedConditions(app, html) {
     const item = app.actor.items.get(btn.data("item-id"));
     if (!item) return;
 
-    const limitStr = item.system.limit || "0";
+    const limitStr = String(item.system.limit || "0");
+    if (!canStepDurationText(limitStr)) return;
     const match = limitStr.match(/(\d+)/);
     if (!match) return;
 
@@ -519,12 +563,8 @@ export async function renderExpandedConditions(app, html) {
 
       if (action === "fail") {
         newVal = originalVal * 2;
-        ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
       } else if (action === "prof") {
         newVal = Math.ceil(originalVal / 2);
-        ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name: escapeHTML(item.name) }));
-      } else if (action === "normal") {
-        ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name: escapeHTML(item.name) }));
       }
 
       const newTimeStr = originalTimeStr.replace(/(\d+)/, newVal);
@@ -537,6 +577,14 @@ export async function renderExpandedConditions(app, html) {
           action
         }
       }, { render: false });
+
+      if (action === "fail") {
+        ui.notifications.warn(localize("Notifications.TreatmentFailed", "Treatment of “{name}” failed. Healing time was recalculated from its original value.", { name: item.name }));
+      } else if (action === "prof") {
+        ui.notifications.info(localize("Notifications.TreatmentProfessional", "Injury “{name}” was treated professionally. Healing time was recalculated from its original value.", { name: item.name }));
+      } else if (action === "normal") {
+        ui.notifications.info(localize("Notifications.TreatmentNormal", "Injury “{name}” was treated.", { name: item.name }));
+      }
     } else {
       await item.update({
         [flagUpdatePath(FLAGS.TREATMENT_STATUS)]: action,
@@ -649,67 +697,55 @@ export async function renderExpandedConditions(app, html) {
 
   // Mor.
   html.find(".conditions-tab").off("click", ".mor-item-x-plus").on("click", ".mor-item-x-plus", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    let x = parseInt(row.find('.mor-input[data-type="x"]').val(), 10) || 0;
-    let y = parseInt(row.find('.mor-input[data-type="y"]').val(), 10) || 0;
-
-    x += 1;
-    const diceCount = x + y;
-    const roll = await new Roll(`${diceCount}d6`).evaluate();
-    const ones = roll.terms[0].results.filter(r => r.result === 1).length;
-    const appliedDamage = ones > 0 ? await applyActorAttributeDamage(app.actor, { strength: ones }, { render: false }) : [];
-    syncAttributeDamageInputs(appliedDamage);
-    const state = { current: x, permanent: y };
-    const flavor = buildMorGainMessage(app.actor.name, state, diceCount, ones, appliedDamage);
-
-    await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
+    await runSpecialItemAction(ev, async item => {
+      let result;
+      try {
+        result = await applyMorGain(app.actor, item, { render: false });
+      } catch (error) {
+        if (error?.code !== "stale-mor-gain") throw error;
+        const confirmed = await confirmDangerAction({
+          title: localize("Mor.ReviewGainTitle", "Review interrupted Mor gain"),
+          message: localize("Mor.ReviewGainMessage", "Mor changed before the pending gain could finish. Check the current Mor and any Strength damage before clearing the pending roll."),
+          confirmLabel: localize("Mor.ClearGain", "Clear pending roll"),
+          cancelLabel: localize("Delete.ConfirmNo", "Cancel"),
+          icon: "fas fa-biohazard"
+        });
+        if (confirmed) await clearStaleMorGain(item, error.pendingGainId, { render: false });
+        return null;
+      }
+      const { roll, state, diceCount, ones, appliedDamage } = result;
+      syncAttributeDamageInputs(appliedDamage);
+      const flavor = buildMorGainMessage(app.actor.name, state, diceCount, ones, appliedDamage);
+      try {
+        await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
+      } catch (error) {
+        console.error(`${MODULE_ID} | mor gain chat failed`, error);
+      }
+      return state;
+    });
   });
 
   html.find(".conditions-tab").off("click", ".mor-item-x-minus").on("click", ".mor-item-x-minus", async (ev) => {
-    if (!requireEditable()) return;
-    const row = $(ev.currentTarget).closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    let x = parseInt(row.find('.mor-input[data-type="x"]').val(), 10) || 0;
-    let y = parseInt(row.find('.mor-input[data-type="y"]').val(), 10) || 0;
-
-    if (x <= 0) return ui.notifications.warn(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
-    x -= 1;
-
-    const roll = await new Roll("1d6").evaluate();
-    const becamePermanent = roll.total === 1;
-    if (becamePermanent) y += 1;
-    const state = { current: x, permanent: y };
-    const flavor = buildMorRemoveMessage(app.actor.name, roll.total, state, becamePermanent);
-
-    await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
+    await runSpecialItemAction(ev, async item => {
+      const result = await removeCurrentMor(item, { render: false });
+      if (!result) {
+        ui.notifications?.warn?.(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
+        return null;
+      }
+      const { roll, state, becamePermanent } = result;
+      const flavor = buildMorRemoveMessage(app.actor.name, roll.total, state, becamePermanent);
+      try {
+        await rollToMessage(roll, { speaker: ChatMessage.getSpeaker({ actor: app.actor }), flavor });
+      } catch (error) {
+        console.error(`${MODULE_ID} | mor remove chat failed`, error);
+      }
+      return state;
+    });
   });
 
   html.find(".conditions-tab").off("click", ".mor-item-y-plus, .mor-item-y-minus").on("click", ".mor-item-y-plus, .mor-item-y-minus", async (ev) => {
-    if (!requireEditable()) return;
-    const btn = $(ev.currentTarget);
-    const row = btn.closest(".special-mor-row");
-    const item = getRowItem(row);
-    if (!item) return;
-
-    const mor = getMorState(item);
-    const x = mor.current;
-    let y = mor.permanent;
-
-    if (btn.hasClass("mor-item-y-plus")) y += 1;
-    else y = Math.max(0, y - 1);
-
-    await updateMorItem(item, x, y, { render: false });
-    await refreshItemRow(item, row);
+    const isPlus = $(ev.currentTarget).hasClass("mor-item-y-plus");
+    await runSpecialItemAction(ev, item => changePermanentMor(item, isPlus ? 1 : -1, { render: false }));
   });
 
   // Custom conditions.
@@ -717,21 +753,17 @@ export async function renderExpandedConditions(app, html) {
     if (!requireEditable()) return;
     const btn = $(ev.currentTarget);
     const input = btn.siblings(".condition-time");
-    const timeStr = input.val() || "0";
-    const match = timeStr.match(/(\d+)/);
-    if (!match) return;
-
-    const num = parseInt(match[0], 10) + (btn.hasClass("time-plus") ? 1 : -1);
-    const newStr = timeStr.replace(/(\d+)/, Math.max(0, num));
-    input.val(newStr);
-    await saveCustom();
+    const delta = btn.hasClass("time-plus") ? 1 : -1;
+    await editCustomField(input, "time", time => canStepDurationText(time)
+      ? String(time).replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time, true);
   });
 
   html.find(".add-condition").off("click").on("click", async () => {
     if (!requireEditable()) return;
-    customConditions.push(makeCustomCondition({}, (customConditions.length + app.actor.items.size + 1) * 10));
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    await refreshRows();
+    if (await mutateCustomConditions(list => {
+      list.push(makeCustomCondition({}, (list.length + app.actor.items.size + 1) * 10));
+      return true;
+    })) await refreshRows();
   });
 
   html.find(".layout-toggle").off("click").on("click", async (ev) => {
@@ -754,11 +786,15 @@ export async function renderExpandedConditions(app, html) {
     if (!requireEditable()) return;
     const row = $(ev.currentTarget).closest(".condition-row");
     const id = String(row.data("condition-id") || "");
-    const conditionName = customConditions.find(condition => condition.id === id)?.name || row.find(".condition-name").val() || row.find(".condition-name-static").text() || localize("Delete.ConditionFallback", "condition");
+    const liveList = getLiveCustomConditions();
+    const conditionName = liveList.find(condition => condition.id === id)?.name || row.find(".condition-name").val() || row.find(".condition-name-static").text() || localize("Delete.ConditionFallback", "condition");
     if (!(await confirmStatDelete(conditionName, "condition"))) return;
-    customConditions = customConditions.filter(condition => condition.id !== id);
-    row.remove();
-    await app.actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
+    await mutateCustomConditions(list => {
+      const index = list.findIndex(condition => condition.id === id);
+      if (index < 0) return false;
+      list.splice(index, 1);
+      return true;
+    }, () => row.remove());
   });
 
   html.find(".conditions-tab").off("change", ".condition-name, .condition-time, .condition-notes, .condition-desc-input")
@@ -798,6 +834,16 @@ export async function renderExpandedConditions(app, html) {
     if (before) target.before(pointerDrag.row);
     else target.after(pointerDrag.row);
   }
+
+  const cancelActiveDrag = () => {
+    if (!pointerDrag) return;
+    if (pointerDrag.frame) cancelAnimationFrame(pointerDrag.frame);
+    $(document).off("mousemove.fblecSort mouseup.fblecSort");
+    $(pointerDrag.row).removeClass("fblec-dragging");
+    pointerDrag = null;
+  };
+  STAT_DRAG_CLEANUPS.get(app)?.();
+  STAT_DRAG_CLEANUPS.set(app, cancelActiveDrag);
 
   async function finishPointerDrag(save = true) {
     if (!pointerDrag) return;

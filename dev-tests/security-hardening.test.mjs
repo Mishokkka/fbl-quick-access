@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createMemoryStorage } from "./helpers/browser-storage.mjs";
 
 function makeFlagUser(id, { isGM = false, active = true, character = null } = {}) {
   const flags = new Map();
@@ -131,6 +132,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
   const previousFoundry = globalThis.foundry;
   const previousHooks = globalThis.Hooks;
   const previousChatMessage = globalThis.ChatMessage;
+  const previousStorage = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
 
   let sequence = 0;
   let listener = null;
@@ -183,6 +185,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
   };
   globalThis.game = {
     user: gm,
+    world: { id: "secure-world" },
     users,
     actors,
     socket: {
@@ -190,6 +193,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
       emit(_channel, message) { emitted.push(structuredClone(message)); }
     }
   };
+  globalThis.localStorage = createMemoryStorage();
 
   try {
     const transfer = await import(`../scripts/money-transfer.js?security=${Date.now()}`);
@@ -270,6 +274,8 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
     globalThis.foundry = previousFoundry;
     globalThis.Hooks = previousHooks;
     globalThis.ChatMessage = previousChatMessage;
+    if (previousStorage) Object.defineProperty(globalThis, "localStorage", previousStorage);
+    else delete globalThis.localStorage;
   }
 });
 
@@ -290,6 +296,7 @@ test("biography rich text is sanitized before rendering and persistence", async 
     let update = null;
     const actor = {
       name: "Actor",
+      isOwner: true,
       async update(value) { update = value; },
       getFlag() { return null; },
       system: { bio: {} }
@@ -475,6 +482,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
 
   let dialogData = null;
   let infoCount = 0;
+  let errorCount = 0;
 
   class FakeHTMLElement {
     querySelector(selector) {
@@ -516,7 +524,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
     notifications: {
       info() { infoCount += 1; },
       warn() {},
-      error() {}
+      error() { errorCount += 1; }
     }
   };
   globalThis.game = {
@@ -540,7 +548,8 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
     await first;
     await second;
     assert.equal(result?.error, "empty-amount", "Dialog close must not replace the submitted result with null");
-    assert.equal(infoCount, 1, "rapid duplicate submit must start only one transfer attempt");
+    assert.equal(infoCount, 0, "invalid empty transfer must not show an OfferSent notification");
+    assert.equal(errorCount, 1, "rapid duplicate submit must start only one transfer attempt");
   } finally {
     globalThis.game = previousGame;
     globalThis.Dialog = previousDialog;

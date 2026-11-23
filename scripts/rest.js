@@ -8,7 +8,13 @@ import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDi
 import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.js";
 import { openNewDayDialog } from "./new-day.js";
 import { usesCalendariaStateProgression } from "./state-progression.js";
+import { createObjectOperationQueue } from "./operation-queue.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag, setDocumentFlagVerified } from "./document-writes.js";
+import { getCalendariaApi, getCalendariaQuarterInfo as readCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
+const enqueueRestOperation = createObjectOperationQueue();
+const FLAG_PENDING_REST_CLEANUP = "pendingRestCleanup";
+const FLAG_PENDING_SHORT_REST = "pendingShortRest";
 
 export const REST_ATTRIBUTES = {
   strength: {
@@ -135,6 +141,11 @@ export function setupRestButton(app, actor, root) {
 }
 
 export async function openRestDialog(app, actor, root = null) {
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return null;
+  }
+
   const snapshot = buildRestSnapshot(actor, { root });
   const content = buildRestDialogContent(actor, snapshot, {
     canResetShortRest: canResetShortRestLimit(actor)
@@ -148,6 +159,7 @@ export async function openRestDialog(app, actor, root = null) {
   return new Promise((resolve) => {
     let resolved = false;
     let applying = false;
+    let closed = false;
     let dialog = null;
     const finish = (value) => {
       if (resolved) return;
@@ -172,7 +184,7 @@ export async function openRestDialog(app, actor, root = null) {
           icon: '<i class="fas fa-campground"></i>',
           label: qaLocalize("Rest.Apply", "Применить отдых"),
           callback: async (html, _event, _button, renderedDialog) => {
-            if (applying) return false;
+            if (applying || resolved) return false;
             applying = true;
 
             const form = findDialogForm(_button?.form ?? renderedDialog ?? html, "form");
@@ -184,21 +196,26 @@ export async function openRestDialog(app, actor, root = null) {
             }
 
             const options = readRestOptionsFromForm(form);
-            const result = await applyRest(app, actor, options, {
-              root,
-              allowResetShortQuarter: canResetShortRestLimit(actor)
-            });
+            let result;
+            try {
+              result = await applyRest(app, actor, options, { root });
+            } catch (error) {
+              result = { failed: true, error };
+              console.error(`${MODULE_ID} | rest apply failed`, error);
+              ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+            }
 
             if (!result || result.failed || result.errors?.length) {
               applying = false;
+              if (closed) finish(result ?? { failed: true });
               return false;
             }
 
-            const startsNewDay = options.type === "long" && options.startsNewDay && !usesCalendariaStateProgression();
+            const startsNewDay = !closed && options.type === "long" && options.startsNewDay && !usesCalendariaStateProgression();
             finish(result);
             await runPostRestWorkflow({
               startsNewDay,
-              closeDialog: () => closeDialog(renderedDialog),
+              closeDialog: () => { if (!closed) return closeDialog(renderedDialog); },
               openNewDay: () => openNewDayDialog(app, actor)
             });
             return false;
@@ -208,6 +225,7 @@ export async function openRestDialog(app, actor, root = null) {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Отмена"),
           callback: async (_html, _event, _button, renderedDialog) => {
+            if (applying) return false;
             finish(null);
             await closeDialog(renderedDialog);
             return false;
@@ -219,10 +237,17 @@ export async function openRestDialog(app, actor, root = null) {
         const element = extractDialogElement(renderedDialog ?? html);
         element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog");
         const resize = () => scheduleRestDialogAutoSize(dialog, element);
-        setupRestDialogInteractivity(renderedDialog?.form ?? renderedDialog ?? element, resize);
+        setupRestDialogInteractivity(
+          renderedDialog?.form ?? renderedDialog ?? element,
+          resize,
+          () => buildRestSnapshot(actor, { root })
+        );
         resize();
       },
-      close: () => finish(null)
+      close: () => {
+        closed = true;
+        if (!applying) finish(null);
+      }
     }, {
       classes: ["fblqa-rest-dialog"],
       width: 560,
@@ -254,11 +279,8 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
     .join("");
 
   const shortUsed = snapshot.shortRestUse?.usedThisQuarter;
-  const shortStatus = shortUsed
-    ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", {
-        attribute: escapeHtml(localizeAttribute(REST_ATTRIBUTES[snapshot.shortRestUse.attribute] ?? { fallback: snapshot.shortRestUse.attribute ?? "?" }))
-      })
-    : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+  const resumeShortRest = Boolean(snapshot.pendingShortRecovery);
+  const shortStatus = formatShortRestStatus(snapshot);
 
   const newDayControl = usesCalendariaStateProgression()
     ? `<div class="fblqa-rest-progression-note"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>${escapeHtml(qaLocalize("Rest.StateProgressionCalendaria", "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."))}</span></div>`
@@ -275,8 +297,8 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
       <div class="fblqa-rest-header-template" hidden>${conditionChips}</div>
 
       <fieldset class="fblqa-rest-type-switch">
-        <label><input type="radio" name="restType" value="long" checked> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
-        <label><input type="radio" name="restType" value="short"> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
+        <label><input type="radio" name="restType" value="long"${resumeShortRest ? "" : " checked"}> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
+        <label><input type="radio" name="restType" value="short"${resumeShortRest ? " checked" : ""}> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
       </fieldset>
 
       <section class="fblqa-rest-pane" data-rest-pane="long">
@@ -298,7 +320,7 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
           <h2>${qaLocalize("Rest.ShortHeading", "Short Rest — 15 минут передышки")}</h2>
           <p>${qaLocalize("Rest.ShortDescription", "Можно выполнить продолжительные действия. Один раз в четверть дня можно восстановить 1 единицу одной характеристики, если потрачен подходящий расходник или выполнено подходящее условие.")}</p>
         </div>
-        <div class="fblqa-rest-short-status${shortUsed ? " is-used" : ""}">${shortStatus}</div>
+        <div class="fblqa-rest-short-status${shortUsed ? " is-used" : ""}" data-short-used="${shortUsed ? "true" : "false"}">${shortStatus}</div>
         <div class="fblqa-rest-time-source">${qaLocalize("Rest.TimeSource", "Источник четверти дня: {source}", { source: escapeHtml(snapshot.quarterInfo?.label ?? "—") })}</div>
         <label class="fblqa-rest-check">
           <input type="checkbox" name="useShortRecovery" ${shortUsed ? "disabled" : ""}>
@@ -350,7 +372,7 @@ function renderLongAttributeRow(actor, snapshot, attribute) {
   `;
 }
 
-function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
+function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null, getLiveSnapshot = null) {
   const element = extractDialogElement(dialogOrElement);
   setupRestDialogHeader(element);
 
@@ -365,6 +387,7 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
       pane.hidden = hidden;
       pane.setAttribute("aria-hidden", String(hidden));
     }
+    if (type === "short") updateShortRecoveryAvailability();
     onLayoutChange?.();
   };
 
@@ -374,19 +397,67 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {
     if (input && !input.dataset.touched) input.value = localizeDefaultConsumable(REST_ATTRIBUTES[attributeKey] ?? REST_ATTRIBUTES.strength);
   };
 
-  form.addEventListener("input", (event) => {
-    if (event.target?.name === "restType") updatePanes();
-  });
-  form.addEventListener("change", (event) => {
-    if (event.target?.name === "restType") updatePanes();
-    if (event.target?.name === "shortAttribute") updateConsumable();
-  });
-  form.querySelector('input[name="shortConsumable"]')?.addEventListener("input", (event) => {
-    event.currentTarget.dataset.touched = "true";
-  });
+  const updateShortRecoveryAvailability = () => {
+    const status = form.querySelector(".fblqa-rest-short-status");
+    let usedThisQuarter = status?.dataset?.shortUsed === "true";
+    let pendingRecovery = false;
+    if (typeof getLiveSnapshot === "function") {
+      try {
+        const liveSnapshot = getLiveSnapshot();
+        if (liveSnapshot) {
+          usedThisQuarter = Boolean(liveSnapshot.shortRestUse?.usedThisQuarter);
+          pendingRecovery = Boolean(liveSnapshot.pendingShortRecovery);
+          if (status) {
+            status.dataset.shortUsed = usedThisQuarter ? "true" : "false";
+            status.classList?.toggle?.("is-used", usedThisQuarter);
+            status.innerHTML = formatShortRestStatus(liveSnapshot);
+          }
+          const timeSource = form.querySelector(".fblqa-rest-time-source");
+          if (timeSource) {
+            timeSource.innerHTML = qaLocalize("Rest.TimeSource", "Источник четверти дня: {source}", {
+              source: escapeHtml(liveSnapshot.quarterInfo?.label ?? "—")
+            });
+          }
+        }
+      } catch (_error) {
+        // Keep the existing rendered status if a live snapshot cannot be read.
+      }
+    }
+    const reset = form.querySelector('input[name="resetShortQuarter"]');
+    if (reset) reset.disabled = pendingRecovery;
+    const locked = pendingRecovery || (usedThisQuarter && !reset?.checked);
+    const recoveryCheck = form.querySelector('input[name="useShortRecovery"]');
+    const attributeSelect = form.querySelector('select[name="shortAttribute"]');
+    const consumableInput = form.querySelector('input[name="shortConsumable"]');
+    if (recoveryCheck) {
+      recoveryCheck.disabled = locked;
+      if (locked) recoveryCheck.checked = false;
+    }
+    if (attributeSelect) attributeSelect.disabled = locked;
+    if (consumableInput) consumableInput.disabled = locked;
+  };
+
+  if (form.dataset.fblqaRestBound !== "true") {
+    form.dataset.fblqaRestBound = "true";
+    form.addEventListener("input", (event) => {
+      if (event.target?.name === "restType") updatePanes();
+    });
+    form.addEventListener("change", (event) => {
+      if (event.target?.name === "restType") updatePanes();
+      if (event.target?.name === "shortAttribute") updateConsumable();
+      if (event.target?.name === "resetShortQuarter") updateShortRecoveryAvailability();
+    });
+    form.addEventListener("focusin", () => {
+      if (form.querySelector('input[name="restType"]:checked')?.value === "short") updateShortRecoveryAvailability();
+    });
+    form.querySelector('input[name="shortConsumable"]')?.addEventListener("input", (event) => {
+      event.currentTarget.dataset.touched = "true";
+    });
+  }
 
   updatePanes();
   updateConsumable();
+  updateShortRecoveryAvailability();
 }
 
 function scheduleRestDialogAutoSize(dialog, element) {
@@ -461,8 +532,20 @@ async function applyRest(app, actor, options, context = {}) {
     return null;
   }
 
-  const result = options.type === "short"
-    ? calculateShortRestChanges(actor, options, context)
+  return enqueueRestOperation(actor, () => applyRestUnlocked(app, actor, options, context));
+}
+
+async function applyRestUnlocked(app, actor, options, context = {}) {
+  if (!canModifyActor(actor)) {
+    warnCannotModifyActor();
+    return null;
+  }
+
+  const pendingCleanup = options.type === "long" ? readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP) : null;
+  let pendingShortRest = options.type === "short" ? getPendingShortRest(actor) : null;
+  const pending = pendingCleanup ?? pendingShortRest;
+  const result = pending ? readPendingRestResult(pending) : options.type === "short"
+    ? calculateShortRestChanges(actor, options, { ...context, allowResetShortQuarter: canResetShortRestLimit(actor) })
     : calculateLongRestChanges(actor, options, context);
 
   if (result.errors.length) {
@@ -471,15 +554,27 @@ async function applyRest(app, actor, options, context = {}) {
   }
 
   try {
-    const effectIds = result.effectsToDelete
+    const effectIds = pendingCleanup?.effectIds ?? result.effectsToDelete
       .map((effect) => effect?.id ?? effect?._id)
       .filter(Boolean);
 
-    // Actor data and the short-rest flag are one logical mutation. Keep them in
-    // one Actor.update so a rest does not emit multiple updateActor/render cycles.
-    const actorUpdate = { ...result.updates };
+    if (result.flagValue !== undefined && !pendingShortRest) {
+      pendingShortRest = {
+        ...recordRestChanges(actor, result, []),
+        previousUse: getShortRestRecoveryFlag(actor)
+      };
+      await setDocumentFlagVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, pendingShortRest, { render: false }, { replace: true });
+    }
+
+    const cleanupPath = `flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`;
+    const savedRest = pendingCleanup ?? pendingShortRest;
+    const actorUpdate = savedRest ? planRestRecoveryRetry(actor, savedRest, result.updates) : { ...result.updates };
     if (result.flagValue !== undefined) {
-      actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = result.flagValue;
+      const currentUse = getShortRestRecoveryFlag(actor);
+      if (!plainValuesEqual(currentUse, result.flagValue)) {
+        if (!plainValuesEqual(currentUse, pendingShortRest.previousUse)) throw restRecoveryConflict();
+        actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = result.flagValue;
+      }
     }
     // Reset clears the previous use; a successful recovery records the new use.
     // Use a normal null assignment instead of Foundry's `.-=` deletion path:
@@ -489,9 +584,46 @@ async function applyRest(app, actor, options, context = {}) {
       actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = null;
     }
 
+    if (effectIds.length && !pendingCleanup) {
+      actorUpdate[cleanupPath] = recordRestChanges(actor, result, effectIds);
+    }
     const hasActorUpdate = Object.keys(actorUpdate).length > 0;
-    if (hasActorUpdate) await actor.update(actorUpdate);
-    if (effectIds.length) await actor.deleteEmbeddedDocuments("ActiveEffect", effectIds);
+    if (hasActorUpdate) {
+      await actor.update(actorUpdate);
+    }
+    if (effectIds.length && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP), pendingCleanup ?? actorUpdate[cleanupPath])) {
+      throw createCodedError("write-not-persisted", "Rest cleanup was not recorded.");
+    }
+    for (const [path, expected] of Object.entries(result.updates)) {
+      if (getProperty(actor._source ?? actor, path) !== expected) {
+        throw createCodedError("write-not-persisted", `Rest update for ${path} was not persisted.`);
+      }
+    }
+    if (hasActorUpdate) {
+      if (result.flagValue !== undefined) {
+        const source = actor._source?.flags?.[MODULE_ID] ?? actor.flags?.[MODULE_ID];
+        const persistedFlag = source ? source[FLAG_SHORT_REST_RECOVERY] : getShortRestRecoveryFlag(actor);
+        if (!plainValuesEqual(persistedFlag, result.flagValue)) {
+          throw createCodedError("write-not-persisted", "Short Rest recovery flag was not persisted.");
+        }
+      } else if (result.clearShortRestFlag) {
+        if (getShortRestRecoveryFlag(actor) != null) {
+          throw createCodedError("write-not-persisted", "Short Rest reset was not persisted.");
+        }
+      }
+    }
+    if (effectIds.length) {
+      const liveEffectIds = () => new Set(Array.from(actor.effects ?? [], effect => effect?.id ?? effect?._id));
+      const currentIds = liveEffectIds();
+      const remaining = effectIds.filter(id => currentIds.has(id));
+      if (remaining.length) await actor.deleteEmbeddedDocuments("ActiveEffect", remaining);
+      const afterIds = liveEffectIds();
+      if (effectIds.some(id => afterIds.has(id))) {
+        throw createCodedError("write-not-persisted", "Condition ActiveEffects were not deleted.");
+      }
+      await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP);
+    }
+    if (pendingShortRest) await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, { render: false });
 
     if (result.changed) {
       ui.notifications?.info?.(result.notification);
@@ -513,11 +645,67 @@ async function applyRest(app, actor, options, context = {}) {
     if (!hasActorUpdate && !effectIds.length) rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | rest update failed`, error);
-    ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+    ui.notifications?.error?.(error?.code === "rest-recovery-conflict" ? error.message : qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
     return { ...result, failed: true, error };
   }
 
   return result;
+}
+
+function getPendingShortRest(actor) {
+  return readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_SHORT_REST);
+}
+
+function formatShortRestStatus(snapshot) {
+  const pending = snapshot.pendingShortRecovery;
+  const saved = snapshot.shortRestUse;
+  const attributeKey = pending?.attribute ?? saved.attribute;
+  const attribute = escapeHtml(localizeAttribute(REST_ATTRIBUTES[attributeKey] ?? { fallback: attributeKey ?? "?" }));
+  if (pending) return qaLocalize("Rest.ShortResume", "Apply to finish the pending Short Rest recovery for {attribute}.", { attribute });
+  return saved.usedThisQuarter
+    ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", { attribute })
+    : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+}
+
+function recordRestChanges(actor, result, effectIds) {
+  const { updates, ...recordedResult } = result;
+  return clonePlainJson({
+    effectIds, result: { ...recordedResult, effectsToDelete: [] },
+    writes: Object.entries(updates).map(([path, target]) => ({ path, target, before: getProperty(actor._source ?? actor, path) }))
+  });
+}
+
+function readPendingRestResult(pending) {
+  const result = clonePlainJson(pending.result);
+  result.updates = pending.writes
+    ? Object.fromEntries(pending.writes.map(({ path, target }) => [path, target]))
+    : globalThis.foundry?.utils?.flattenObject?.(result.updates) ?? result.updates;
+  return result;
+}
+
+function planRestRecoveryRetry(actor, pending, targets) {
+  const previous = new Map(pending.writes?.map(({ path, before }) => [path, before]));
+  const update = {};
+  for (const [path, target] of Object.entries(targets)) {
+    const current = getProperty(actor._source ?? actor, path);
+    if (current === target) continue;
+    if (!previous.has(path) || current !== previous.get(path)) {
+      throw restRecoveryConflict();
+    }
+    update[path] = target;
+  }
+  return update;
+}
+
+function restRecoveryConflict() {
+  return createCodedError("rest-recovery-conflict", qaLocalize("Rest.RecoveryConflict",
+    "A character field changed during an unfinished rest. Review the saved recovery and restore its expected value before retrying."));
+}
+
+function matchesQuarterKey(savedKey, quarterInfo) {
+  if (!savedKey || !quarterInfo?.key) return false;
+  if (savedKey === quarterInfo.key) return true;
+  return Boolean(quarterInfo.legacyKey && savedKey === quarterInfo.legacyKey);
 }
 
 export function buildRestSnapshot(actor, context = {}) {
@@ -532,9 +720,10 @@ export function buildRestSnapshot(actor, context = {}) {
     blockedBy,
     currentQuarterKey,
     quarterInfo,
+    pendingShortRecovery: getPendingShortRest(actor)?.result?.flagValue ?? null,
     shortRestUse: {
       ...savedUse,
-      usedThisQuarter: Boolean(savedUse?.quarterKey && savedUse.quarterKey === currentQuarterKey)
+      usedThisQuarter: matchesQuarterKey(savedUse?.quarterKey, quarterInfo)
     }
   };
 }
@@ -657,6 +846,7 @@ export function calculateShortRestChanges(actor, options = {}, context = {}) {
   }
 
   const changed = Boolean(Object.keys(updates).length || flagValue !== undefined || clearShortRestFlag);
+  const effectiveConsumable = options.useShortRecovery ? String(options.shortConsumable ?? "").trim() : "";
 
   return {
     type: "short",
@@ -670,8 +860,8 @@ export function calculateShortRestChanges(actor, options = {}, context = {}) {
     clearedConditions: [],
     errors,
     changed,
-    consumable: String(options.shortConsumable ?? "").trim(),
-    notification: buildShortRestNotification(recovered, options.shortConsumable)
+    consumable: effectiveConsumable,
+    notification: buildShortRestNotification(recovered, effectiveConsumable)
   };
 }
 
@@ -681,9 +871,11 @@ export function getAttributeState(actor, attributeKey) {
 
 function isConditionActive(actor, condition, root = null) {
   const actorValue = readActorConditionValue(actor, condition.key);
-  if (actorValue !== undefined) return normalizeConditionValue(actorValue);
+  if (actorValue !== undefined && normalizeConditionValue(actorValue)) return true;
 
   if (findConditionEffects(actor, condition).length > 0) return true;
+
+  if (actorValue !== undefined) return false;
 
   const domValue = readDomConditionValue(root, condition.key);
   if (domValue !== undefined) return normalizeConditionValue(domValue);
@@ -794,6 +986,12 @@ function getClearUpdatePathsForValue(path, value) {
   return [path];
 }
 
+function isEffectActive(effect) {
+  if (!effect) return false;
+  if (typeof effect.active === "boolean") return effect.active;
+  return effect.disabled !== true && effect.isSuppressed !== true;
+}
+
 function findConditionEffects(actor, condition) {
   const effects = actor?.effects ? [...actor.effects] : [];
   const aliases = new Set(condition.aliases.map((value) => normalizeAlias(value)));
@@ -802,6 +1000,7 @@ function findConditionEffects(actor, condition) {
   const statusIcon = statusEffect?.img ?? statusEffect?.icon ?? null;
 
   return effects.filter((effect) => {
+    if (!isEffectActive(effect)) return false;
     const statusIds = new Set([...(effect.statuses ?? []), ...(effect.flags?.core?.statusId ? [effect.flags.core.statusId] : [])].map(normalizeAlias));
     for (const status of statusIds) if (aliases.has(status)) return true;
 
@@ -812,7 +1011,7 @@ function findConditionEffects(actor, condition) {
   });
 }
 
-function getConditionReadPaths(key) {
+function getConditionPaths(key) {
   return [
     `system.condition.${key}.value`,
     `system.condition.${key}.active`,
@@ -833,25 +1032,12 @@ function getConditionReadPaths(key) {
   ];
 }
 
+function getConditionReadPaths(key) {
+  return getConditionPaths(key);
+}
+
 function getConditionWritePaths(key) {
-  return [
-    `system.condition.${key}.value`,
-    `system.condition.${key}.active`,
-    `system.condition.${key}.checked`,
-    `system.condition.${key}`,
-    `system.conditions.${key}.value`,
-    `system.conditions.${key}.active`,
-    `system.conditions.${key}.checked`,
-    `system.conditions.${key}`,
-    `system.bio.conditions.${key}.value`,
-    `system.bio.conditions.${key}.active`,
-    `system.bio.conditions.${key}.checked`,
-    `system.bio.conditions.${key}`,
-    `system.status.${key}.value`,
-    `system.status.${key}.active`,
-    `system.status.${key}.checked`,
-    `system.status.${key}`
-  ];
+  return getConditionPaths(key);
 }
 
 function normalizeConditionValue(value) {
@@ -876,10 +1062,6 @@ function getShortRestRecoveryFlag(actor) {
   return raw;
 }
 
-export function getCurrentQuarterKey() {
-  return getCurrentQuarterInfo().key;
-}
-
 export function getCurrentQuarterInfo() {
   const calendaria = getCalendariaQuarterInfo();
   if (calendaria) return calendaria;
@@ -902,47 +1084,27 @@ export function getCurrentQuarterInfo() {
 }
 
 function getCalendariaQuarterInfo() {
-  const dateTime = getCalendariaDateTime();
-  if (!dateTime) return null;
-
-  const year = Number(dateTime.year);
-  const month = Number(dateTime.month);
-  const day = Number(dateTime.day);
-  if (!Number.isFinite(year) || !Number.isFinite(month) || !Number.isFinite(day)) return null;
-
-  const activeCalendar = getCalendariaApi()?.getActiveCalendar?.();
-  const hoursPerDay = readFiniteNumber(activeCalendar?.days?.hoursPerDay);
-  const quarterHours = Number.isFinite(hoursPerDay) && hoursPerDay > 0 ? hoursPerDay / 4 : 6;
-  const hour = readFiniteNumber(dateTime.hour);
-  const minute = readFiniteNumber(dateTime.minute);
-  const second = readFiniteNumber(dateTime.second);
-  const timeOfDay = (Number.isFinite(hour) ? hour : 0)
-    + (Number.isFinite(minute) ? minute / 60 : 0)
-    + (Number.isFinite(second) ? second / 3600 : 0);
-  const quarterIndex = Math.max(0, Math.min(3, Math.floor(timeOfDay / quarterHours)));
-
+  const info = readCalendariaQuarterInfo();
+  if (!info) return null;
   return {
-    key: `calendaria:${year}:${month}:${day}:q${quarterIndex}`,
+    key: info.key,
+    legacyKey: info.legacyKey,
     source: "calendaria",
     label: qaLocalize("Rest.TimeSourceCalendaria", "Calendaria: {date}, четверть {quarter}", {
-      date: `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`,
-      quarter: String(quarterIndex + 1)
+      date: info.dateLabel,
+      quarter: String(info.quarterIndex + 1)
     })
   };
 }
 
 function getCalendariaDateTime() {
   try {
-    const api = getCalendariaApi();
+    const api = getCalendariaApi({ requireActiveModule: false });
     const value = api?.getCurrentDateTime?.();
     return value && typeof value === "object" ? value : null;
   } catch (_error) {
     return null;
   }
-}
-
-function getCalendariaApi() {
-  return globalThis.CALENDARIA?.api ?? null;
 }
 
 function buildLongRestNotification(recovered, clearedConditions) {
@@ -979,7 +1141,7 @@ async function postRestChatMessage(actor, result, options) {
       <p><strong>${qaLocalize("Rest.ChatRecovered", "Восстановлено")}:</strong> ${recovered}</p>
       ${result.type === "long" ? `<p><strong>${qaLocalize("Rest.ChatCleared", "Снято")}:</strong> ${cleared}</p>` : ""}
       <p><strong>${qaLocalize("Rest.ChatBlocked", "Заблокировано")}:</strong><br>${blocked}</p>
-      ${result.type === "short" && options.shortConsumable ? `<p><strong>${qaLocalize("Rest.ShortConsumable", "Расходник / обоснование")}:</strong> ${escapeHtml(options.shortConsumable)}</p>` : ""}
+      ${result.type === "short" && result.consumable ? `<p><strong>${qaLocalize("Rest.ShortConsumable", "Расходник / обоснование")}:</strong> ${escapeHtml(result.consumable)}</p>` : ""}
     </div>
   `;
 
@@ -999,11 +1161,6 @@ function localizeCondition(condition) {
 
 function localizeDefaultConsumable(attribute) {
   return qaLocalize(attribute?.consumableKey ?? "Rest.ConsumableOther", attribute?.consumableFallback ?? "особый расходник");
-}
-
-function readFiniteNumber(value) {
-  const number = Number(value);
-  return Number.isFinite(number) ? number : Number.NaN;
 }
 
 function normalizeAlias(value) {

@@ -112,6 +112,7 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
       resolve,
       reject,
       timeout,
+      timeoutMs,
       operation: key,
       activeGMId: activeGM.id
     });
@@ -215,14 +216,16 @@ async function handleResponse(message) {
   const activeGM = findGameUser(message.activeGMId);
   if (!activeGM?.isGM || !activeGM.active) return;
   const proof = await verifySocketProofWithRetry(activeGM, RESPONSE_PROOF_KIND, message.requestId, message, {
-    ttlMs: DEFAULT_TIMEOUT_MS + PROOF_GRACE_MS
+    ttlMs: Math.max(DEFAULT_TIMEOUT_MS, pending.timeoutMs ?? DEFAULT_TIMEOUT_MS) + PROOF_GRACE_MS
   });
   if (!proof.ok) return;
   if (!consumeSocketProof(activeGM.id, RESPONSE_PROOF_KIND, message.requestId)) return;
 
   pendingRequests.delete(message.requestId);
   globalThis.clearTimeout(pending.timeout);
-  void clearSocketProof(game.user, REQUEST_PROOF_KIND, message.requestId);
+  if (game.user?.getFlag?.(MODULE_ID, `socketProofs.${REQUEST_PROOF_KIND}.${message.requestId}`)) {
+    void clearSocketProof(game.user, REQUEST_PROOF_KIND, message.requestId);
+  }
 
   if (message.ok) {
     pending.resolve(message.result);

@@ -9,13 +9,20 @@ export const FLAG_REPUTATION_ENTRIES = "reputationEntries";
 export const FLAG_BIOGRAPHY_PROFILE = "biographyProfile";
 export const FLAG_PILGRIM_CARD_PROFILE = "pilgrimCardProfile";
 export const FLAG_STATE_PROGRESSION_CALENDAR = "stateProgressionCalendaria";
+export const FLAG_STATE_PROGRESSION_FAILURES = "stateProgressionFailures";
+export const FLAG_STATE_PROGRESSION_OPERATION = "stateProgressionOperation";
+export const FLAG_WILLPOWER_TALENTS = "willpowerTalents";
+export const FLAG_EQUIPMENT_HANDS = "equipmentHands";
+export const FLAG_EQUIPMENT_RECEIPTS = "equipmentReceipts";
+export const FLAG_MONEY_TRANSFER_RECONCILIATIONS = "moneyTransferReconciliations";
 export const SYSTEM_ID = "forbidden-lands";
 
 export const SETTINGS = Object.freeze({
   PLAYERS_CAN_RESET_SHORT_REST: "playersCanResetShortRest",
   POST_NO_CHANGE_REST_CARDS: "postNoChangeRestCards",
   PILGRIM_CARD_FONT: "pilgrimCardFont",
-  STATE_PROGRESSION_MODE: "stateProgressionMode"
+  STATE_PROGRESSION_MODE: "stateProgressionMode",
+  MONEY_TRANSFER_RECONCILIATIONS: "moneyTransferReconciliations"
 });
 
 export const MAX_SLOTS = 10;

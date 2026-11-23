@@ -1,11 +1,16 @@
 import { FLAG_REPUTATION_ENTRIES, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
-import { escapeHtml } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { actorKey, escapeHtml, makeEntryId } from "./utils.js";
+import { createFoundryDialog, extractDialogElement, hasFoundryDialogApi } from "./dialogs.js";
+import { findNoteTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { createObjectOperationQueue } from "./operation-queue.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
 const OPEN_DIALOGS = new Map();
+const REPUTATION_DRAFTS = new WeakMap();
+const enqueueReputationSave = createObjectOperationQueue();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
 export const MAX_REPUTATION_POINTS = 1000;
 
@@ -91,10 +96,13 @@ export async function saveReputationEntries(actor, entries, { render = false } =
     warnCannotModifyActor();
     return false;
   }
+  if (!Array.isArray(entries)) {
+    throw new TypeError("Reputation entries must be an array.");
+  }
 
   const normalized = normalizeReputationEntries(entries);
   const total = getReputationTotal(normalized);
-  if (total > MAX_REPUTATION_POINTS || (entries ?? []).some(entry => {
+  if (total > MAX_REPUTATION_POINTS || entries.some(entry => {
     const amount = Number(entry?.amount ?? entry?.value ?? entry?.quantity ?? 0);
     return !Number.isFinite(amount) || !Number.isSafeInteger(Math.floor(amount)) || amount > MAX_REPUTATION_POINTS;
   })) throw new RangeError(`Reputation must contain finite amounts totaling at most ${MAX_REPUTATION_POINTS} points`);
@@ -102,6 +110,10 @@ export async function saveReputationEntries(actor, entries, { render = false } =
     [`flags.${MODULE_ID}.${FLAG_REPUTATION_ENTRIES}`]: normalized,
     [REPUTATION_PATH]: total
   }, { render });
+  if (!plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_REPUTATION_ENTRIES), normalized)
+    || (actor._source ?? actor).system?.bio?.reputation?.value !== total) {
+    throw createCodedError("write-not-persisted", "Reputation entries or total were not saved.");
+  }
   return true;
 }
 
@@ -138,8 +150,7 @@ export function setupReputationManager(app, actor, root) {
 }
 
 export function setupReputationNoteSummary(actor, root) {
-  const noteTab = root?.querySelector?.('.sheet-body > .tab[data-tab="note"]')
-    ?? root?.querySelector?.('.tab.note[data-tab="note"]');
+  const noteTab = findNoteTab(root);
   if (!(noteTab instanceof HTMLElement)) return null;
 
   noteTab.querySelector?.('.fblqa-reputation-note-summary')?.remove();
@@ -176,10 +187,23 @@ export function setupReputationNoteSummary(actor, root) {
   return section;
 }
 
+export function closeReputationDialog(actorOrId) {
+  const key = actorKey(actorOrId);
+  const dialog = OPEN_DIALOGS.get(key);
+  if (!dialog) return false;
+  OPEN_DIALOGS.delete(key);
+  try {
+    void dialog.close?.();
+  } catch (_error) {
+    // Ignore close errors for already-detached dialogs.
+  }
+  return true;
+}
+
 export function openReputationDialog(app, actor) {
   if (!actor || !hasFoundryDialogApi()) return null;
 
-  const key = actor.uuid ?? actor.id;
+  const key = actorKey(actor);
   const existing = OPEN_DIALOGS.get(key);
   if (existing) {
     existing.bringToFront?.();
@@ -188,40 +212,46 @@ export function openReputationDialog(app, actor) {
   }
 
   const editable = canModifyActor(actor);
-  const content = buildDialogContent(actor, editable);
+  const persistedEntries = getReputationEntries(actor);
+  const draft = editable ? REPUTATION_DRAFTS.get(actor) : null;
+  const content = buildDialogContent(editable, draft ?? persistedEntries);
   let saveTimeout = null;
-  let saveChain = Promise.resolve();
   let dialogRoot = null;
   let revision = 0;
+  let dirty = Boolean(draft);
+  let lastSerialized = JSON.stringify(persistedEntries);
 
   const queueSave = (rowsRoot, status) => {
     if (!editable || !rowsRoot) return Promise.resolve(false);
-    const localRevision = ++revision;
+    const localRevision = revision;
     const entries = collectRows(rowsRoot).map(({ entry }) => entry);
+    const serialized = JSON.stringify(entries);
+    if (!dirty && serialized === lastSerialized) return Promise.resolve(true);
+    REPUTATION_DRAFTS.set(actor, entries);
     setStatus(status, qaLocalize("Reputation.Saving", "Сохранение…"), "is-saving");
 
-    saveChain = saveChain
-      .catch(() => false)
-      .then(async () => {
-        const saved = await saveReputationEntries(actor, entries, { render: false });
-        if (saved) updateSheetReputationPresentation(app, actor, entries);
-        return saved;
-      })
-      .then((saved) => {
-        if (localRevision === revision && saved) {
-          setStatus(status, qaLocalize("Reputation.Saved", "Сохранено"), "is-saved");
-        }
-        return saved;
-      })
-      .catch((error) => {
-        console.error(`${MODULE_ID} | reputation save failed`, error);
-        setStatus(status, error instanceof RangeError
-          ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
-          : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию."), "is-error");
-        return false;
-      });
-
-    return saveChain;
+    return enqueueReputationSave(actor, async () => {
+      if (!await saveReputationEntries(actor, entries, { render: false })) {
+        throw createCodedError("write-not-persisted", "Reputation entries were not saved.");
+      }
+      lastSerialized = serialized;
+      if (localRevision === revision) {
+        dirty = false;
+        setStatus(status, qaLocalize("Reputation.Saved", "Сохранено"), "is-saved");
+      }
+      if (REPUTATION_DRAFTS.get(actor) === entries) REPUTATION_DRAFTS.delete(actor);
+      updateSheetReputationPresentation(app, actor, entries);
+      return true;
+    }).catch((error) => {
+      console.error(`${MODULE_ID} | reputation save failed`, error);
+      if (localRevision !== revision) return false;
+      const message = error instanceof RangeError
+        ? qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS })
+        : qaLocalize("Reputation.SaveFailed", "Не удалось сохранить репутацию.");
+      setStatus(status, message, "is-error");
+      if (!status?.isConnected) globalThis.ui?.notifications?.error?.(message);
+      return false;
+    });
   };
 
   const dialog = createFoundryDialog({
@@ -229,29 +259,38 @@ export function openReputationDialog(app, actor) {
     content,
     buttons: {},
     render: (html) => {
-      dialogRoot = extractElement(html);
+      dialogRoot = extractDialogElement(html);
       if (!dialogRoot) return;
+      if (dirty) setStatus(dialogRoot.querySelector?.("[data-role='save-status']"),
+        qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");
       dialogRoot.closest?.(".app, .application")?.classList.add("fblqa-reputation-dialog");
       const resize = () => scheduleReputationDialogAutoSize(dialog, dialogRoot);
       setupDialogInteractions({
-        app,
         actor,
         root: dialogRoot,
         editable,
+        entries: (editable ? REPUTATION_DRAFTS.get(actor) : null) ?? getReputationEntries(actor),
         scheduleSave: (rowsRoot, status) => {
-          if (!editable) return;
-          if (saveTimeout) window.clearTimeout(saveTimeout);
+          if (!editable || !rowsRoot) return;
+          const entries = collectRows(rowsRoot).map(({ entry }) => entry);
+          const serialized = JSON.stringify(entries);
+          if (serialized === lastSerialized && !dirty) return;
+          revision += 1;
+          dirty = true;
+          REPUTATION_DRAFTS.set(actor, entries);
+          if (saveTimeout) globalThis.clearTimeout?.(saveTimeout);
           setStatus(status, qaLocalize("Reputation.Unsaved", "Есть несохранённые изменения"), "is-dirty");
-          saveTimeout = window.setTimeout(() => {
+          saveTimeout = globalThis.setTimeout?.(() => {
             saveTimeout = null;
             void queueSave(rowsRoot, status);
           }, 400);
         },
         saveNow: async (rowsRoot, status) => {
           if (saveTimeout) {
-            window.clearTimeout(saveTimeout);
+            globalThis.clearTimeout?.(saveTimeout);
             saveTimeout = null;
           }
+          if (!dirty) return true;
           return queueSave(rowsRoot, status);
         },
         resize
@@ -260,13 +299,13 @@ export function openReputationDialog(app, actor) {
     },
     close: () => {
       if (saveTimeout) {
-        window.clearTimeout(saveTimeout);
+        globalThis.clearTimeout?.(saveTimeout);
         saveTimeout = null;
       }
       const rowsRoot = dialogRoot?.querySelector?.(".fblqa-reputation-rows");
-      const status = dialogRoot?.querySelector?.(".fblqa-reputation-save-status");
-      if (editable && rowsRoot) void queueSave(rowsRoot, status);
-      OPEN_DIALOGS.delete(key);
+      const status = dialogRoot?.querySelector?.("[data-role='save-status']");
+      if (editable && rowsRoot && dirty) void queueSave(rowsRoot, status);
+      if (OPEN_DIALOGS.get(key) === dialog) OPEN_DIALOGS.delete(key);
     }
   }, {
     classes: ["fblqa-reputation-dialog"],
@@ -299,8 +338,7 @@ function bindReputationTrigger(element, app, actor) {
   }, true);
 }
 
-function buildDialogContent(actor, editable) {
-  const entries = getReputationEntries(actor);
+function buildDialogContent(editable, entries) {
   const total = getReputationTotal(entries);
 
   return `
@@ -335,7 +373,7 @@ function buildDialogContent(actor, editable) {
           <strong data-role="selected">${total}</strong>
           <span>${escapeHtml(qaLocalize("Reputation.SelectedOf", "из {total} единиц выбрано для проверки", { total }))}</span>
         </div>
-        <span class="fblqa-reputation-save-status" aria-live="polite"></span>
+        <span class="fblqa-reputation-save-status" data-role="save-status" aria-live="polite"></span>
       </div>
 
       <div class="fblqa-reputation-actions">
@@ -356,20 +394,31 @@ function buildDialogContent(actor, editable) {
   `;
 }
 
-function setupDialogInteractions({ app, actor, root, editable, scheduleSave, saveNow, resize }) {
+function setupDialogInteractions({ actor, root, editable, entries, scheduleSave, saveNow, resize }) {
   const rowsRoot = root.querySelector(".fblqa-reputation-rows");
-  const status = root.querySelector(".fblqa-reputation-save-status");
+  const status = root.querySelector("[data-role='save-status']");
   if (!rowsRoot) return;
 
-  for (const entry of getReputationEntries(actor)) rowsRoot.append(buildRow(entry, editable, true));
-  rowsRoot.append(buildRow(null, editable, false));
+  for (const entry of entries) rowsRoot.append(buildRow(entry, editable, true));
+  if (editable) rowsRoot.append(buildRow(null, editable, false));
   refreshDialogSummary(root);
+
+  let rolling = false;
+  const runRollAction = async (handler) => {
+    if (rolling) return;
+    rolling = true;
+    try {
+      await handler();
+    } finally {
+      rolling = false;
+    }
+  };
 
   rowsRoot.addEventListener("input", (event) => {
     const row = event.target?.closest?.(".fblqa-reputation-row");
     if (!row) return;
     updateRowValidity(row);
-    const structureChanged = ensureTrailingBlankRow(rowsRoot, editable);
+    const structureChanged = editable ? ensureTrailingBlankRow(rowsRoot, editable) : false;
     const field = event.target?.dataset?.field ?? "";
     if (field === "amount" || field === "selected") refreshDialogSummary(root);
     if (structureChanged) resize?.();
@@ -398,29 +447,31 @@ function setupDialogInteractions({ app, actor, root, editable, scheduleSave, sav
     scheduleSave(rowsRoot, status);
   });
 
-  root.querySelector("[data-action='roll-selected']")?.addEventListener("click", async () => {
+  root.querySelector("[data-action='roll-selected']")?.addEventListener("click", () => runRollAction(async () => {
     const states = collectRows(rowsRoot);
     const selections = states
       .filter((state) => state.selected)
       .map((state) => ({ entry: state.entry, amount: state.entry.amount }));
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollReputation(actor, states.map((state) => state.entry), selections);
-  });
+  }));
 
-  root.querySelector("[data-action='roll-half']")?.addEventListener("click", async () => {
+  root.querySelector("[data-action='roll-half']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollRandomReputation(actor, entries, 2);
-  });
+  }));
 
-  root.querySelector("[data-action='roll-third']")?.addEventListener("click", async () => {
+  root.querySelector("[data-action='roll-third']")?.addEventListener("click", () => runRollAction(async () => {
     const entries = collectRows(rowsRoot).map((state) => state.entry);
-    await saveNow(rowsRoot, status);
+    if (editable && !await saveNow(rowsRoot, status)) return;
     await rollRandomReputation(actor, entries, 3);
-  });
+  }));
 
   if (!editable) {
-    for (const control of root.querySelectorAll("input, button[data-action='remove-row']")) control.disabled = true;
+    for (const control of root.querySelectorAll("input:not([data-field='selected']), button[data-action='remove-row']")) {
+      control.disabled = true;
+    }
   }
 }
 
@@ -617,6 +668,7 @@ async function rollReputation(actor, allEntries, selections) {
 
     return await createMessage.call(globalThis.ChatMessage, {
       speaker: globalThis.ChatMessage?.getSpeaker?.({ actor }) ?? undefined,
+      rolls: [roll],
       content
     });
   } catch (error) {
@@ -676,7 +728,7 @@ function extractRollResults(roll, expected) {
 }
 
 function updateSheetReputationPresentation(app, actor, entries) {
-  const root = extractElement(app?.element);
+  const root = extractDialogElement(app?.element);
   if (!root) return;
   const input = root.querySelector?.(`input[name="${REPUTATION_PATH}"]`);
   if (input) input.value = String(getReputationTotal(entries));
@@ -737,19 +789,5 @@ function setStatus(element, text, className) {
 
 function normalizeEntryId(value) {
   const id = String(value ?? "").trim();
-  return id || makeEntryId();
-}
-
-function makeEntryId() {
-  const randomID = globalThis.foundry?.utils?.randomID;
-  if (typeof randomID === "function") return randomID(16);
-  if (globalThis.crypto?.randomUUID) return crypto.randomUUID();
-  return `rep-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-}
-
-function extractElement(value) {
-  if (value instanceof HTMLElement) return value;
-  if (value?.[0] instanceof HTMLElement) return value[0];
-  if (value?.element instanceof HTMLElement) return value.element;
-  return null;
+  return id || makeEntryId("rep");
 }

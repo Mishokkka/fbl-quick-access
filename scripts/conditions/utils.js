@@ -1,6 +1,7 @@
 import { MODULE_ID, SETTINGS } from "./constants.js";
 import { canModifyActor } from "../permissions.js";
-import { getActorAttributeState } from "../actor-data.js";
+import { getActorAttributeState, getProperty } from "../actor-data.js";
+import { createCodedError, opaquePreconditionToken, readNumericValue } from "../document-writes.js";
 import { escapeHtml } from "../utils.js";
 
 export function localize(key, fallbackOrData = undefined, data = undefined) {
@@ -8,9 +9,11 @@ export function localize(key, fallbackOrData = undefined, data = undefined) {
   const hasFallback = typeof fallbackOrData === "string";
   const fallback = hasFallback ? fallbackOrData : fullKey;
   const formatData = hasFallback ? data : fallbackOrData;
-  const localized = formatData ? game.i18n.format(fullKey, formatData) : game.i18n.localize(fullKey);
-  const value = localized && localized !== fullKey ? localized : fallback;
-  return interpolateText(value, formatData);
+  const localized = formatData
+    ? globalThis.game?.i18n?.format?.(fullKey, formatData)
+    : globalThis.game?.i18n?.localize?.(fullKey);
+  if (localized && localized !== fullKey) return localized;
+  return interpolateText(fallback, formatData);
 }
 
 function interpolateText(template, data = undefined) {
@@ -75,11 +78,27 @@ export function makeCustomCondition(data = {}, fallbackOrder = 0) {
   };
 }
 
+function deterministicLegacyConditionId(entry, index) {
+  const token = opaquePreconditionToken([
+    index,
+    entry?.name ?? "",
+    entry?.time ?? "0",
+    entry?.notes ?? "",
+    entry?.desc ?? "",
+    entry?.order ?? null
+  ]).slice(4);
+  return `legacy-${index}-${token}`;
+}
+
 export function normalizeCustomConditionList(list) {
   let changed = false;
   const normalized = (Array.isArray(list) ? list : []).map((entry, index) => {
-    const condition = makeCustomCondition(entry, index * 10);
-    if (!entry?.id || entry?.order === undefined) changed = true;
+    const missingId = !entry?.id;
+    const condition = makeCustomCondition(
+      missingId ? { ...(entry ?? {}), id: deterministicLegacyConditionId(entry, index) } : entry,
+      index * 10
+    );
+    if (missingId || entry?.order === undefined) changed = true;
     return condition;
   });
   return { list: normalized, changed };
@@ -90,11 +109,8 @@ export function getActorAttributePath(actor, attributeName) {
   return state.hasValue ? state.valuePath : null;
 }
 
-export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}, extraUpdate = null) {
-  if (!actor || !damages || typeof damages !== "object") return [];
-
-  const update = {};
-  const applied = [];
+export function planActorAttributeDamage(actor, damages) {
+  const plan = [];
 
   for (const [attributeName, amountRaw] of Object.entries(damages)) {
     const amount = Math.max(0, parseFirstInteger(amountRaw, 0));
@@ -103,17 +119,36 @@ export async function applyActorAttributeDamage(actor, damages = {}, documentOpt
     const path = getActorAttributePath(actor, attributeName);
     if (!path) continue;
 
-    const previous = Number(foundry.utils.getProperty(actor, path));
+    const previous = readNumericValue(getProperty(actor._source ?? actor, path));
     if (!Number.isFinite(previous)) continue;
 
     const value = Math.max(0, previous - amount);
-    update[path] = value;
-    applied.push({ attribute: attributeName, path, amount, previous, value });
+    plan.push({ attribute: attributeName, path, amount, previous, value });
   }
+  return plan;
+}
 
-  if (extraUpdate) Object.assign(update, typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate);
-  if (Object.keys(update).length) await actor.update(update, documentOptions);
-  return applied;
+export async function applyActorAttributeDamage(actor, plan, documentOptions) {
+  const update = {};
+  const readValue = path => readNumericValue(getProperty(actor._source ?? actor, path));
+  for (const { attribute, path, previous, value } of plan) {
+    const current = readValue(path);
+    if (current === value) continue;
+    if (current !== previous) {
+      const message = localize("Notifications.DamageConflict",
+        "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after}).",
+        { attribute, before: previous, after: value });
+      throw Object.assign(createCodedError("damage-conflict", message), { fblqaUserMessage: message });
+    }
+    update[path] = value;
+  }
+  if (Object.keys(update).length) {
+    await actor.update(update, documentOptions);
+    if (plan.some(({ path, value }) => readValue(path) !== value)) {
+      throw createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
+    }
+  }
+  return plan;
 }
 
 export function canUserEditActor(actor) {
@@ -123,7 +158,13 @@ export function canUserEditActor(actor) {
 }
 
 export function shouldPostChatMessages() {
-  return Boolean(game.settings.get(MODULE_ID, SETTINGS.CHAT_MESSAGES));
+  try {
+    if (typeof globalThis.game?.settings?.get !== "function") return true;
+    const value = globalThis.game.settings.get(MODULE_ID, SETTINGS.CHAT_MESSAGES);
+    return value === undefined ? true : Boolean(value);
+  } catch (_error) {
+    return true;
+  }
 }
 
 export async function createChatMessage(data) {

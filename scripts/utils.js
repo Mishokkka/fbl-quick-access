@@ -1,37 +1,22 @@
 import { SYSTEM_ID } from "./constants.js";
-import {
-  findActorSheetRoot,
-  findCombatTab as adapterFindCombatTab,
-  findGearTab as adapterFindGearTab,
-  findMainTab as adapterFindMainTab,
-  findTalentTab as adapterFindTalentTab
-} from "./sheet-adapter/forbidden-lands-v1.js";
+import { readNumericValue } from "./document-writes.js";
 
 export function getActorFromApp(app) {
   const candidate = app?.actor ?? app?.document ?? app?.object;
   return candidate?.documentName === "Actor" ? candidate : null;
 }
 
-export function getRootElement(htmlOrElement) {
-  return findActorSheetRoot(htmlOrElement);
+export function actorKey(actor) {
+  const key = String(actor?.uuid ?? actor?.id ?? actor ?? "unknown");
+  return /^Actor\.[^.]+$/.test(key) ? key.slice(6) : key;
 }
 
-export function findGearTab(root) {
-  return adapterFindGearTab(root);
+export function makeEntryId(prefix = "entry") {
+  const random = globalThis.crypto?.randomUUID?.()
+    ?? globalThis.foundry?.utils?.randomID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${random}`;
 }
-
-export function findCombatTab(root) {
-  return adapterFindCombatTab(root);
-}
-
-export function findTalentTab(root) {
-  return adapterFindTalentTab(root);
-}
-
-export function findMainTab(root) {
-  return adapterFindMainTab(root);
-}
-
 
 export function isForbiddenLandsCharacter(actor) {
   return game.system?.id === SYSTEM_ID && actor?.type === "character";
@@ -39,14 +24,14 @@ export function isForbiddenLandsCharacter(actor) {
 
 export function firstFiniteNumber(...values) {
   for (const value of values) {
-    const number = Number(value);
+    const number = readNumericValue(value);
     if (Number.isFinite(number)) return number;
   }
   return 0;
 }
 
 export function formatNumber(value) {
-  const number = Number(value);
+  const number = readNumericValue(value);
   if (!Number.isFinite(number)) return String(value ?? 0);
   if (Number.isInteger(number)) return String(number);
   return String(Math.round(number * 10) / 10);
@@ -57,7 +42,7 @@ export function normalizeText(text) {
 }
 
 export function localizeOrFallback(key, fallback) {
-  const localized = game.i18n.localize(key);
+  const localized = globalThis.game?.i18n?.localize?.(key);
   return localized && localized !== key ? localized : fallback;
 }
 
@@ -80,19 +65,64 @@ export function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+const BASIC_HTML_ENTITIES = Object.freeze({
+  amp: "&",
+  lt: "<",
+  gt: ">",
+  quot: '"',
+  apos: "'",
+  nbsp: "\u00a0"
+});
+
 export function decodeHtmlEntities(value) {
   const text = String(value ?? "");
-  if (!/[&][a-zA-Z#0-9]+;/.test(text)) return text;
+  if (!/&(?:[a-z][a-z0-9]*|#\d+|#x[0-9a-f]+);/i.test(text)) return text;
 
-  const element = document.createElement("textarea");
-  element.innerHTML = text;
-  return element.value;
+  if (typeof globalThis.document?.createElement === "function") {
+    const template = globalThis.document.createElement("template");
+    const textarea = globalThis.document.createElement("textarea");
+    if (template?.content && textarea) {
+      textarea.innerHTML = text;
+      return textarea.value;
+    }
+  }
+
+  return text.replace(/&(?:#(\d+)|#x([0-9a-fA-F]+)|([a-zA-Z]+));/g, (match, dec, hex, named) => {
+    if (dec) {
+      const code = Number.parseInt(dec, 10);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    if (hex) {
+      const code = Number.parseInt(hex, 16);
+      return Number.isFinite(code) && code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+    }
+    const key = named.toLowerCase();
+    return Object.hasOwn(BASIC_HTML_ENTITIES, key) ? BASIC_HTML_ENTITIES[key] : match;
+  });
 }
 
+/**
+ * Strip HTML markup safely without executing inline handlers or fetching subresources.
+ * Uses an inert <template> when available.
+ */
 export function stripHtml(text) {
-  const element = document.createElement("div");
-  element.innerHTML = String(text ?? "");
-  return element.textContent ?? element.innerText ?? "";
+  const raw = String(text ?? "");
+  if (!raw) return "";
+
+  if (typeof globalThis.document?.createElement === "function") {
+    const template = globalThis.document.createElement("template");
+    if (template?.content) {
+      template.innerHTML = raw;
+      for (const node of template.content.querySelectorAll?.("script, style, noscript") ?? []) node.remove();
+      return template.content.textContent ?? "";
+    }
+  }
+
+  return decodeHtmlEntities(
+    raw
+      .replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, "")
+      .replace(/<[^>]+>/g, "")
+  );
 }
 
 export function compactPlainText(value) {

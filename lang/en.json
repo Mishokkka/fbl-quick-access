@@ -2,6 +2,8 @@
   "FBLQA": {
     "Common": {
       "Cancel": "Cancel",
+      "ActorBusy": "Another Quick Access operation is using this character, or its lock could not be saved. Check the character and retry.",
+      "ActorLockReleaseFailed": "Quick Access could not remove an operation lock from {actor}. Review its Active Effects before retrying.",
       "Save": "Save",
       "Untitled": "Untitled",
       "Yes": "Yes",
@@ -67,11 +69,14 @@
       "Damage": "Damage",
       "Description": "Description",
       "Drawback": "Drawback",
+      "Duration": "Duration",
       "Effect": "Effect",
       "Features": "Features",
       "Grip": "Grip",
+      "Ingredients": "Ingredients",
       "Part": "Part",
       "Range": "Range",
+      "Rank": "Rank",
       "Type": "Type",
       "Weight": "Weight"
     },
@@ -117,6 +122,13 @@
         "Timeout": "No transfer result was received in time.",
         "RollbackFailed": "The transfer failed and the automatic refund also failed. Check both wallets manually.",
         "UpdateFailed": "The wallets could not be updated.",
+        "UpdateIncomplete": "The wallet update was only partially applied. Check both wallets manually.",
+        "ReconciliationTitle": "Transfer reconciliation required",
+        "ReconciliationHint": "Review this request in the GM browser that handled the transfer.",
+        "ReconciliationWriteFailed": "Could not save the transfer journal in this GM browser. Check browser storage and review pending transfers.",
+        "LegacyReconciliationFailed": "Could not finish moving the old transfer reconciliation records. Check browser storage and reload as the active GM.",
+        "Observed": "observed",
+        "AmountOverflow": "The transfer amount exceeds the maximum safe value.",
         "UnknownError": "The money transfer failed.",
         "OfferSent": "The transfer offer was sent to the recipient.",
         "Declined": "The recipient declined the transfer.",
@@ -138,6 +150,7 @@
         "RecipientOffline": "No active player is available to confirm this transfer.",
         "RecipientDialogUnavailable": "The recipient could not open the confirmation dialog.",
         "RecipientTimeout": "The recipient did not answer in time.",
+        "ExecutionTimeout": "The transfer expired before the wallets could be updated.",
         "InvalidRequest": "The transfer request failed validation.",
         "IdentityProofFailed": "The transfer could not verify the sender identity. Retry after the clients finish connecting."
       },
@@ -192,7 +205,7 @@
     "Rest": {
       "ButtonTitle": "House-rule rest",
       "DialogUnavailable": "The rest dialog is unavailable in this environment.",
-      "Title": "Rest",
+      "Title": "Rest: {actor}",
       "Apply": "Apply rest",
       "CurrentConditions": "Current conditions",
       "BlockingNote": "Hungry, Thirsty, Sleepy, and Cold block recovery of their linked attributes during this rest.",
@@ -238,6 +251,8 @@
       "NotSpecified": "not specified",
       "NoChanges": "Rest completed with no character-sheet changes.",
       "UpdateFailed": "Could not apply rest.",
+      "RecoveryConflict": "A character field changed during an unfinished rest. Review the saved recovery and restore its expected value before retrying.",
+      "ShortResume": "Apply to finish the pending Short Rest recovery for {attribute}.",
       "ChatRecovered": "Recovered",
       "ChatCleared": "Cleared",
       "ChatBlocked": "Blocked",
@@ -276,6 +291,11 @@
         "Hint": "Choose whether daily injuries, conditions, wash states, addictions and connected new-day effects advance after Long Rest or when Calendaria registers a new day.",
         "ChoiceLongRest": "Long Rest",
         "ChoiceCalendaria": "Calendaria — new day"
+      },
+      "StateProgressionManager": {
+        "Name": "Calendaria processed days",
+        "Label": "Manage Calendaria days",
+        "Hint": "Inspect processed-day markers. Reset a marker that is ahead of the current date or skip pending days by setting it to today. Rewind a marker to make days pending again."
       }
     },
     "NewDay": {
@@ -469,13 +489,16 @@
     },
     "StateProgression": {
       "ApplyFailed": "Could not apply Calendaria state progression.",
+      "BaselineFailed": "Could not save the Calendaria baseline marker.",
       "Baselined": "Baseline set to the current Calendaria date.",
+      "PendingChanged": "The calendar date or pending days changed while confirming; please confirm again.",
+      "RewindAllPartial": "Markers rewound for {succeeded} characters. Failed: {failed}. Review unfinished days before retrying affected characters individually.",
       "CalendarChanged": "Calendaria changed its active calendar. Player state progression was re-baselined to the current date; no states were advanced.",
       "CalendariaUnavailable": "Calendaria progression is selected, but Calendaria is unavailable. Daily state progression is paused until Calendaria is available or the mode is changed.",
       "CompletedWithErrors": "Processed with {count} failed daily actions.",
       "GMSummaryHeading": "Player states",
       "GMSummaryHint": "Only characters assigned to non-GM users are included. Player results are kept out of chat.",
-      "GMSummaryTitle": "New day — player state summary",
+      "GMSummaryTitle": "New day — player state summary ({date})",
       "ModeConfirmApply": "Change mode",
       "ModeConfirmCalendaria": "State progression will be triggered by Calendaria. The current date becomes the starting point; earlier calendar days will not be processed.",
       "ModeConfirmHeading": "Use {mode}?",
@@ -485,6 +508,7 @@
       "MultiplePendingGM": "Multiple calendar days are pending; GM resolution is required.",
       "MultiplePendingPlayer": "Several Calendaria days are pending for {actor}. The GM summary can resolve the accumulated progression.",
       "NoStateChanges": "No selected state changes were needed.",
+      "MarkerRecovered": "Saved the marker through {date} for the previously processed day.",
       "PendingDays": "Pending days: {days}",
       "PendingTimeSkip": "Time skip left pending by the GM.",
       "PlayerResultHeading": "State progression",
@@ -514,7 +538,10 @@
         "error": "Completed with errors",
         "baseline": "Baseline set",
         "blocked": "Needs manual resolution",
-        "absent": "Absent"
+        "absent": "Absent",
+        "ahead": "Marker ahead",
+        "unmarked": "Marker not saved",
+        "recovery": "Review required"
       },
       "GMChanges": "Changes: {count}",
       "GMChangesWithErrors": "Changes: {count}; errors: {failed}",
@@ -527,7 +554,47 @@
       "OfflineTimeSkipPending": "Player is offline. The time skip was left pending so the GM can resolve it or mark the character absent.",
       "AutomaticDaysLimited": "Processed {processed} calendar days; {remaining} days remain pending.",
       "AddictionPending": "Manual addiction Endurance is required. Record Success or Failure in STAT, then resume the remaining days from the GM summary.",
-      "OpenStat": "Open STAT"
+      "OpenStat": "Open STAT",
+      "CurrentDateLabel": "Current date: {date}",
+      "MarkerDate": "Marker: {date}",
+      "MarkerMissing": "Marker: not set",
+      "InterruptedDay": "Day processing stopped on {date}. Check the character’s states, then close the interrupted day in the GM summary. Daily actions are not reapplied automatically.",
+      "AcknowledgeDayTitle": "Close interrupted calendar day?",
+      "AcknowledgeDayWarning": "Check and correct the character’s states first. No daily actions will be repeated or undone; later days remain pending.",
+      "ResetAllPartial": "Markers reset to {date}: {count}; skipped: {skipped}; failed: {failed}. Review the affected characters before retrying.",
+      "CalendarChangedPartial": "After switching calendars, baselines saved: {count}. Skipped: {skipped}. Failed: {failed}.",
+      "FinishMarker": "Actions for {date} are already applied. Resolve saves the marker without repeating them.",
+      "DayAwaitingGM": "The GM needs to review an unfinished calendar day for this character.",
+      "ReviewUnfinishedDays": "Some calendar days are unfinished. Open Manage Calendaria days to review them.",
+      "ResetInterruptedTitle": "Close unfinished calendar day?",
+      "ResetInterruptedHeading": "Set {actor}’s marker to {date}?",
+      "ResetInterruptedWarning": "Check and correct the character’s states first. This closes the unfinished day and skips all pending days without applying or undoing any actions.",
+      "AheadDetail": "Marker ({marker}) is {days} days ahead of the current date. Reset it to the current date so daily progression can resume.",
+      "AheadDetectedWarning": "{count} player characters have a Calendaria marker ahead of the current date. Open “Manage Calendaria days” in module settings to reset them.",
+      "ResetCurrent": "Set to current date",
+      "ResetCurrentDone": "Marker reset to the current date ({date}).",
+      "ResetCurrentFailed": "Could not reset the marker to the current date.",
+      "ResetAllCurrent": "Reset all to current date",
+      "ResetAllConfirmTitle": "Reset all Calendaria markers?",
+      "ResetAllConfirmHeading": "Set the current date ({date}) for all player characters?",
+      "ResetAllConfirmMessage": "All assigned player characters will have their processed-day marker set to the current Calendaria date. Character sheet states will not be changed.",
+      "ResetAllConfirmWarning": "Pending past days will be marked caught up. Characters with unfinished days are skipped and must be reviewed individually.",
+      "ResetAllDone": "Calendaria markers reset to {date} for {count} characters.",
+      "Rewind": "Rewind days…",
+      "RewindAll": "Rewind all…",
+      "RewindTitle": "Rewind Calendaria processed days",
+      "RewindHeading": "Rewind Calendaria marker for {actor}",
+      "RewindAllHeading": "Rewind Calendaria marker for all player characters",
+      "RewindDaysLabel": "Days to rewind",
+      "RewindWarning": "Rewinding only moves the Calendaria processed-day marker backwards and does NOT reverse already applied injury, condition, or addiction changes. Those days will become pending again.",
+      "RewindApply": "Rewind",
+      "RewindDone": "Marker rewound by {days} day(s) (to {date}). Days are pending again.",
+      "RewindAllDone": "Markers rewound by {days} day(s) for {count} characters.",
+      "RewindFailed": "Could not rewind Calendaria processed days.",
+      "RewindBacklogLimit": "This rewind would leave {days} pending days. Resolve some of them or choose a shorter rewind to stay within {max} days.",
+      "ManagerUnavailable": "Calendaria day management is unavailable: check that Calendaria is active and has an active calendar.",
+      "ManagerGmOnly": "Only the active GM can manage Calendaria processed days.",
+      "NoAssignedActors": "No characters assigned to non-GM players were found."
     }
   },
   "FBLEC": {
@@ -601,7 +668,12 @@
       "PermanentTitle": "Permanent Mor points (Y)",
       "CurrentShort": "Cur",
       "PermanentShort": "Perm",
-      "Delete": "Delete Mor"
+      "Delete": "Delete Mor",
+      "PendingGain": "Use + to resume or review the pending Mor gain.",
+      "StaleGain": "Mor changed during the pending gain. Review the pending roll with +.",
+      "ReviewGainTitle": "Review interrupted Mor gain",
+      "ReviewGainMessage": "Mor changed before the pending gain could finish. Check the current Mor and any Strength damage before clearing the pending roll.",
+      "ClearGain": "Clear pending roll"
     },
     "Addiction": {
       "Severity": "Severity",
@@ -667,27 +739,27 @@
     },
     "Settings": {
       "FeatureHeat": {
-        "Name": "FBLEC: Heat",
+        "Name": "STAT: Heat",
         "Hint": "Enables the special interface and counter for a critical injury named Heat. If disabled, it is shown as a normal injury."
       },
       "FeatureMor": {
-        "Name": "FBLEC: Mor",
+        "Name": "STAT: Mor",
         "Hint": "Enables the special interface and rolls for a critical injury named Mor. If disabled, it is shown as a normal injury."
       },
       "FeatureAddiction": {
-        "Name": "FBLEC: Addiction",
+        "Name": "STAT: Addiction",
         "Hint": "Enables the addiction interface for a critical injury whose name contains Addiction. If disabled, it is shown as a normal injury."
       },
       "FeatureWash": {
-        "Name": "FBLEC: Wash states",
+        "Name": "STAT: Wash states",
         "Hint": "Enables mutually exclusive wash-state progression."
       },
       "ChatMessages": {
-        "Name": "FBLEC: Chat messages",
+        "Name": "STAT: chat messages",
         "Hint": "If disabled, STAT buttons change data without creating chat messages."
       },
       "PlayersCanEdit": {
-        "Name": "FBLEC: Players can edit STAT",
+        "Name": "Players can edit STAT",
         "Hint": "If disabled, only the GM can edit conditions and use STAT controls."
       }
     },
@@ -733,7 +805,8 @@
       "WashCleanupFailed": "The new wash state was created, but an older wash state could not be removed.",
       "MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load.",
       "TreatmentUnresolvedTime": "Resolve the healing duration into a number of days before applying treatment.",
-      "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry."
+      "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry.",
+      "DamageConflict": "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after})."
     },
     "Chat": {
       "Addiction": {
@@ -753,12 +826,6 @@
         "VerbGain": "gains",
         "Change": "<b>{actor}</b> {verb} Heat: <b>{previous}/{max}</b> ➔ <b>{value}/{max}</b>.<br>",
         "AutomaticDamage": "<br><b>Automatic damage:</b> {damage}.",
-        "Status": "<b>{actor}</b>: Heat <b>{value}/{max}</b> — <b>{level}</b>.<br>",
-        "Check0": "The GM calls for Endurance. Record the final failure with Endurance: failure; success leaves the counter unchanged.",
-        "Check1": "The GM calls for Endurance. Record the final failure with Endurance: failure; success leaves the counter unchanged.",
-        "Check2": "Roll Endurance manually. Failure raises Heat to 3 and deals 1 Strength damage.",
-        "Check3": "Roll Endurance manually. Failure raises Heat to 4 and deals 1 damage each to Strength and Wits.",
-        "Check4": "Apply −1 to Endurance. Failure leaves Heat at 4/4 and deals 1 damage each to Strength, Wits and Agility.",
         "VerbCorrect": "corrects the level of"
       },
       "Mor": {

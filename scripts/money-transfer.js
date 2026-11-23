@@ -4,7 +4,7 @@ import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import {
   clearSocketProof,
   consumeSocketProof,
@@ -13,7 +13,10 @@ import {
   verifySocketProofWithRetry
 } from "./socket-auth.js";
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
-import { enqueueCurrencyOperation } from "./operation-queue.js";
+import { getActiveGM } from "./integration/socket-api.js";
+import { enqueueCurrencyOperation, withWalletLocks } from "./operation-queue.js";
+import { migrateLegacyReconciliations, readReconciliationRecords, writeReconciliationRecords } from "./transfer-reconciliation-store.js";
+import { readDocumentFlag } from "./document-writes.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
@@ -26,6 +29,7 @@ const REQUEST_TIMEOUT_MS = 90_000;
 const RESULT_GRACE_MS = 5_000;
 const PROOF_GRACE_MS = 60_000;
 const SEEN_PACKET_LIMIT = 200;
+const RECEIPTS_FLAG = "walletTransferReceipts";
 
 let socketRegistered = false;
 const pendingRequests = new Map();
@@ -41,6 +45,17 @@ export function registerMoneyTransferSocket() {
     void handleSocketMessage(message);
   });
   socketRegistered = true;
+}
+
+export async function readyMoneyTransferReconciliations() {
+  if (!game.user?.isGM || getActiveGM()?.id !== game.user.id) return;
+  try {
+    await enqueueTransfer(migrateLegacyReconciliations);
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not migrate legacy transfer reconciliation`, error);
+    globalThis.ui?.notifications?.error?.(qaLocalize("Wallet.Transfer.LegacyReconciliationFailed",
+      "Could not finish moving the old transfer reconciliation records. Check browser storage and reload as the active GM."));
+  }
 }
 
 export async function openMoneyTransferDialog(app, sourceActor) {
@@ -78,31 +93,39 @@ export async function openMoneyTransferDialog(app, sourceActor) {
         send: {
           icon: '<i class="fas fa-paper-plane"></i>',
           label: qaLocalize("Wallet.Transfer.Send", "Передать"),
-          callback: async (html) => {
+          callback: (html, _event, renderedButton, renderedDialog) => {
             if (submitted) return;
             submitted = true;
-            const form = extractDialogElement(html)?.querySelector("form.fblqa-money-transfer-form");
+            const form = findDialogForm(renderedButton?.form ?? renderedDialog ?? html, "form.fblqa-money-transfer-form")
+              ?? extractDialogElement(html)?.querySelector?.("form.fblqa-money-transfer-form");
             const targetActorId = String(form?.querySelector('[name="targetActor"]')?.value ?? "");
             const amounts = Object.fromEntries(CURRENCIES.map((currency) => [
               currency.key,
               Math.max(0, Math.floor(Number(form?.querySelector(`[name="amount-${currency.key}"]`)?.value) || 0))
             ]));
 
-            const resultPromise = requestMoneyTransfer(sourceActor.id, targetActorId, amounts);
-            ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
-            const result = await resultPromise;
+            // Run the async request outside the DialogV2 submit callback so the
+            // sender dialog closes immediately instead of freezing up to 95s while
+            // waiting for the recipient's decision.
+            void (async () => {
+              const result = await requestMoneyTransfer(sourceActor.id, targetActorId, amounts, {
+                onSent: () => {
+                  ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
+                }
+              });
 
-            if (result.ok) {
-              ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
-                target: result.targetName,
-                amount: formatTransferAmounts(result.amounts)
-              }));
-            } else if (result.error === "declined") {
-              ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
-            } else {
-              ui.notifications?.error?.(localizeTransferError(result.error));
-            }
-            finish(result);
+              if (result.ok) {
+                ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
+                  target: result.targetName,
+                  amount: formatTransferAmounts(result.amounts)
+                }));
+              } else if (result.error === "declined") {
+                ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
+              } else {
+                ui.notifications?.error?.(localizeTransferError(result.error));
+              }
+              finish(result);
+            })();
           }
         },
         cancel: {
@@ -114,7 +137,7 @@ export async function openMoneyTransferDialog(app, sourceActor) {
       default: "send",
       render: (html) => {
         const element = extractDialogElement(html);
-        element?.closest?.(".app")?.classList.add("fblqa-money-transfer-dialog");
+        element?.closest?.(".app, .application")?.classList.add("fblqa-money-transfer-dialog");
         setupMoneyTransferDialog(element, sourceActor);
       },
       close: () => {
@@ -149,6 +172,7 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
   const sourceAfter = {};
   const targetAfter = {};
 
+  let targetTotalCopper = 0n;
   for (const currency of CURRENCIES) {
     const sourceValue = getCurrencyValue(sourceActor, currency.key);
     const targetValue = getCurrencyValue(targetActor, currency.key);
@@ -157,11 +181,23 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
     if (amount > sourceValue) {
       return { ok: false, error: "insufficient-denomination", currency: currency.key };
     }
+    if (!Number.isSafeInteger(sourceValue) || !Number.isSafeInteger(targetValue)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
+
+    const nextTarget = targetValue + amount;
+    if (!Number.isSafeInteger(nextTarget)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
+    targetTotalCopper += BigInt(nextTarget) * BigInt(currency.unit);
+    if (targetTotalCopper > BigInt(Number.MAX_SAFE_INTEGER)) {
+      return { ok: false, error: "amount-overflow", currency: currency.key };
+    }
 
     sourceBefore[currency.key] = sourceValue;
     targetBefore[currency.key] = targetValue;
     sourceAfter[currency.key] = sourceValue - amount;
-    targetAfter[currency.key] = targetValue + amount;
+    targetAfter[currency.key] = nextTarget;
   }
 
   return {
@@ -178,12 +214,12 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
   };
 }
 
-export function selectMoneyTransferRecipient(users, targetActor, requesterId = null) {
+export function selectMoneyTransferRecipient(users, targetActor, requesterId = null, actors = globalThis.game?.actors) {
   const candidates = Array.from(users ?? [])
     .filter((user) => user && !user.isGM && user.active && user.id !== requesterId && userOwnsActor(user, targetActor))
     .sort((a, b) => {
-      const aAssigned = resolveUserCharacterFromCollection(a, null)?.id === targetActor?.id ? 1 : 0;
-      const bAssigned = resolveUserCharacterFromCollection(b, null)?.id === targetActor?.id ? 1 : 0;
+      const aAssigned = resolveUserCharacterFromCollection(a, actors)?.id === targetActor?.id ? 1 : 0;
+      const bAssigned = resolveUserCharacterFromCollection(b, actors)?.id === targetActor?.id ? 1 : 0;
       if (aAssigned !== bAssigned) return bAssigned - aAssigned;
       return String(a.id).localeCompare(String(b.id));
     });
@@ -195,7 +231,7 @@ export function buildTransferWhisperModel(offer, result) {
     ? "completed"
     : result?.error === "declined"
       ? "declined"
-      : result?.error === "recipient-timeout"
+      : ["recipient-timeout", "execution-timeout"].includes(result?.error)
         ? "expired"
         : "failed";
 
@@ -209,7 +245,7 @@ export function buildTransferWhisperModel(offer, result) {
   };
 }
 
-export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts) {
+export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts, { onSent = null } = {}) {
   const sourceActor = game.actors?.get?.(sourceActorId);
   const targetActor = game.actors?.get?.(targetActorId);
   const amounts = normalizeTransferAmounts(rawAmounts);
@@ -223,7 +259,7 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
   const recipient = selectMoneyTransferRecipient(game.users, targetActor, game.user?.id);
   if (!recipient) return { ok: false, error: "recipient-offline" };
 
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!primaryGm) return { ok: false, error: "no-gm" };
   if (!game.socket?.emit) return { ok: false, error: "socket-unavailable" };
 
@@ -266,7 +302,9 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
     console.error(`${MODULE_ID} | money transfer offer could not be sent`, error);
     return { ok: false, error: "socket-unavailable" };
   }
-
+  if (onSent) void Promise.resolve().then(() => onSent()).catch(error => {
+    console.error(`${MODULE_ID} | money transfer sent callback failed`, error);
+  });
   return response;
 }
 
@@ -291,7 +329,7 @@ async function handleSocketMessage(message) {
 
 async function handleTransferOffer(message) {
   if (!isValidOfferMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   const isPrimaryGm = Boolean(game.user?.isGM && primaryGm?.id === game.user.id && message.primaryGmId === game.user.id);
   const isRecipient = message.recipientUserId === game.user?.id;
   if (!isPrimaryGm && !isRecipient) return;
@@ -315,13 +353,15 @@ async function handleTransferOffer(message) {
       if (!stored) return;
       void finalizeTransferOffer(stored.offer, { ok: false, error: "recipient-timeout" });
     }, REQUEST_TIMEOUT_MS);
+    timeout?.unref?.();
 
     gmOffers.set(message.requestId, { offer: { ...message }, timeout });
 
-    const earlyDecision = earlyDecisions.get(message.requestId);
+    const earlyKey = `${message.requestId}:${message.recipientUserId}`;
+    const earlyDecision = earlyDecisions.get(earlyKey);
     if (earlyDecision) {
       globalThis.clearTimeout(earlyDecision.timeout);
-      earlyDecisions.delete(message.requestId);
+      earlyDecisions.delete(earlyKey);
       await processTransferDecision(message, earlyDecision.message);
     }
   }
@@ -344,7 +384,7 @@ async function handleTransferOffer(message) {
 
 async function handleTransferDecision(message) {
   if (!isValidDecisionMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!game.user?.isGM || primaryGm?.id !== game.user.id || message.primaryGmId !== game.user.id) return;
 
   const recipientUser = findGameUser(message.recipientUserId);
@@ -355,9 +395,10 @@ async function handleTransferDecision(message) {
 
   const stored = gmOffers.get(message.requestId);
   if (!stored) {
-    if (!earlyDecisions.has(message.requestId)) {
-      const timeout = globalThis.setTimeout(() => earlyDecisions.delete(message.requestId), RESULT_GRACE_MS);
-      earlyDecisions.set(message.requestId, { message: { ...message }, timeout, authenticated: true });
+    const earlyKey = `${message.requestId}:${message.recipientUserId}`;
+    if (!earlyDecisions.has(earlyKey)) {
+      const timeout = globalThis.setTimeout(() => earlyDecisions.delete(earlyKey), RESULT_GRACE_MS);
+      earlyDecisions.set(earlyKey, { message: { ...message }, timeout, authenticated: true });
     }
     return;
   }
@@ -366,11 +407,20 @@ async function handleTransferDecision(message) {
 }
 
 async function processTransferDecision(offer, message) {
+  // Ignore decisions from third-party users instead of cancelling the live offer.
   if (message.recipientUserId !== offer.recipientUserId
     || message.requesterId !== offer.requesterId
     || message.primaryGmId !== offer.primaryGmId) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-request" });
+    console.warn(`${MODULE_ID} | ignored mismatched money transfer decision`, offer.requestId, message.recipientUserId);
     return;
+  }
+
+  // Claim and cancel the GM timeout synchronously before any async queue wait
+  // so a timeout cannot race execution and finalize the offer twice.
+  const stored = gmOffers.get(offer.requestId);
+  if (stored) {
+    globalThis.clearTimeout(stored.timeout);
+    gmOffers.delete(offer.requestId);
   }
 
   if (!message.accepted) {
@@ -381,25 +431,9 @@ async function processTransferDecision(offer, message) {
     return;
   }
 
-  const recipientUser = findGameUser(offer.recipientUserId);
-  const targetActor = game.actors?.get?.(offer.targetActorId);
-  if (!recipientUser || !recipientUser.active || !userOwnsActor(recipientUser, targetActor)) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-recipient" });
-    return;
-  }
-
-  const result = await enqueueTransfer(() => {
-    const sourceActor = game.actors?.get?.(offer.sourceActorId);
-    const currentTargetActor = game.actors?.get?.(offer.targetActorId);
-    const requester = findGameUser(offer.requesterId);
-    const currentRecipient = findGameUser(offer.recipientUserId);
-    const activeGM = getPrimaryActiveGm();
-    if (!requester?.active || !userOwnsActor(requester, sourceActor)) return { ok: false, error: "invalid-request" };
-    if (!currentRecipient?.active || !userOwnsActor(currentRecipient, currentTargetActor)) return { ok: false, error: "invalid-recipient" };
-    if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id) return { ok: false, error: "invalid-request" };
-    if (Date.now() - offer.createdAt > REQUEST_TIMEOUT_MS) return { ok: false, error: "recipient-timeout" };
-    return executeMoneyTransfer(sourceActor, currentTargetActor, offer.amounts);
-  });
+  const result = await enqueueTransfer(() => executeMoneyTransfer(
+    game.actors?.get?.(offer.sourceActorId), game.actors?.get?.(offer.targetActorId), offer.amounts, offer
+  ));
   await finalizeTransferOffer(offer, result);
 }
 
@@ -411,7 +445,7 @@ async function handleTransferResult(message) {
 
   const primaryGm = findGameUser(message.primaryGmId);
   if (!primaryGm?.isGM) return;
-  const currentPrimaryGm = getPrimaryActiveGm();
+  const currentPrimaryGm = getActiveGM();
   if (currentPrimaryGm?.id !== primaryGm.id) return;
 
   const proof = await verifyTransferProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message));
@@ -513,7 +547,7 @@ function openIncomingMoneyTransferDialog(offer) {
     default: "accept",
     render: (html) => {
       const element = extractDialogElement(html);
-      element?.closest?.(".app")?.classList.add("fblqa-money-transfer-dialog", "fblqa-money-transfer-offer-dialog");
+      element?.closest?.(".app, .application")?.classList.add("fblqa-money-transfer-dialog", "fblqa-money-transfer-offer-dialog");
     },
     close: () => {
       if (!state.decided) void decide(false, "declined");
@@ -531,7 +565,7 @@ function openIncomingMoneyTransferDialog(offer) {
 }
 
 function buildIncomingMoneyTransferDialogContent(offer) {
-  const requester = game.users?.get?.(offer.requesterId);
+  const requester = findGameUser(offer.requesterId);
   const sourceActor = game.actors?.get?.(offer.sourceActorId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   const amount = formatTransferAmounts(offer.amounts);
@@ -575,7 +609,8 @@ async function finalizeTransferOffer(offer, result) {
   gmOffers.delete(offer.requestId);
 
   const completeResult = {
-    ...(result ?? { ok: false, error: "unknown" }),
+    ok: result?.ok === true,
+    ...(result?.ok ? { sourceName: result.sourceName, targetName: result.targetName } : { error: result?.error ?? "unknown" }),
     sourceActorId: offer.sourceActorId,
     targetActorId: offer.targetActorId,
     requesterId: offer.requesterId,
@@ -607,40 +642,257 @@ async function finalizeTransferOffer(offer, result) {
   scheduleSocketProofCleanup(requester, OFFER_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   scheduleSocketProofCleanup(recipient, DECISION_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   await postTransferWhisper(offer, completeResult);
+  if (result?.error === "update-incomplete") await postTransferReconciliationWhisper(offer.requestId);
 }
 
-async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
-  const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
-  if (!plan.ok) return plan;
+function readWalletSnapshot(actor) {
+  return Object.fromEntries(CURRENCIES.map((currency) => [currency.key, getCurrencyValue(actor, currency.key)]));
+}
+
+function saveReconciliationRecord(record) {
+  const records = readReconciliationRecords();
+  records[record.requestId] = record;
+  writeReconciliationRecords(records);
+}
+
+function removeReconciliationRecord(requestId) {
+  const records = readReconciliationRecords();
+  delete records[requestId];
+  writeReconciliationRecords(records);
+}
+
+export function getPendingMoneyTransferReconciliations() {
+  if (!globalThis.game?.user?.isGM) return [];
+  return Object.values(readReconciliationRecords())
+    .filter(entry => entry.status !== "resolved")
+    .sort((left, right) => right.createdAt - left.createdAt);
+}
+
+export async function resolveMoneyTransferReconciliation(requestId, { applyRemaining = false } = {}) {
+  if (!globalThis.game?.user?.isGM) return { ok: false, error: "gm-only" };
+  const key = String(requestId ?? "").trim();
+  if (!isValidSocketRequestId(key)) return { ok: false, error: "missing-request" };
+
+  return enqueueTransfer(async () => {
+    try {
+      const records = readReconciliationRecords();
+      if (!Object.hasOwn(records, key)) return { ok: false, error: "missing-request" };
+      const record = records[key];
+      if (record.status === "resolved") return { ok: true, alreadyResolved: true, record };
+      const actors = [record.sourceActorId, record.targetActorId].map(id => game.actors?.get?.(id));
+      if (applyRemaining && getActiveGM()?.id !== game.user.id) return { ok: false, error: "active-gm-only" };
+      return await withWalletLocks(actors, async () => {
+        const current = readReconciliationRecords()[key];
+        if (!current) return { ok: false, error: "missing-request" };
+        if (current.status === "resolved") return { ok: true, alreadyResolved: true, record: current };
+        if (current.sourceActorId !== record.sourceActorId || current.targetActorId !== record.targetActorId) {
+          return { ok: false, error: "intervening-update" };
+        }
+        if (applyRemaining) {
+          if (getActiveGM()?.id !== game.user.id) return { ok: false, error: "active-gm-only" };
+          const applied = await applyRemainingTransfer(current);
+          if (!applied.ok) return applied;
+        }
+        const resolved = {
+          ...current,
+          status: "resolved",
+          resolvedAt: Date.now(),
+          resolvedBy: game.user.id,
+          appliedRemaining: Boolean(applyRemaining)
+        };
+        saveReconciliationRecord(resolved);
+        await clearTransferReceipts(current);
+        return { ok: true, record: resolved };
+      });
+    } catch (error) {
+      if (error?.code === "actor-mutation-busy") return { ok: false, error: error.code };
+      notifyReconciliationWriteFailure(error);
+      return { ok: false, error: "reconciliation-not-persisted" };
+    }
+  });
+}
+
+async function applyRemainingTransfer(record) {
+  if (record.requiresReview || !isValidSocketRequestId(record.receiptId)) {
+    return { ok: false, error: "manual-reconciliation-required", record };
+  }
+  const sourceActor = game.actors?.get?.(record.sourceActorId);
+  const targetActor = game.actors?.get?.(record.targetActorId);
+  if (!sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
+
+  const pairs = [[sourceActor, record.source], [targetActor, record.target]];
+  const remaining = pairs.filter(([actor]) => !hasTransferReceipt(actor, record));
+  const interveningUpdate = () => ({ ok: false, error: "intervening-update",
+    liveSource: readWalletSnapshot(sourceActor), liveTarget: readWalletSnapshot(targetActor), record });
+  if (pairs.some(([actor, wallet]) => hasTransferReceipt(actor, record) && !walletMatchesExpected(actor, wallet.expected))) {
+    return interveningUpdate();
+  }
+  if (!remaining.length) return { ok: true };
+  if (record.status !== "pending") return { ok: false, error: "manual-reconciliation-required", record };
+  if (remaining.some(([actor, wallet]) => !walletMatchesExpected(actor, wallet.observed))) {
+    return interveningUpdate();
+  }
+  if (remaining.some(([actor, wallet]) => wallet.updated || !walletMatchesExpected(actor, wallet.before))) {
+    return { ok: false, error: "manual-reconciliation-required", record };
+  }
 
   try {
-    const ActorClass = sourceActor?.constructor?.implementation ?? sourceActor?.constructor;
-    if (typeof ActorClass?.updateDocuments !== "function") {
-      throw new Error("Actor.updateDocuments is unavailable");
-    }
-
-    await ActorClass.updateDocuments([
-      { _id: sourceActor.id, ...plan.sourceUpdate },
-      { _id: targetActor.id, ...plan.targetUpdate }
-    ]);
-
-    Hooks.callAll?.("fblQuickAccess.walletTransferred", {
-      sourceActor,
-      targetActor,
-      amounts: plan.amounts
-    });
-
-    return {
-      ok: true,
-      sourceActorId: sourceActor.id,
-      targetActorId: targetActor.id,
-      sourceName: sourceActor.name,
-      targetName: targetActor.name,
-      amounts: plan.amounts
-    };
+    const ActorClass = sourceActor.constructor.implementation ?? sourceActor.constructor;
+    await ActorClass.updateDocuments(remaining.map(([actor, wallet]) =>
+      buildTransferUpdate(actor, buildActorCurrencyUpdate(actor, wallet.expected), record)));
   } catch (error) {
-    console.error(`${MODULE_ID} | money transfer failed`, error);
+    console.error(`${MODULE_ID} | could not complete money transfer reconciliation`, error);
+  }
+  return pairs.every(([actor, wallet]) => hasTransferReceipt(actor, record) && walletMatchesExpected(actor, wallet.expected))
+    ? { ok: true }
+    : { ok: false, error: "update-incomplete" };
+}
+
+function walletMatchesExpected(actor, expected) {
+  return CURRENCIES.every(currency => getCurrencyValue(actor, currency.key) === expected[currency.key]);
+}
+
+function transferReceiptKey(record) {
+  return `${RECEIPTS_FLAG}.${record.receiptId}`;
+}
+
+function hasTransferReceipt(actor, record) {
+  return readDocumentFlag(actor, MODULE_ID, transferReceiptKey(record)) === true;
+}
+
+function buildTransferUpdate(actor, currencyUpdate, record) {
+  return { _id: actor.id, ...currencyUpdate, [`flags.${MODULE_ID}.${transferReceiptKey(record)}`]: true };
+}
+
+async function clearTransferReceipts(record) {
+  if (!isValidSocketRequestId(record.receiptId)) return;
+  for (const id of [record.sourceActorId, record.targetActorId]) {
+    const actor = game.actors?.get?.(id);
+    if (!hasTransferReceipt(actor, record)) continue;
+    try {
+      await actor.unsetFlag?.(MODULE_ID, transferReceiptKey(record));
+    } catch (error) {
+      console.error(`${MODULE_ID} | money transfer receipt cleanup failed`, error);
+    }
+  }
+}
+
+function buildReconciliationRecord(sourceActor, targetActor, plan, metadata = {}) {
+  return {
+    requestId: String(metadata.requestId || makeSocketRequestId()),
+    receiptId: makeSocketRequestId(),
+    status: "applying",
+    createdAt: Date.now(),
+    requesterId: metadata.requesterId ?? null,
+    recipientUserId: metadata.recipientUserId ?? null,
+    sourceActorId: sourceActor.id,
+    sourceActorName: sourceActor.name ?? "",
+    targetActorId: targetActor.id,
+    targetActorName: targetActor.name ?? "",
+    amounts: plan.amounts,
+    source: { before: plan.sourceBefore, expected: plan.sourceAfter, observed: plan.sourceBefore, updated: false },
+    target: { before: plan.targetBefore, expected: plan.targetAfter, observed: plan.targetBefore, updated: false }
+  };
+}
+
+function notifyReconciliationWriteFailure(error) {
+  console.error(`${MODULE_ID} | money transfer reconciliation store failed`, error);
+  globalThis.ui?.notifications?.error?.(qaLocalize("Wallet.Transfer.ReconciliationWriteFailed",
+    "Could not save the transfer journal in this GM browser. Check browser storage and review pending transfers."));
+}
+
+async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, offer = null) {
+  try {
+    return await withWalletLocks([sourceActor, targetActor], () => {
+      if (offer) {
+        const activeGM = getActiveGM();
+        const requester = findGameUser(offer.requesterId);
+        const recipient = findGameUser(offer.recipientUserId);
+        if (Date.now() - offer.createdAt >= REQUEST_TIMEOUT_MS) return { ok: false, error: "execution-timeout" };
+        if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id
+          || !requester?.active || game.actors?.get?.(offer.sourceActorId) !== sourceActor || !userOwnsActor(requester, sourceActor)) {
+          return { ok: false, error: "invalid-request" };
+        }
+        if (!recipient?.active || game.actors?.get?.(offer.targetActorId) !== targetActor || !userOwnsActor(recipient, targetActor)) {
+          return { ok: false, error: "invalid-recipient" };
+        }
+      }
+      return executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, offer ?? {});
+    });
+  } catch (error) {
+    if (error?.code === "actor-mutation-busy") return { ok: false, error: error.code };
+    throw error;
+  }
+}
+
+async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata) {
+  const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
+  if (!plan.ok) return plan;
+  const ActorClass = sourceActor.constructor.implementation ?? sourceActor.constructor;
+  if (typeof ActorClass.updateDocuments !== "function") return { ok: false, error: "update-failed" };
+
+  const record = buildReconciliationRecord(sourceActor, targetActor, plan, metadata);
+  try {
+    const records = readReconciliationRecords();
+    if (Object.hasOwn(records, record.requestId)) return { ok: false, error: "duplicate-request" };
+    records[record.requestId] = record;
+    writeReconciliationRecords(records);
+  } catch (error) {
+    notifyReconciliationWriteFailure(error);
     return { ok: false, error: "update-failed" };
+  }
+
+  try {
+    await ActorClass.updateDocuments([
+      buildTransferUpdate(sourceActor, plan.sourceUpdate, record),
+      buildTransferUpdate(targetActor, plan.targetUpdate, record)
+    ]);
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer update failed`, error);
+  }
+
+  const sourceUpdated = hasTransferReceipt(sourceActor, record);
+  const targetUpdated = hasTransferReceipt(targetActor, record);
+  const completed = sourceUpdated && targetUpdated
+    && walletMatchesExpected(sourceActor, plan.sourceAfter) && walletMatchesExpected(targetActor, plan.targetAfter);
+  const unchanged = !sourceUpdated && !targetUpdated
+    && walletMatchesExpected(sourceActor, plan.sourceBefore) && walletMatchesExpected(targetActor, plan.targetBefore);
+  try {
+    if (completed || unchanged) {
+      removeReconciliationRecord(record.requestId);
+      if (completed) await clearTransferReceipts(record);
+    } else {
+      saveReconciliationRecord({
+        ...record,
+        status: "pending",
+        source: { ...record.source, observed: readWalletSnapshot(sourceActor), updated: sourceUpdated },
+        target: { ...record.target, observed: readWalletSnapshot(targetActor), updated: targetUpdated }
+      });
+    }
+  } catch (error) {
+    notifyReconciliationWriteFailure(error);
+  }
+
+  if (!completed) return { ok: false, error: unchanged ? "update-failed" : "update-incomplete" };
+  Hooks.callAll?.("fblQuickAccess.walletTransferred", { sourceActor, targetActor, amounts: plan.amounts });
+  return { ok: true, sourceName: sourceActor.name, targetName: targetActor.name, amounts: plan.amounts };
+}
+
+async function postTransferReconciliationWhisper(requestId) {
+  if (!requestId || !game.user?.isGM) return null;
+  globalThis.ui?.notifications?.warn?.(qaLocalize("Wallet.Transfer.ReconciliationTitle", "Transfer reconciliation required"));
+  if (!globalThis.ChatMessage?.create) return null;
+  const content = `
+    <div class="fblqa-money-transfer-chat-card fblqa-money-transfer-reconciliation">
+      <h3>${escapeHtml(qaLocalize("Wallet.Transfer.ReconciliationTitle", "Transfer reconciliation required"))}</h3>
+      <p><strong>ID:</strong> <code>${escapeHtml(requestId)}</code></p>
+      <p>${escapeHtml(qaLocalize("Wallet.Transfer.ReconciliationHint", "Review this request in the GM browser that handled the transfer."))}</p>
+    </div>`;
+  try {
+    return await ChatMessage.create({ content, whisper: [game.user.id] });
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer reconciliation whisper failed`, error);
+    return null;
   }
 }
 
@@ -648,12 +900,12 @@ async function postTransferWhisper(offer, result) {
   if (!globalThis.ChatMessage?.create) return null;
 
   const model = buildTransferWhisperModel(offer, result);
-  const requester = game.users?.get?.(offer.requesterId);
-  const recipient = game.users?.get?.(offer.recipientUserId);
+  const requester = findGameUser(offer.requesterId);
+  const recipient = findGameUser(offer.recipientUserId);
   const sourceActor = game.actors?.get?.(offer.sourceActorId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
   const status = localizeWhisperStatus(model.status, result?.error);
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   const recipients = [...new Set([offer.requesterId, offer.recipientUserId, primaryGm?.id].filter(Boolean))];
 
   const content = `
@@ -734,6 +986,9 @@ function setupMoneyTransferDialog(element, sourceActor) {
   for (const currency of CURRENCIES) {
     const input = form.querySelector(`[name="amount-${currency.key}"]`);
     input?.addEventListener("input", () => {
+      updatePreview();
+    });
+    input?.addEventListener("change", () => {
       const max = getCurrencyValue(sourceActor, currency.key);
       input.value = String(Math.min(max, Math.max(0, Math.floor(Number(input.value) || 0))));
       updatePreview();
@@ -818,12 +1073,6 @@ function isValidResultMessage(message) {
     && Number.isFinite(Number(message.createdAt));
 }
 
-function getPrimaryActiveGm() {
-  return Array.from(game.users ?? [])
-    .filter((user) => user.isGM && user.active)
-    .sort((a, b) => String(a.id).localeCompare(String(b.id)))[0] ?? null;
-}
-
 function formatTransferAmounts(amounts) {
   return CURRENCIES
     .map((currency) => ({ currency, value: Math.max(0, Math.floor(Number(amounts?.[currency.key]) || 0)) }))
@@ -833,22 +1082,28 @@ function formatTransferAmounts(amounts) {
 }
 
 function localizeTransferError(code) {
+  if (code === "actor-mutation-busy") {
+    return qaLocalize("Common.ActorBusy", "Another Quick Access operation is using this character, or its lock could not be saved. Check the character and retry.");
+  }
   const key = {
     "missing-actor": "MissingActor",
     "same-actor": "SameActor",
     "empty-amount": "EmptyAmount",
+    "amount-overflow": "AmountOverflow",
     "insufficient-denomination": "InsufficientDenomination",
     "source-permission": "NoSourcePermission",
     "invalid-recipient": "InvalidRecipient",
     "recipient-offline": "RecipientOffline",
     "recipient-dialog-unavailable": "RecipientDialogUnavailable",
     "recipient-timeout": "RecipientTimeout",
+    "execution-timeout": "ExecutionTimeout",
     "declined": "Declined",
     "invalid-request": "InvalidRequest",
     "no-gm": "NoGm",
     "socket-unavailable": "SocketUnavailable",
     "identity-proof-failed": "IdentityProofFailed",
     "timeout": "Timeout",
+    "update-incomplete": "UpdateIncomplete",
     "rollback-failed": "RollbackFailed",
     "update-failed": "UpdateFailed"
   }[code] ?? "UnknownError";
@@ -908,10 +1163,4 @@ function rememberPacket(packetId) {
     seenPackets.delete(oldest);
   }
   return true;
-}
-
-function extractDialogElement(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
-  return null;
 }

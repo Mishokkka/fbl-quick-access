@@ -11,12 +11,15 @@ import {
 import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
+import { createCodedError, plainValuesEqual } from "../document-writes.js";
+import { enqueueActorMutationOperation } from "../operation-queue.js";
 import {
   buildSpecialCounterMigrationUpdate,
   buildHeatModifierUpdate,
   getAddictionState,
   isAddictionCondition,
   needsAddictionModifierSync,
+  needsHeatModifierSync,
   parseHeatValue,
   updateAddictionModifiers
 } from "./features/special-counters.js";
@@ -25,10 +28,14 @@ function hasOwn(object, key) {
   return Object.prototype.hasOwnProperty.call(object ?? {}, key);
 }
 
-function getFlagData(document, scope, key) {
-  const data = document?.flags?.[scope];
-  if (!data) return undefined;
-  return foundry.utils.getProperty(data, key);
+function getActorItemById(actor, itemId) {
+  if (!actor?.items || !itemId) return null;
+  if (typeof actor.items.get === "function") return actor.items.get(itemId) ?? null;
+  return Array.from(actor.items).find((item) => item?.id === itemId) ?? null;
+}
+
+function assertPersistedMigration(condition, message) {
+  if (!condition) throw createCodedError("migration-write-not-persisted", message);
 }
 
 function setIfMissing(update, document, key, value) {
@@ -74,6 +81,7 @@ async function migrateLegacyActorFlags(actor) {
   update[`flags.-=${LEGACY_MODULE_ID}`] = null;
 
   await actor.update(update, { render: false });
+  assertPersistedMigration(actor.flags?.[LEGACY_MODULE_ID] === undefined, `Legacy actor flags were not removed for ${actor.id}`);
   return true;
 }
 
@@ -95,21 +103,23 @@ async function migrateLegacyItemFlags(actor) {
     if (!legacy) continue;
 
     const update = { _id: item.id, [`flags.-=${LEGACY_MODULE_ID}`]: null };
-    let hasData = false;
 
     for (const [legacyKey, currentKey] of mapping) {
       const value = foundry.utils.getProperty(legacy, legacyKey);
       if (value === undefined) continue;
       if (item.getFlag?.(MODULE_ID, currentKey) !== undefined) continue;
       update[flagUpdatePath(currentKey)] = foundry.utils.deepClone(value);
-      hasData = true;
     }
 
-    if (hasData || legacy) itemUpdates.push(update);
+    itemUpdates.push(update);
   }
 
   if (!itemUpdates.length) return false;
   await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+  for (const update of itemUpdates) {
+    const item = getActorItemById(actor, update._id);
+    assertPersistedMigration(!item || item.flags?.[LEGACY_MODULE_ID] === undefined, `Legacy item flags were not removed for ${update._id}`);
+  }
   return true;
 }
 
@@ -131,7 +141,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 
   const list = foundry.utils.deepClone(Array.isArray(customConditions) ? customConditions : []);
   const injuries = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury");
-  const itemUpdates = [];
+  const itemOrders = new Map();
   let customChanged = false;
 
   for (const arcGroup of [true, false]) {
@@ -178,67 +188,85 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
       }
 
       if (Number(entry.item.getFlag?.(MODULE_ID, FLAGS.ORDER)) !== order) {
-        itemUpdates.push({ _id: entry.item.id, [flagUpdatePath(FLAGS.ORDER)]: order });
+        itemOrders.set(entry.item.id, order);
       }
     });
   }
 
   if (customChanged) {
     await actor.update({ [flagUpdatePath(FLAGS.LIST)]: list }, { render: false });
+    if (typeof actor.getFlag === "function") {
+      assertPersistedMigration(
+        plainValuesEqual(actor.getFlag(MODULE_ID, FLAGS.LIST), list),
+        `Custom condition order was not persisted for ${actor.id}`
+      );
+    }
   }
-  if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+  if (itemOrders.size) {
+    const updates = Array.from(itemOrders, ([id, order]) => ({ _id: id, [flagUpdatePath(FLAGS.ORDER)]: order }));
+    await actor.updateEmbeddedDocuments("Item", updates, { render: false });
+    for (const [id, order] of itemOrders) {
+      const item = getActorItemById(actor, id);
+      assertPersistedMigration(
+        !item || Number(item.getFlag?.(MODULE_ID, FLAGS.ORDER)) === order,
+        `Item condition order was not persisted for ${id}`
+      );
+    }
   }
 
-  return { changed: customChanged || itemUpdates.length > 0, list };
+  return { changed: customChanged || itemOrders.size > 0, list };
 }
 
 export async function migrateActorData(actor) {
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return false;
 
-  let changed = false;
+  let changed = await enqueueActorMutationOperation(actor, async () => {
+    const actorMigrated = await migrateLegacyActorFlags(actor);
+    const itemsMigrated = await migrateLegacyItemFlags(actor);
+    const normalized = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
+    if (normalized.changed) {
+      await actor.update({ [flagUpdatePath(FLAGS.LIST)]: normalized.list }, { render: false });
+      assertPersistedMigration(
+        plainValuesEqual(actor.getFlag?.(MODULE_ID, FLAGS.LIST), normalized.list),
+        `Normalized custom conditions were not persisted for ${actor.id}`
+      );
+    }
+    const ordering = await ensureConditionItemOrders(actor, normalized.list);
+    return actorMigrated || itemsMigrated || normalized.changed || ordering.changed;
+  });
 
-  if (await migrateLegacyActorFlags(actor)) changed = true;
-  if (await migrateLegacyItemFlags(actor)) changed = true;
-
-  const customNormalization = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));
-  let customConditions = customNormalization.list;
-  if (customNormalization.changed) {
-    await actor.update({ [flagUpdatePath(FLAGS.LIST)]: customConditions }, { render: false });
-    changed = true;
-  }
-
-  const ordering = await ensureConditionItemOrders(actor, customConditions);
-  customConditions = ordering.list;
-  if (ordering.changed) changed = true;
-
-  const itemUpdates = actor.items
+  const itemUpdates = Array.from(actor.items ?? [])
     .filter(item => item.type === "criticalInjury")
     .map(item => buildSpecialCounterMigrationUpdate(item))
     .filter(Boolean);
 
   if (itemUpdates.length) {
     await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    for (const update of itemUpdates) {
+      const item = getActorItemById(actor, update._id);
+      assertPersistedMigration(
+        !item || !buildSpecialCounterMigrationUpdate(item),
+        `Special counter migration was not persisted for ${update._id}`
+      );
+    }
     changed = true;
   }
 
-  const addictionItems = actor.items.filter(item => item.type === "criticalInjury" && isAddictionCondition(item));
+  const addictionItems = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury" && isAddictionCondition(item));
   for (const item of addictionItems) {
     const state = getAddictionState(item);
     if (!needsAddictionModifierSync(item, state)) continue;
     await updateAddictionModifiers(item, state, { render: false });
+    assertPersistedMigration(!needsAddictionModifierSync(item, state), `Addiction modifier sync was not persisted for ${item.id}`);
     changed = true;
   }
 
-  for (const item of actor.items.filter(item => item.type === "criticalInjury" && getConditionKind(item) === "heat")) {
-    const update = buildHeatModifierUpdate(parseHeatValue(item));
-    const current = item.system?.rollModifiers ?? {};
-    const needsSync = Object.entries(update).some(([path, modifier]) => {
-      const key = path.split(".").at(-1);
-      if (key.startsWith("-=")) return current[key.slice(2)] !== undefined;
-      return current[key]?.name !== modifier.name || String(current[key]?.value) !== modifier.value;
-    });
-    if (needsSync) { await item.update(update, { render: false }); changed = true; }
+  for (const item of Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury" && getConditionKind(item) === "heat")) {
+    const value = parseHeatValue(item);
+    if (!needsHeatModifierSync(item, value)) continue;
+    await item.update(buildHeatModifierUpdate(value), { render: false });
+    assertPersistedMigration(!needsHeatModifierSync(item, value), `Heat modifier sync was not persisted for ${item.id}`);
+    changed = true;
   }
 
   return changed;
@@ -264,10 +292,18 @@ export async function runWorldMigration() {
   }
 
   for (const actor of game.actors) {
+    if (actor?.type !== "character") continue;
     try {
       const kindUpdates = Array.from(actor.items ?? []).map(conditionKindUpdate).filter(Boolean);
-      if (kindUpdates.length) await actor.updateEmbeddedDocuments("Item", kindUpdates, { render: false });
-      if (await migrateActorData(actor)) changedActors += 1;
+      if (kindUpdates.length) {
+        await actor.updateEmbeddedDocuments("Item", kindUpdates, { render: false });
+        for (const update of kindUpdates) {
+          const item = getActorItemById(actor, update._id);
+          assertPersistedMigration(!item || !conditionKindUpdate(item), `Condition kind was not persisted for ${update._id}`);
+        }
+      }
+      const actorMigrated = await migrateActorData(actor);
+      if (actorMigrated || kindUpdates.length) changedActors += 1;
     } catch (error) {
       failures += 1;
       console.warn(`${MODULE_ID} | Failed to migrate expanded condition data for actor ${actor?.name}`, error);

@@ -5,7 +5,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, rerenderSheet } from "./utils.js";
 import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { FLAGS as CONDITION_FLAGS } from "./conditions/constants.js";
-import { createChatMessage, isPermanentTime } from "./conditions/utils.js";
+import { createChatMessage, isPermanentTime, normalizeCustomConditionList } from "./conditions/utils.js";
 import { getNextWashName, isWashCondition, transitionWashLevel } from "./conditions/features/wash.js";
 import {
   getAddictionState,
@@ -20,6 +20,15 @@ import {
   getNewDayProviderIcon,
   getNewDayProviders
 } from "./integration/new-day-providers.js";
+import { createObjectOperationQueue, enqueueActorMutationOperation } from "./operation-queue.js";
+import {
+  clearDocumentFlagNullVerified,
+  createCodedError,
+  opaquePreconditionToken,
+  setDocumentFlagVerified
+} from "./document-writes.js";
+
+const enqueueNewDayOperation = createObjectOperationQueue();
 
 const CORE_CATEGORIES = Object.freeze([
   { id: "injuries", order: 100 },
@@ -33,42 +42,29 @@ export function decrementFirstInteger(value, amount = 1) {
   const text = String(value ?? "");
   // A free-text description is not a duration. Preserve unknown units/formulas
   // for manual resolution instead of interpreting their first digit as days.
-  const match = text.match(/^\s*(\d+)(?:\s*(?:day(?:s|\(s\))?|день|дня|дней|сутки|суток))?\s*$/iu);
+  const match = text.match(/^(\s*)(\d+)(\s*)(day(?:s|\(s\))?|день|дня|дней|сутки|суток)?(\s*)$/iu);
   if (!match) return null;
-  const current = Number(match[1]);
+  const [, leading, digits, spacing, unit, trailing] = match;
+  const current = Number(digits);
   if (!Number.isSafeInteger(current)) return null;
   const next = Math.max(0, current - Math.max(0, Number(amount) || 0));
-  const replaced = text.replace(match[1], String(next));
   return {
     beforeNumber: current,
     afterNumber: next,
     beforeText: text,
-    afterText: normalizeDayUnit(replaced, next)
+    afterText: `${leading}${next}${spacing}${normalizeDayUnit(unit, next)}${trailing}`
   };
 }
 
-function normalizeDayUnit(text, value) {
-  let normalized = String(text ?? "");
-
-  if (/\bday(?:s|\(s\))?(?=\s|$)/i.test(normalized)) {
-    normalized = normalized.replace(/\bday(?:s|\(s\))?(?=\s|$)/i, Number(value) === 1 ? "day" : "days");
-  }
-
-  if (/(?:^|\s)(?:день|дня|дней)(?=\s|$)/iu.test(normalized)) {
-    const absolute = Math.abs(Number(value) || 0);
-    const mod100 = absolute % 100;
-    const mod10 = absolute % 10;
-    const unit = mod100 >= 11 && mod100 <= 14
-      ? "дней"
-      : mod10 === 1
-        ? "день"
-        : mod10 >= 2 && mod10 <= 4
-          ? "дня"
-          : "дней";
-    normalized = normalized.replace(/(?:день|дня|дней)(?=\s|$)/iu, unit);
-  }
-
-  return normalized;
+function normalizeDayUnit(unit = "", value) {
+  if (/^day/i.test(unit)) return value === 1 ? "day" : "days";
+  const lastTwo = value % 100;
+  const last = value % 10;
+  if (/^(?:сутки|суток)$/iu.test(unit)) return last === 1 && lastTwo !== 11 ? "сутки" : "суток";
+  if (!unit) return "";
+  if (lastTwo >= 11 && lastTwo <= 14) return "дней";
+  if (last === 1) return "день";
+  return last >= 2 && last <= 4 ? "дня" : "дней";
 }
 
 export function isDailyLethalLimit(value) {
@@ -76,7 +72,7 @@ export function isDailyLethalLimit(value) {
   if (!text || !/\d/.test(text)) return false;
   if (/\b\d*d\d+\b|\bd\d+\b/i.test(text)) return false;
   if (/hour|minute|turn|round|quarter|час|минут|ход|раунд|четверт/i.test(text)) return false;
-  return /^\d+$/.test(text) || /day|days|день|дня|дней|сутк/i.test(text);
+  return /^\d+$/.test(text) || /day|days|день|дня|дней|сутк|суток/i.test(text);
 }
 
 export function buildNewDayPlan(actor, options = {}) {
@@ -109,7 +105,7 @@ export function buildNewDayPlan(actor, options = {}) {
 
     if (["heat", "mor", "arc", "addiction"].includes(conditionKind) || (conditionKind === "wash" && !isWashCondition(item))) continue;
 
-    const healingTime = item.system?.healingTime;
+    const healingTime = timerSystem(item)?.healingTime;
     const healing = decrementFirstInteger(healingTime, 1);
     const healingIsPermanent = isPermanentTime(healingTime);
 
@@ -144,7 +140,7 @@ export function buildNewDayPlan(actor, options = {}) {
       continue;
     }
 
-    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.afterNumber === 0);
+    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.beforeNumber > 0 && healing.afterNumber === 0);
     if (injuryExpires) {
       actions.push({
         id: `injury:${item.id}:expire`,
@@ -169,8 +165,8 @@ export function buildNewDayPlan(actor, options = {}) {
       });
     }
 
-    if (!injuryExpires && item.system?.lethal === "yes" && isDailyLethalLimit(item.system?.limit)) {
-      const limit = decrementFirstInteger(item.system?.limit, 1);
+    if (!injuryExpires && item.system?.lethal === "yes" && isDailyLethalLimit(timerSystem(item)?.limit)) {
+      const limit = decrementFirstInteger(timerSystem(item)?.limit, 1);
       if (limit && limit.beforeNumber > 0) {
         actions.push({
           id: `injury:${item.id}:lethal`,
@@ -191,10 +187,9 @@ export function buildNewDayPlan(actor, options = {}) {
   for (const condition of customConditions) {
     if (isArcName(condition?.name)) continue;
     const timer = decrementFirstInteger(condition?.time, 1);
-    if (!timer || isPermanentTime(condition?.time)) continue;
+    if (!timer || isPermanentTime(condition?.time) || timer.beforeNumber <= 0) continue;
 
     const expires = timer.afterNumber === 0;
-    if (!expires && timer.beforeNumber <= 0) continue;
 
     actions.push({
       id: `custom:${condition.id}:${expires ? "expire" : "timer"}`,
@@ -222,27 +217,49 @@ export function buildNewDayPlan(actor, options = {}) {
   return {
     actorId: actor?.id ?? "", actorName: actor?.name ?? "", actions, categories, providerErrors: [],
     blockedByAddiction,
-    preconditions: Object.fromEntries(actions.map(action => [action.id, actionPrecondition(actor, action)]))
+    preconditions: Object.fromEntries(actions.map(action => [action.id, actionPrecondition(actor, action, customConditions)]))
   };
 }
 
-function actionPrecondition(actor, action) {
-  if (action.providerId) return null;
-  if (action.kind === "short-rest-reset") return JSON.stringify(actor.getFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY) ?? null);
-  if (action.conditionId) {
-    const condition = getCustomConditions(actor).find(entry => entry.id === action.conditionId);
-    return JSON.stringify(condition ? [condition.time, condition.name] : null);
-  }
-  const item = getActorItem(actor, action.itemId);
-  if (!item) return "missing";
-  if (action.kind === "addiction-day") return JSON.stringify([getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
-  const value = action.kind === "lethal-limit" ? item.system?.limit : item.system?.healingTime;
-  return JSON.stringify([item.type, item.name, value, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
+function isCustomConditionAction(action) {
+  return !action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire");
 }
 
-function assertActionCurrent(actor, plan, action) {
+function actionPrecondition(actor, action, customConditions, appliedHealing) {
+  if (action.providerId) {
+    return opaquePreconditionToken({
+      providerId: action.providerId,
+      actionId: action.providerActionId ?? action.id,
+      action: action.providerAction ?? action
+    });
+  }
+  if (action.kind === "short-rest-reset") {
+    return opaquePreconditionToken(["short-rest-reset", actor.getFlag?.(MODULE_ID, FLAG_SHORT_REST_RECOVERY) ?? null]);
+  }
+  if (isCustomConditionAction(action)) {
+    const condition = (customConditions ?? getCustomConditions(actor)).find(entry => entry.id === action.conditionId);
+    return condition ? opaquePreconditionToken(["custom-condition", condition.id, condition.time, condition.name]) : null;
+  }
+  const item = getActorItem(actor, action.itemId);
+  if (!item) return opaquePreconditionToken(["missing", action.itemId ?? null]);
+  if (action.kind === "addiction-day") {
+    return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
+  }
+  let healingTime = timerSystem(item)?.healingTime;
+  if (action.kind === "lethal-limit" && appliedHealing) {
+    if (!Object.is(healingTime, appliedHealing.after)) return null;
+    healingTime = appliedHealing.before;
+  }
+  return opaquePreconditionToken([action.kind, item.id, item.type, item.name, healingTime,
+    action.kind === "lethal-limit" ? timerSystem(item)?.limit : null, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
+}
+
+function assertActionCurrent(actor, plan, action, { customConditions, appliedHealing } = {}) {
   const expected = plan?.preconditions?.[action.id];
-  if (expected !== undefined && expected !== actionPrecondition(actor, action)) {
+  const current = expected !== undefined || isCustomConditionAction(action)
+    ? actionPrecondition(actor, action, customConditions, appliedHealing)
+    : undefined;
+  if (current === null || (expected !== undefined && expected !== current)) {
     const error = new Error(qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
     error.code = "stale-plan";
     throw error;
@@ -256,8 +273,11 @@ function assertActionCurrent(actor, plan, action) {
 export async function buildNewDayPlanWithProviders(actor, options = {}) {
   const plan = buildNewDayPlan(actor, options);
   if (plan.blockedByAddiction) return plan;
-  const providerResult = await buildNewDayProviderActions(actor);
+  const providerResult = await buildNewDayProviderActions(actor, options);
   plan.actions.push(...providerResult.actions);
+  for (const action of providerResult.actions) {
+    plan.preconditions[action.id] = actionPrecondition(actor, action);
+  }
   plan.providerErrors = providerResult.errors;
   plan.categories = buildPlanCategories(plan.actions);
   sortNewDayActions(plan.actions, plan.categories);
@@ -265,40 +285,66 @@ export async function buildNewDayPlanWithProviders(actor, options = {}) {
 }
 
 export async function applyNewDayPlan(actor, plan, selectedActionIds, options = {}) {
+  if (!actor) return { changed: false, selected: 0, succeeded: [], failed: [], pending: [] };
+  return enqueueNewDayOperation(actor, () => applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options));
+}
+
+async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options = {}) {
+  options.beforeApply?.();
   const selected = new Set(selectedActionIds ?? []);
   const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
+  let dispatched = false;
+  let pendingAtStart = getPendingAddictions(actor).length > 0;
+  const assertCurrent = (action, preconditions) => {
+    // A morning started by this day pauses subsequent days.
+    if (!dispatched) pendingAtStart ||= getPendingAddictions(actor).length > 0;
+    if (pendingAtStart && (options.pauseForPendingAddiction || action.providerId || action.kind !== "addiction-day")) {
+      throw createCodedError("awaiting-endurance", qaLocalize("NewDay.PendingBlocked", "Resolve pending Addiction checks in STAT before advancing other timers."));
+    }
+    assertActionCurrent(actor, plan, action, preconditions);
+  };
+  const pausedForAddiction = () => !dispatched && pendingAtStart;
+  const stalePlan = () => !dispatched && results.length > 0 && results.every(entry => entry.code === "stale-plan");
   const actions = selectedActions.filter(action => {
-    try { assertActionCurrent(actor, plan, action); return true; }
+    try { assertCurrent(action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
   });
   const postChat = options.postChat !== false;
   const suppressNotifications = Boolean(options.suppressNotifications);
   const documentOptions = options.documentOptions ?? {};
 
-  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [] };
+  if (!actions.length) return {
+    changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [],
+    stalePlan: stalePlan(), pausedForAddiction: pausedForAddiction()
+  };
 
-  const customActions = actions.filter((action) =>
-    !action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire")
-  );
+  const customActions = actions.filter(isCustomConditionAction);
   if (customActions.length) {
-    try {
-      const byId = new Map(customActions.map((action) => [action.conditionId, action]));
-      const nextConditions = getCustomConditions(actor).flatMap((condition) => {
-        const action = byId.get(condition.id);
-        if (!action) return [condition];
-
-        const timer = decrementFirstInteger(condition.time, 1);
-        if (!timer || isPermanentTime(condition.time) || timer.beforeNumber <= 0) return [condition];
-        if (timer.afterNumber === 0) return [];
-        return [{ ...condition, time: timer.afterText }];
+    await enqueueActorMutationOperation(actor, async () => {
+      options.beforeApply?.();
+      const conditions = getCustomConditions(actor);
+      const current = customActions.filter(action => {
+        try { assertCurrent(action, { customConditions: conditions }); return true; }
+        catch (error) { results.push(failureResult(action, error)); return false; }
       });
-      await setActorFlagWithOptions(actor, CONDITION_FLAGS.LIST, nextConditions, documentOptions);
-      for (const action of customActions) results.push(successResult(action));
-    } catch (error) {
-      console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
-      for (const action of customActions) results.push(failureResult(action, error));
-    }
+      if (!current.length) return;
+      try {
+        const byId = new Map(current.map(action => [action.conditionId, action]));
+        const next = conditions.flatMap(condition => {
+          if (!byId.has(condition.id)) return [condition];
+          const timer = decrementFirstInteger(condition.time, 1);
+          if (!timer || isPermanentTime(condition.time) || timer.beforeNumber <= 0) return [condition];
+          return timer.afterNumber === 0 ? [] : [{ ...condition, time: timer.afterText }];
+        });
+        dispatched = true;
+        await setDocumentFlagVerified(actor, MODULE_ID, CONDITION_FLAGS.LIST, next, documentOptions);
+        for (const action of current) results.push(successResult(action));
+      } catch (error) {
+        console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
+        for (const action of current) results.push(failureResult(action, error));
+      }
+    });
   }
 
   let pendingKind = "";
@@ -312,15 +358,16 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     pendingKind = "";
 
     const current = batch.filter(action => {
-      try { assertActionCurrent(actor, plan, action); return true; }
+      try { assertCurrent(action); return true; }
       catch (error) { results.push(failureResult(action, error)); return false; }
     });
-    if (kind === "update") await applyItemUpdateBatch(actor, current, results, documentOptions);
-    else if (kind === "delete") await applyItemDeleteBatch(actor, current, results, documentOptions);
+    dispatched ||= current.length > 0;
+    if (kind === "update") await applyItemUpdateBatch(actor, plan, current, results, documentOptions);
+    else if (kind === "delete") await applyItemDeleteBatch(actor, plan, current, results, documentOptions);
   };
 
   for (const action of actions) {
-    if (!action.providerId && (action.kind === "custom-condition" || action.kind === "custom-condition-expire")) continue;
+    if (isCustomConditionAction(action)) continue;
 
     const simpleKind = getSimpleItemActionKind(action);
     if (simpleKind) {
@@ -333,7 +380,8 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     await flushPending();
 
     try {
-      assertActionCurrent(actor, plan, action);
+      assertCurrent(action);
+      dispatched = true;
       if (action.providerId) {
         const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
         results.push(successResult(action, providerResult));
@@ -341,7 +389,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
       }
 
       if (action.kind === "short-rest-reset") {
-        await clearActorFlagWithOptions(actor, FLAG_SHORT_REST_RECOVERY, documentOptions);
+        await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_SHORT_REST_RECOVERY, documentOptions);
         results.push(successResult(action));
         continue;
       }
@@ -393,6 +441,8 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
     succeeded,
     failed,
     pending: succeeded.filter(entry => entry.pending),
+    stalePlan: stalePlan(),
+    pausedForAddiction: pausedForAddiction(),
     notificationError
   };
 }
@@ -412,7 +462,28 @@ function getSimpleItemUpdate(action) {
   return null;
 }
 
-async function applyItemUpdateBatch(actor, actions, results, documentOptions) {
+function isSimpleItemUpdatePersisted(item, action) {
+  if (!item) return false;
+  if (action.kind === "injury-healing" || action.kind === "wash-timer") {
+    return String(timerSystem(item)?.healingTime ?? "") === String(action.afterText ?? "");
+  }
+  if (action.kind === "lethal-limit") {
+    return String(timerSystem(item)?.limit ?? "") === String(action.afterText ?? "");
+  }
+  return false;
+}
+
+function timerSystem(item) {
+  return item._source?.system ?? item.system;
+}
+
+function isItemDeletedOnActor(actor, itemId, itemRef = null) {
+  const live = getActorItem(actor, itemId);
+  if (!live) return true;
+  return Boolean(live.deleted === true || itemRef?.deleted === true);
+}
+
+async function applyItemUpdateBatch(actor, plan, actions, results, documentOptions) {
   const valid = [];
   for (const action of actions) {
     const item = getActorItem(actor, action.itemId);
@@ -422,55 +493,64 @@ async function applyItemUpdateBatch(actor, actions, results, documentOptions) {
       results.push(failureResult(action, error));
       continue;
     }
-    valid.push({ action, item });
+    valid.push({ action, healingBefore: timerSystem(item)?.healingTime });
   }
   if (!valid.length) return;
 
-  if (typeof actor.updateEmbeddedDocuments === "function") {
+  const appliedHealing = new Map();
+  const remaining = typeof actor.updateEmbeddedDocuments === "function" ? await applyBulkUpdates() : valid;
+  for (const entry of remaining) {
+    const { action } = entry;
+    const item = getActorItem(actor, action.itemId);
+    try {
+      if (!item) throw new Error(`Missing item ${action.itemId}`);
+      assertActionCurrent(actor, plan, action, { appliedHealing: appliedHealing.get(action.itemId) });
+    } catch (error) {
+      results.push(failureResult(action, error));
+      continue;
+    }
+
+    let updateError;
+    try {
+      await item.update(getSimpleItemUpdate(action), documentOptions);
+    } catch (error) {
+      updateError = error;
+    }
+    if (!recordIfPersisted(entry)) {
+      results.push(failureResult(action, updateError ?? `New Day update for item ${action.itemId} was not persisted.`));
+    }
+  }
+
+  async function applyBulkUpdates() {
     const updatesById = new Map();
     for (const { action } of valid) {
-      const update = getSimpleItemUpdate(action);
-      if (!update) continue;
       const current = updatesById.get(action.itemId) ?? { _id: action.itemId };
-      Object.assign(current, update);
+      Object.assign(current, getSimpleItemUpdate(action));
       updatesById.set(action.itemId, current);
     }
 
     try {
       await actor.updateEmbeddedDocuments("Item", [...updatesById.values()], documentOptions);
-      for (const { action } of valid) results.push(successResult(action));
-      return;
     } catch (error) {
-      // A bulk write can fail because one embedded Item is stale or rejected by
-      // another module. Fall back to the original per-action path so one bad
-      // update does not change the previous partial-success semantics. The
-      // updates below are absolute values, so retrying an Item that the bulk
-      // request happened to apply before failing is idempotent.
       console.error(`${MODULE_ID} | new-day item update batch failed; retrying individually`, error);
     }
-
-    await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
-    return;
+    return valid.filter(entry => !recordIfPersisted(entry));
   }
 
-  // Compatibility fallback for test doubles and wrappers without the bulk API.
-  await applyItemUpdatesIndividually(actor, valid, results, documentOptions);
-}
-
-async function applyItemUpdatesIndividually(actor, valid, results, documentOptions) {
-  for (const { action, item: originalItem } of valid) {
-    const item = getActorItem(actor, action.itemId) ?? originalItem;
-    try {
-      await item.update(getSimpleItemUpdate(action), documentOptions);
-      results.push(successResult(action));
-    } catch (error) {
-      console.error(`${MODULE_ID} | new-day action failed`, action, error);
-      results.push(failureResult(action, error));
+  function recordIfPersisted({ action, healingBefore }) {
+    const item = getActorItem(actor, action.itemId);
+    if (!isSimpleItemUpdatePersisted(item, action)) return false;
+    if (action.kind === "injury-healing") {
+      // The lethal-limit preview also depends on healing time. Account for a
+      // verified write from this batch, then require that value to still match.
+      appliedHealing.set(action.itemId, { before: healingBefore, after: timerSystem(item)?.healingTime });
     }
+    results.push(successResult(action));
+    return true;
   }
 }
 
-async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
+async function applyItemDeleteBatch(actor, plan, actions, results, documentOptions) {
   const valid = [];
   for (const action of actions) {
     const item = getActorItem(actor, action.itemId);
@@ -487,8 +567,12 @@ async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
   if (typeof actor.deleteEmbeddedDocuments === "function") {
     try {
       await actor.deleteEmbeddedDocuments("Item", valid.map(({ action }) => action.itemId), documentOptions);
-      for (const { action } of valid) results.push(successResult(action));
-      return;
+      const remaining = valid.filter(({ action, item }) => !isItemDeletedOnActor(actor, action.itemId, item));
+      if (!remaining.length) {
+        for (const { action } of valid) results.push(successResult(action));
+        return;
+      }
+      throw createCodedError("write-not-persisted", `New Day bulk item delete did not remove ${remaining.length} item(s).`);
     } catch (error) {
       // Preserve the old per-Item failure isolation if a bulk delete is rejected.
       // Re-check the Actor first because a partially-applied bulk request may
@@ -496,56 +580,39 @@ async function applyItemDeleteBatch(actor, actions, results, documentOptions) {
       console.error(`${MODULE_ID} | new-day item delete batch failed; retrying individually`, error);
     }
 
-    await applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess: true });
+    await applyItemDeletesIndividually(actor, plan, valid, results, documentOptions, { missingMeansSuccess: true });
     return;
   }
 
-  await applyItemDeletesIndividually(actor, valid, results, documentOptions);
+  await applyItemDeletesIndividually(actor, plan, valid, results, documentOptions);
 }
 
-async function applyItemDeletesIndividually(actor, valid, results, documentOptions, { missingMeansSuccess = false } = {}) {
+async function applyItemDeletesIndividually(actor, plan, valid, results, documentOptions, { missingMeansSuccess = false } = {}) {
   for (const { action, item: originalItem } of valid) {
     const liveItem = getActorItem(actor, action.itemId);
-    if (!liveItem && missingMeansSuccess) {
-      results.push(successResult(action));
+    if (!liveItem || liveItem.deleted === true) {
+      if (missingMeansSuccess || originalItem?.deleted === true) {
+        results.push(successResult(action));
+      } else {
+        const error = new Error(`Missing item ${action.itemId}`);
+        console.error(`${MODULE_ID} | new-day action failed`, action, error);
+        results.push(failureResult(action, error));
+      }
       continue;
     }
 
-    const item = liveItem ?? originalItem;
     try {
-      await item.delete(documentOptions);
+      assertActionCurrent(actor, plan, action);
+      await liveItem.delete(documentOptions);
+      if (!isItemDeletedOnActor(actor, action.itemId, liveItem)) {
+        throw createCodedError("write-not-persisted", `New Day deletion for item ${action.itemId} was not persisted.`);
+      }
       results.push(successResult(action));
     } catch (error) {
       console.error(`${MODULE_ID} | new-day action failed`, action, error);
       results.push(failureResult(action, error));
     }
   }
-}
-
-async function setActorFlagWithOptions(actor, key, value, documentOptions) {
-  if (hasDocumentOptions(documentOptions) && typeof actor.update === "function") {
-    return actor.update({ [`flags.${MODULE_ID}.${key}`]: value }, documentOptions);
-  }
-  return actor.setFlag(MODULE_ID, key, value);
-}
-
-async function clearActorFlagWithOptions(actor, key, documentOptions) {
-  // Forbidden Lands v13 can reject a Foundry deletion-path update such as
-  // `flags.<scope>.-=<key>` during Actor._preUpdate. Short Rest only treats an
-  // object value as an active recovery marker, so a null value is semantically
-  // equivalent to an absent flag and avoids that system-level failure.
-  const current = actor?.getFlag?.(MODULE_ID, key) ?? actor?.flags?.[MODULE_ID]?.[key] ?? null;
-  if (current == null) return false;
-
-  const update = { [`flags.${MODULE_ID}.${key}`]: null };
-  if (typeof actor?.update === "function") {
-    return actor.update(update, hasDocumentOptions(documentOptions) ? documentOptions : {});
-  }
-  return actor?.setFlag?.(MODULE_ID, key, null);
-}
-
-function hasDocumentOptions(options) {
-  return Boolean(options && Object.keys(options).length);
 }
 
 export function serializeNewDayResult(result) {
@@ -622,20 +689,34 @@ export async function openNewDayDialog(app, actor, options = {}) {
 
   return new Promise((resolve) => {
     let resolved = false;
+    let applying = false;
+    let closed = false;
+    let dialog = null;
     const finish = (value) => {
       if (resolved) return;
       resolved = true;
       resolve(value);
     };
+    const closeDialog = async (renderedDialog = null) => {
+      const target = renderedDialog ?? dialog;
+      try {
+        await target?.close?.();
+      } catch (error) {
+        console.warn(`${MODULE_ID} | could not close new-day dialog cleanly`, error);
+      }
+    };
 
-    createFoundryDialog({
+    dialog = createFoundryDialog({
       title: qaLocalize("NewDay.Title", "Новый день: {actor}", { actor: actor?.name ?? "" }),
       content,
+      closeOnSubmit: false,
       buttons: {
         apply: {
           icon: '<i class="fas fa-sun"></i>',
           label: qaLocalize("NewDay.Apply", "Провести новый день"),
           callback: async (html, _event, _button, renderedDialog) => {
+            if (applying || resolved) return false;
+
             // DialogV2 exposes the submitted native form most reliably through
             // the rendered button. Reading only from the dialog can produce an
             // empty selection in Foundry v13, making every checked daily action
@@ -653,10 +734,23 @@ export async function openNewDayDialog(app, actor, options = {}) {
             }
             const selectedIds = [...(form?.querySelectorAll('input[name="newDayAction"]:checked') ?? [])]
               .map((input) => input.value);
+            const selectedPreconditions = Object.fromEntries(
+              selectedIds
+                .filter((id) => plan?.preconditions && Object.hasOwn(plan.preconditions, id))
+                .map((id) => [id, plan.preconditions[id]])
+            );
             let result;
+            applying = true;
             try {
               result = typeof options.applyHandler === "function"
-                ? await options.applyHandler({ actor, plan, selectedIds, source: options.source ?? "manual", targetDate: options.targetDate ?? null })
+                ? await options.applyHandler({
+                    actor,
+                    plan,
+                    selectedIds,
+                    selectedPreconditions,
+                    source: options.source ?? "manual",
+                    targetDate: options.targetDate ?? null
+                  })
                 : await applyNewDayPlan(actor, plan, selectedIds, {
                     postChat: options.postChat !== false,
                     suppressNotifications: Boolean(options.suppressNotifications),
@@ -664,13 +758,20 @@ export async function openNewDayDialog(app, actor, options = {}) {
                   });
             } catch (error) {
               console.error(`${MODULE_ID} | new-day delegated apply failed`, error);
-              const stale = ["stale-calendar-day", "multi-day-pending"].includes(String(error?.code ?? ""));
-              const message = stale
-                ? qaLocalize("NewDay.DelegatedStale", "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.")
-                : qaLocalize("NewDay.DelegatedFailed", "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.");
-              (stale ? ui.notifications?.warn : ui.notifications?.error)?.call?.(ui.notifications, message);
+              const code = String(error?.code ?? "");
+              const staleCalendar = ["stale-calendar-day", "multi-day-pending"].includes(code);
+              const stalePlan = code === "stale-plan";
+              const message = stalePlan
+                ? qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр.")
+                : staleCalendar
+                  ? qaLocalize("NewDay.DelegatedStale", "The calendar changed while this window was open. Close it and resolve the pending day from the current calendar state.")
+                  : qaLocalize("NewDay.DelegatedFailed", "Could not apply the selected new-day changes. Nothing is marked complete; you can retry or close the window.");
+              ((staleCalendar || stalePlan) ? ui.notifications?.warn : ui.notifications?.error)?.call?.(ui.notifications, message);
+              applying = false;
+              if (closed) finish({ status: "error", error: code || "apply-failed" });
               return false;
             }
+            finish(result);
 
             const calendarMode = String(options.source ?? "").startsWith("calendaria");
             if (!calendarMode) {
@@ -698,13 +799,19 @@ export async function openNewDayDialog(app, actor, options = {}) {
             // pipeline. Preserve the explicit refresh only for no-op/provider-only
             // manual operations, where no Actor/Item mutation is guaranteed.
             if (app && !calendarMode && !selectedCoreAction) rerenderSheet(app);
-            finish(result);
+            if (!closed) await closeDialog(renderedDialog);
+            return false;
           }
         },
         cancel: {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Отмена"),
-          callback: () => finish(null)
+          callback: async (_html, _event, _button, renderedDialog) => {
+            if (applying) return false;
+            finish(null);
+            await closeDialog(renderedDialog);
+            return false;
+          }
         }
       },
       default: "apply",
@@ -713,12 +820,17 @@ export async function openNewDayDialog(app, actor, options = {}) {
         element?.closest?.(".app, .application")?.classList.add("fblqa-rest-dialog", "fblqa-new-day-dialog");
         setupNewDayDialogInteractivity(renderedDialog ?? element);
       },
-      close: () => finish(null)
+      close: () => {
+        closed = true;
+        if (!applying) finish(null);
+      }
     }, {
       classes: ["fblqa-rest-dialog", "fblqa-new-day-dialog"],
       width: 640,
       resizable: true
-    }).render(true);
+    });
+
+    dialog.render(true);
   });
 }
 
@@ -758,7 +870,7 @@ function renderNewDayAction(action) {
   return `
     <label class="fblqa-new-day-action${warningClass}">
       <input type="checkbox" name="newDayAction" value="${escapeHtml(action.id)}" ${action.checked ? "checked" : ""}>
-      <span class="fblqa-new-day-icon"><i class="fas ${actionIcon(action)}" aria-hidden="true"></i></span>
+      <span class="fblqa-new-day-icon"><i class="fas ${escapeHtml(actionIcon(action))}" aria-hidden="true"></i></span>
       <span class="fblqa-new-day-copy">
         <strong>${escapeHtml(action.itemName)}</strong>
         <small>${escapeHtml(detail)}</small>
@@ -894,7 +1006,8 @@ function coreCategoryLabel(category) {
 function setupNewDayDialogInteractivity(dialogOrElement) {
   const form = findDialogForm(dialogOrElement, "form.fblqa-new-day-form")
     ?? findDialogForm(dialogOrElement, "form");
-  if (!form) return;
+  if (!form || form.dataset.fblqaNewDayBound === "true") return;
+  form.dataset.fblqaNewDayBound = "true";
 
   form.querySelector('[data-action="select-all"]')?.addEventListener("click", () => {
     for (const input of form.querySelectorAll('input[name="newDayAction"]')) input.checked = true;
@@ -906,6 +1019,7 @@ function setupNewDayDialogInteractivity(dialogOrElement) {
 
 async function postNewDaySummary(actor, succeeded, failed) {
   if (!succeeded.length && !failed.length) return null;
+  if (typeof globalThis.ChatMessage?.create !== "function") return null;
 
   const successList = succeeded.length
     ? `<ul>${succeeded.map((entry) => `<li>${escapeHtml(entry.action.itemName)}: ${escapeHtml(entry.summary || actionDetail(entry.action))}</li>`).join("")}</ul>`
@@ -940,7 +1054,7 @@ function successResult(action, result = null) {
 }
 
 function failureResult(action, error) {
-  return { ok: false, action, error: String(error?.message ?? error ?? "Unknown error") };
+  return { ok: false, action, error: String(error?.message ?? error ?? "Unknown error"), code: error?.code };
 }
 
 function getActorItems(actor) {
@@ -959,11 +1073,10 @@ function getCustomConditions(actor) {
   const value = actor?.getFlag?.(MODULE_ID, CONDITION_FLAGS.LIST)
     ?? actor?.flags?.[MODULE_ID]?.conditions?.list
     ?? [];
-  return Array.isArray(value) ? value.map((entry) => ({ ...entry })) : [];
+  return normalizeCustomConditionList(value).list;
 }
 
 function isArcName(name) {
   const text = String(name ?? "").toLocaleUpperCase();
   return text.includes("[АРКА]") || text.includes("[ARC]");
 }
-

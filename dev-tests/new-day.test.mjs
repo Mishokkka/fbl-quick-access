@@ -326,6 +326,8 @@ function makeItem(id, name, system, addictionState = null) {
     },
     async update(data) {
       this.updates.push(data);
+      if ("system.healingTime" in data) this.system.healingTime = data["system.healingTime"];
+      if ("system.limit" in data) this.system.limit = data["system.limit"];
     },
     async delete() {
       this.deleted = true;
@@ -341,19 +343,24 @@ function makeAddictionItem(initialState) {
     system: { rollModifiers: {} },
     savedState: structuredClone(initialState),
     modifierKeys: [],
+    morning: null,
     getFlag(_moduleId, key) {
       if (key === "conditions.addictionState") return this.savedState;
       if (key === "conditions.addictionModifierKeys") return this.modifierKeys;
+      if (key === "conditions.addictionMorning") return this.morning;
       return undefined;
     },
     async setFlag(_moduleId, key, value) {
       if (key === "conditions.addictionState") this.savedState = structuredClone(value);
+      if (key === "conditions.addictionMorning") this.morning = structuredClone(value);
     },
     async update(data) {
       const addictionStatePath = "flags.fbl-quick-access.conditions.addictionState";
       const modifierKeysPath = "flags.fbl-quick-access.conditions.addictionModifierKeys";
+      const morningPath = "flags.fbl-quick-access.conditions.addictionMorning";
       if (data[addictionStatePath]) this.savedState = structuredClone(data[addictionStatePath]);
       if (Array.isArray(data[modifierKeysPath])) this.modifierKeys = [...data[modifierKeysPath]];
+      if (data[morningPath] !== undefined) this.morning = structuredClone(data[morningPath]);
     },
     async delete() {
       this.deleted = true;
@@ -371,6 +378,12 @@ test("New Day combines contiguous simple Item updates into one Foundry bulk writ
     items,
     async updateEmbeddedDocuments(type, updates, options) {
       calls.push({ type, updates, options });
+      for (const patch of updates) {
+        const target = items.get(patch._id);
+        if (!target) continue;
+        if ("system.healingTime" in patch) target.system.healingTime = patch["system.healingTime"];
+        if ("system.limit" in patch) target.system.limit = patch["system.limit"];
+      }
       return updates;
     }
   };
@@ -396,35 +409,50 @@ test("New Day combines contiguous simple Item updates into one Foundry bulk writ
   assert.deepEqual(item.updates, [], "per-Item updates are skipped when the bulk API succeeds");
 });
 
-test("New Day bulk-update failure falls back to the previous per-action semantics", async () => {
-  const item = makeItem("fallback-injury", "Fallback Injury", { healingTime: "3 days", lethal: "yes", limit: "2 days" });
-  const items = new Map([[item.id, item]]);
-  const actor = {
-    id: "fallback-actor",
-    name: "Fallback Tester",
-    items,
-    async updateEmbeddedDocuments() {
-      throw new Error("synthetic bulk failure");
-    }
-  };
-  const plan = {
-    actions: [
-      { id: "heal-fallback", kind: "injury-healing", itemId: item.id, itemName: item.name, afterText: "2 days" },
-      { id: "limit-fallback", kind: "lethal-limit", itemId: item.id, itemName: item.name, afterText: "1 day" }
-    ]
-  };
+for (const { name, bulkHealing, vetoLimit, healing, limit, writes, failed } of [
+  { name: "a vetoed limit", vetoLimit: true, healing: "2 days", limit: "2 days", writes: ["system.healingTime", "system.limit"], failed: 1 },
+  { name: "healing already written in bulk", bulkHealing: "2 days", healing: "2 days", limit: "1 day", writes: ["system.limit"], failed: 0 },
+  { name: "an intervening edit to healing", bulkHealing: "9 days", healing: "9 days", limit: "2 days", writes: [], failed: 2 }
+]) {
+  test(`New Day isolates timer retries after ${name}`, async () => {
+    const actor = makeActor();
+    const injury = actor.items.find(item => item.id === "injury");
+    const bulkCalls = [];
+    actor.updateEmbeddedDocuments = async (type, patches) => {
+      bulkCalls.push({ type, patches });
+      if (bulkHealing) injury.system.healingTime = bulkHealing;
+    };
+    const originalUpdate = injury.update;
+    const attempts = [];
+    injury.update = async patch => {
+      attempts.push(Object.keys(patch)[0]);
+      if (!vetoLimit || !Object.hasOwn(patch, "system.limit")) await originalUpdate.call(injury, patch);
+    };
+    const plan = newDay.buildNewDayPlan(actor);
+    const selected = plan.actions.filter(action => action.itemId === injury.id).map(action => action.id);
+    const result = await newDay.applyNewDayPlan(actor, plan, selected, { postChat: false });
+    assert.deepEqual(bulkCalls, [{ type: "Item", patches: [{ _id: injury.id, "system.healingTime": "2 days", "system.limit": "1 day" }] }]);
+    assert.deepEqual(attempts, writes);
+    assert.equal(injury.system.healingTime, healing);
+    assert.equal(injury.system.limit, limit);
+    assert.equal(result.failed.length, failed);
+    assert.equal(result.succeeded.length, 2 - failed);
+  });
+}
 
-  const originalError = console.error;
-  console.error = () => {};
-  try {
-    const result = await newDay.applyNewDayPlan(actor, plan, ["heal-fallback", "limit-fallback"], { postChat: false });
-    assert.equal(result.failed.length, 0);
-    assert.equal(result.succeeded.length, 2);
-    assert.deepEqual(item.updates, [
-      { "system.healingTime": "2 days" },
-      { "system.limit": "1 day" }
-    ]);
-  } finally {
-    console.error = originalError;
-  }
+test("New Day verifies the stored timer when prepared item data masks it", async () => {
+  const actor = makeActor();
+  const injury = actor.items.find(item => item.id === "injury");
+  injury._source = { system: { ...injury.system } };
+  injury.system.healingTime = "9 days";
+  actor.updateEmbeddedDocuments = async (_type, [patch]) => {
+    injury._source.system.healingTime = patch["system.healingTime"];
+  };
+  const plan = newDay.buildNewDayPlan(actor);
+  const action = plan.actions.find(entry => entry.kind === "injury-healing");
+  const result = await newDay.applyNewDayPlan(actor, plan, [action.id], { postChat: false });
+  assert.equal(result.succeeded.length, 1);
+  assert.equal(injury._source.system.healingTime, "2 days");
+  assert.equal(injury.system.healingTime, "9 days");
+  assert.deepEqual(injury.updates, []);
 });

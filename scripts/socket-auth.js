@@ -1,4 +1,5 @@
 import { MODULE_ID } from "./constants.js";
+import { clonePlainJson, plainValuesEqual } from "./document-writes.js";
 import { normalizeSocketRequestId } from "./socket-utils.js";
 
 const PROOF_ROOT = "socketProofs";
@@ -137,14 +138,6 @@ export function scheduleSocketProofCleanup(user, kind, requestId, delayMs = DEFA
   return handle;
 }
 
-export function getSocketProofPayload(message, omittedKeys = ["packetId"]) {
-  if (!message || typeof message !== "object") return {};
-  const omitted = new Set(omittedKeys);
-  return Object.fromEntries(Object.entries(message)
-    .filter(([key]) => !omitted.has(key))
-    .map(([key, value]) => [key, clonePlain(value)]));
-}
-
 function normalizeKind(value) {
   const kind = String(value ?? "").trim();
   if (!PROOF_KIND_PATTERN.test(kind)) throw socketProofError("invalid-proof-kind", `Invalid socket proof kind: ${kind || "<empty>"}`);
@@ -152,40 +145,11 @@ function normalizeKind(value) {
 }
 
 function clonePlain(value) {
-  if (value === undefined) return null;
-  if (globalThis.foundry?.utils?.deepClone) {
-    try {
-      return foundry.utils.deepClone(value);
-    } catch (_error) {
-      // Continue with JSON cloning for socket-safe values.
-    }
-  }
   try {
-    return JSON.parse(JSON.stringify(value));
+    return clonePlainJson(value);
   } catch (error) {
     throw socketProofError("non-serializable-payload", `Socket proof payload is not serializable: ${error?.message ?? error}`);
   }
-}
-
-function plainValuesEqual(a, b) {
-  if (globalThis.foundry?.utils?.objectsEqual) {
-    try {
-      return foundry.utils.objectsEqual(a, b);
-    } catch (_error) {
-      // Fall through to canonical JSON comparison.
-    }
-  }
-  return canonicalStringify(a) === canonicalStringify(b);
-}
-
-function canonicalStringify(value) {
-  return JSON.stringify(sortPlainValue(value));
-}
-
-function sortPlainValue(value) {
-  if (Array.isArray(value)) return value.map(sortPlainValue);
-  if (!value || typeof value !== "object") return value;
-  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, sortPlainValue(value[key])]));
 }
 
 function getSocketClock() {

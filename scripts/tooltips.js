@@ -12,14 +12,23 @@ let itemTooltipRequest = 0;
 let itemTooltipPositionFrame = 0;
 let itemTooltipSize = { width: 0, height: 0 };
 let itemTooltipResizeObserver = null;
+let tooltipListenersRegistered = false;
+let itemTooltipHovered = false;
+let itemTooltipPinned = false;
+let itemTooltipVisibleSession = false;
 
 export function registerTooltipListeners() {
+  if (tooltipListenersRegistered) return;
+  tooltipListenersRegistered = true;
+
   document.addEventListener("keydown", (event) => {
     if (event.key === "Escape") hideItemTooltip();
   });
 
   document.addEventListener("mousemove", (event) => {
+    if (itemTooltipPinned) return;
     itemTooltipPointer = { x: event.clientX, y: event.clientY };
+    if (itemTooltipHovered) return;
     scheduleItemTooltipPosition();
   }, true);
 
@@ -121,7 +130,6 @@ function attachTooltipToRow(actor, row) {
 function findTooltipAnchors(row) {
   if (row.matches?.("button")) return [row];
   const selectors = [
-    "img",
     ".fblqa-gear-card",
     ".fblqa-gear-card-name",
     ".item-name",
@@ -129,7 +137,8 @@ function findTooltipAnchors(row) {
     ".name",
     "h4",
     "td:first-child",
-    ".item-image"
+    ".item-image",
+    "img"
   ];
 
   const anchors = [];
@@ -179,7 +188,7 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   clearTimeout(itemTooltipTimer);
 
   const previousAnchor = itemTooltipAnchor;
-  const wasVisible = Boolean(itemTooltipElement?.classList.contains("is-visible"));
+  const wasVisible = Boolean(itemTooltipElement?.classList.contains("is-visible")) || itemTooltipVisibleSession;
   const transition = planTooltipTransition(previousAnchor, anchor, wasVisible);
   const request = ++itemTooltipRequest;
   if (transition.replaceVisibleContent) {
@@ -190,10 +199,13 @@ function scheduleItemTooltip(actor, row, anchor, event) {
     }
   }
   itemTooltipAnchor = anchor;
+  itemTooltipHovered = false;
 
   if (event?.clientX || event?.clientY) {
+    itemTooltipPinned = false;
     itemTooltipPointer = { x: event.clientX, y: event.clientY };
   } else {
+    itemTooltipPinned = true;
     const rect = anchor.getBoundingClientRect();
     itemTooltipPointer = { x: rect.right, y: rect.top };
   }
@@ -202,25 +214,31 @@ function scheduleItemTooltip(actor, row, anchor, event) {
   itemTooltipTimer = window.setTimeout(async () => {
     if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor) return;
 
-    const html = row.dataset.equipmentFeature
-      ? await buildItemFeatureTooltipHtml(item, row.dataset.equipmentFeature)
-      : await buildItemTooltipHtml(item);
-    if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor || !anchor.isConnected) return;
-    if (!html) { hideItemTooltip(); return; }
+    try {
+      const html = row.dataset.equipmentFeature
+        ? await buildItemFeatureTooltipHtml(item, row.dataset.equipmentFeature)
+        : await buildItemTooltipHtml(item);
+      if (request !== itemTooltipRequest || itemTooltipAnchor !== anchor || !anchor.isConnected) return;
+      if (!html) { hideItemTooltip(); return; }
 
-    const tooltip = ensureItemTooltipElement();
-    const dark = Boolean(anchor.closest('[data-equipment-tooltip-theme="dark"]'));
-    tooltip.classList.toggle("fblqa-tooltip-dark", dark);
-    tooltip.innerHTML = html;
-    // Rich editor inline palettes must not override the fixed widget palette.
-    // Change only this rendered preview; leave Item/journal sources untouched.
-    if (dark) for (const node of tooltip.querySelectorAll(".fblqa-rich-text [style]")) {
-      for (const property of ["color", "background", "background-color", "font-family", "font-size", "line-height"]) node.style.removeProperty(property);
+      const tooltip = ensureItemTooltipElement();
+      const dark = Boolean(anchor.closest('[data-equipment-tooltip-theme="dark"]'));
+      tooltip.classList.toggle("fblqa-tooltip-dark", dark);
+      tooltip.innerHTML = html;
+      // Rich editor inline palettes must not override the fixed widget palette.
+      // Change only this rendered preview; leave Item/journal sources untouched.
+      if (dark) for (const node of tooltip.querySelectorAll(".fblqa-rich-text [style]")) {
+        for (const property of ["color", "background", "background-color", "font-family", "font-size", "line-height"]) node.style.removeProperty(property);
+      }
+      tooltip.classList.add("is-visible");
+      itemTooltipVisibleSession = true;
+      measureItemTooltip();
+      addTooltipDescription(anchor, tooltip.id);
+      scheduleItemTooltipPosition();
+    } catch (error) {
+      console.error("fbl-quick-access | item tooltip render failed", error);
+      if (request === itemTooltipRequest && itemTooltipAnchor === anchor) hideItemTooltip();
     }
-    tooltip.classList.add("is-visible");
-    measureItemTooltip();
-    addTooltipDescription(anchor, tooltip.id);
-    scheduleItemTooltipPosition();
   }, delay);
 }
 
@@ -235,6 +253,9 @@ export function hideItemTooltip() {
   clearTimeout(itemTooltipHideTimer);
   itemTooltipHideTimer = null;
   itemTooltipTimer = null;
+  itemTooltipHovered = false;
+  itemTooltipPinned = false;
+  itemTooltipVisibleSession = false;
   removeTooltipDescription(itemTooltipAnchor);
   itemTooltipAnchor = null;
   if (itemTooltipPositionFrame) {
@@ -249,14 +270,24 @@ export function hideItemTooltip() {
 }
 
 function ensureItemTooltipElement() {
-  if (itemTooltipElement) return itemTooltipElement;
+  if (itemTooltipElement?.isConnected) return itemTooltipElement;
+  if (itemTooltipElement) {
+    itemTooltipResizeObserver?.disconnect?.();
+    itemTooltipResizeObserver = null;
+  }
 
   itemTooltipElement = document.createElement("aside");
   itemTooltipElement.id = "fblqa-item-tooltip";
   itemTooltipElement.classList.add("fblqa-item-tooltip");
   itemTooltipElement.setAttribute("role", "tooltip");
-  itemTooltipElement.addEventListener("mouseenter", () => clearTimeout(itemTooltipHideTimer));
-  itemTooltipElement.addEventListener("mouseleave", scheduleItemTooltipHide);
+  itemTooltipElement.addEventListener("mouseenter", () => {
+    itemTooltipHovered = true;
+    clearTimeout(itemTooltipHideTimer);
+  });
+  itemTooltipElement.addEventListener("mouseleave", () => {
+    itemTooltipHovered = false;
+    scheduleItemTooltipHide();
+  });
   document.body.append(itemTooltipElement);
 
   if (typeof ResizeObserver === "function") {

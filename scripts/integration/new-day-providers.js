@@ -1,11 +1,19 @@
 import { MODULE_ID } from "../constants.js";
 import { escapeHtml, humanizeKey } from "../utils.js";
-import { executeAsActiveGM, registerSocketHandler } from "./socket-api.js";
+import { executeAsActiveGM, getActiveGM, registerSocketHandler } from "./socket-api.js";
+import { createObjectOperationQueue } from "../operation-queue.js";
+import { createCodedError, plainValuesEqual } from "../document-writes.js";
+import { findGameUser } from "../socket-utils.js";
 
 const PROVIDER_ID_PATTERN = /^[a-z0-9][a-z0-9._-]*$/i;
+const FA_NON_ICON_CLASSES = new Set([
+  "fa-solid", "fa-regular", "fa-light", "fa-thin", "fa-duotone", "fa-brands", "fa-sharp",
+  "fa-fw", "fa-lg", "fa-sm", "fa-xs", "fa-xl", "fa-2x", "fa-3x", "fa-spin", "fa-pulse", "fa-beat", "fa-fade", "fa-bounce"
+]);
 const BUILD_OPERATION = "integration.new-day.build-provider";
 const APPLY_OPERATION = "integration.new-day.apply-provider";
 const providers = new Map();
+const enqueueProviderApply = createObjectOperationQueue();
 let bridgeRegistered = false;
 
 export function registerNewDayProvider(definition) {
@@ -151,13 +159,19 @@ export function normalizeProviderActions(provider, rawActions) {
     throw new TypeError(`New-day provider ${provider.id} buildActions() must return an array`);
   }
 
+  const seenIds = new Set();
   return rawActions.map((rawAction, index) => {
     if (!rawAction || typeof rawAction !== "object") {
       throw new TypeError(`New-day provider ${provider.id} returned a non-object action at index ${index}`);
     }
-    const rawId = String(rawAction.id ?? index).trim() || String(index);
+    const rawId = normalizeProviderActionId(rawAction.id, index);
+    if (seenIds.has(rawId)) {
+      throw createCodedError("duplicate-provider-action", `New-day provider ${provider.id} returned duplicate action id: ${rawId}`);
+    }
+    seenIds.add(rawId);
     const itemName = String(rawAction.itemName ?? rawAction.label ?? rawAction.name ?? provider.id);
-    const category = String(rawAction.category ?? provider.category);
+    const rawCategory = String(rawAction.category ?? "").trim();
+    const category = rawCategory && PROVIDER_ID_PATTERN.test(rawCategory) ? rawCategory : provider.category;
 
     return {
       ...rawAction,
@@ -174,6 +188,10 @@ export function normalizeProviderActions(provider, rawActions) {
       warning: Boolean(rawAction.warning)
     };
   });
+}
+
+function normalizeProviderActionId(value, index) {
+  return String(value ?? "").trim() || String(index);
 }
 
 async function handleBuildProviderActions(payload, context) {
@@ -195,43 +213,67 @@ async function handleApplyProviderAction(payload, context) {
   const actor = await resolveActor(payload);
   assertRequesterCanManageActor(actor, context.requestUser);
 
-  // Private provider summaries are GM-visible audit output. A remote player
-  // must not be able to suppress them merely by forging a socket payload.
-  const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM) && !context.isRemote;
-  const providerContext = Object.freeze({
-    requesterId: context.requesterId,
-    requestUser: context.requestUser,
-    activeGM: context.activeGM,
-    isRemote: context.isRemote,
-    suppressChat
+  return enqueueProviderApply(actor, async () => {
+    assertCurrentProvider(provider);
+    const requestUser = requireLiveApplyAuthority(actor, context);
+    const buildContext = Object.freeze({
+      requesterId: context.requesterId,
+      requestUser,
+      activeGM: context.activeGM,
+      isRemote: context.isRemote
+    });
+    const rawActions = await provider.buildActions(actor, buildContext);
+    assertCurrentProvider(provider);
+    const freshActions = normalizeProviderActions(provider, rawActions);
+    const actionId = normalizeProviderActionId(payload?.actionId ?? payload?.action?.id, 0);
+    const action = freshActions.find(candidate => candidate.providerActionId === actionId)?.providerAction;
+    const liveUser = requireLiveApplyAuthority(actor, context);
+    if (!action || !plainValuesEqual(action, payload.action)) {
+      throw createCodedError("stale-provider-action", "Provider action changed. Refresh the preview.");
+    }
+    const liveContext = Object.freeze({
+      ...buildContext,
+      requestUser: liveUser,
+      suppressChat: Boolean(payload?.suppressChat) && liveUser.isGM && !context.isRemote
+    });
+    const result = await provider.applyAction(actor, action, liveContext) ?? {};
+
+    const normalized = {
+      changed: Boolean(result.changed),
+      summary: String(result.summary ?? "")
+    };
+
+    if (result.privateSummary) {
+      if (!liveContext.suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
+      if (liveUser.isGM && !context.isRemote) normalized.privateSummary = String(result.privateSummary);
+    }
+
+    return normalized;
   });
-  const { suppressChat: _suppressChat, ...buildContext } = providerContext;
-  const freshActions = await provider.buildActions(actor, Object.freeze(buildContext)) ?? [];
-  if (!Array.isArray(freshActions)) throw new TypeError("Provider actions must be an array");
-  const actionId = String(payload?.actionId ?? payload?.action?.id ?? 0);
-  const action = freshActions.find((candidate, index) => String(candidate.id ?? index).trim() === actionId);
-  if (!action || canonicalAction(action) !== canonicalAction(payload.action)) {
-    throw Object.assign(new Error("Provider action changed. Refresh the preview."), { code: "stale-provider-action" });
-  }
-  const result = await provider.applyAction(actor, action, providerContext) ?? {};
-
-  const normalized = {
-    changed: Boolean(result.changed),
-    summary: String(result.summary ?? "")
-  };
-
-  if (result.privateSummary) {
-    if (!suppressChat) await postPrivateSummary(actor, provider, String(result.privateSummary));
-    if (context.requestUser?.isGM && !context.isRemote) normalized.privateSummary = String(result.privateSummary);
-  }
-
-  return normalized;
 }
 
-function canonicalAction(value) {
-  const normalize = entry => Array.isArray(entry) ? entry.map(normalize)
-    : entry && typeof entry === "object" ? Object.fromEntries(Object.keys(entry).sort().map(key => [key, normalize(entry[key])])) : entry;
-  return JSON.stringify(normalize(value));
+function assertCurrentProvider(provider) {
+  if (getNewDayProvider(provider.id) !== provider) {
+    throw createCodedError("provider-registration-changed", `New-day provider registration changed: ${provider.id}`);
+  }
+}
+
+function requireLiveApplyAuthority(actor, context) {
+  // Foundry can resolve live non-compendium documents synchronously. Keep the
+  // authority and action checks in the same turn as dispatch.
+  const fromUuidSync = globalThis.foundry?.utils?.fromUuidSync ?? globalThis.fromUuidSync;
+  const liveActor = actor.uuid && fromUuidSync
+    ? fromUuidSync(actor.uuid)
+    : globalThis.game?.actors?.get?.(actor.id);
+  if (liveActor !== actor) {
+    throw createCodedError("missing-actor", "New-day provider actor changed");
+  }
+  if (getActiveGM()?.id !== globalThis.game?.user?.id) {
+    throw createCodedError("active-gm-only", "Active GM changed");
+  }
+  const user = findGameUser(context.requesterId);
+  assertRequesterCanManageActor(actor, user);
+  return user;
 }
 
 function requireProvider(id) {
@@ -252,7 +294,7 @@ async function resolveActor(payload) {
   if (actor?.documentName !== "Actor" && payload?.actorId) {
     actor = globalThis.game?.actors?.get?.(payload.actorId) ?? null;
   }
-  if (actor?.documentName !== "Actor") {
+  if (actor?.documentName !== "Actor" || actor?.pack) {
     const error = new Error("New-day provider actor was not found");
     error.code = "missing-actor";
     throw error;
@@ -261,7 +303,7 @@ async function resolveActor(payload) {
 }
 
 function assertRequesterCanManageActor(actor, user) {
-  if (!user) {
+  if (!user || user.active === false) {
     const error = new Error("Requesting user was not found");
     error.code = "missing-requester";
     throw error;
@@ -284,9 +326,10 @@ async function postPrivateSummary(actor, provider, privateSummary) {
     .map((user) => user.id);
   if (!recipients.length) return null;
 
+  const heading = getNewDayProviderCategory(provider)?.label || provider.id;
   const content = `
     <div class="fblqa-rest-chat-card fblqa-new-day-chat-card fblqa-new-day-private-card">
-      <h3>${escapeHtml(provider.id)}</h3>
+      <h3>${escapeHtml(heading)}</h3>
       <p>${escapeHtml(privateSummary)}</p>
     </div>`;
   try {
@@ -308,7 +351,10 @@ function stripQuickAccessActionFields(action) {
 }
 
 function normalizeIcon(value) {
-  const icon = String(value ?? "").trim().split(/\s+/).find((part) => part.startsWith("fa-"));
+  const icon = String(value ?? "")
+    .trim()
+    .split(/\s+/)
+    .find((part) => /^fa-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(part) && !FA_NON_ICON_CLASSES.has(part));
   return icon || "fa-check";
 }
 
