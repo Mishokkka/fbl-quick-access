@@ -6,6 +6,7 @@ import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scri
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { applyMorGain, changePermanentMor, clearStaleMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { canonicalJson } from "../scripts/document-writes.js";
+import { withWalletLocks } from "../scripts/actor-mutation-lock.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
@@ -105,7 +106,7 @@ async function expose(path, names) {
 reset();
 const calendar = await expose("scripts/state-progression.js", [
   "buildPlayerResultContent", "handleCalendariaMultiDayJump", "processActorAutomaticDays", "recordCalendarFailures",
-  "resetAllFromGMSummary", "rewindAllFromGMSummary"
+  "resetAllFromGMSummary", "rewindAllFromGMSummary", "applyCalendarDay"
 ]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["executeMoneyTransfer", "processTransferDecision"]);
@@ -131,6 +132,107 @@ function assignedActor(items) {
   game.users.push(owner);
   return character;
 }
+
+function withEffectStore(actor, server) {
+  const local = new Map(server);
+  actor.getEmbeddedCollection = () => local;
+  actor.createEmbeddedDocuments = async (type, [effect], options) => {
+    if (type !== "ActiveEffect" || !options.keepId) throw new Error("Invalid lock document");
+    if (server.has(effect._id)) throw new Error("Duplicate embedded document ID");
+    const document = { ...effect, id: effect._id };
+    server.set(document.id, document);
+    local.set(document.id, document);
+    return [document];
+  };
+  actor.deleteEmbeddedDocuments = async (_type, ids) => {
+    for (const id of ids) {
+      server.delete(id);
+      local.delete(id);
+    }
+    return ids;
+  };
+  return actor;
+}
+
+test("two wallet operations cannot share a character across client caches", async () => {
+  reset();
+  const server = new Map();
+  const shared = withEffectStore({ id: "shared" }, server);
+  const otherClient = withEffectStore({ id: shared.id }, server);
+  const anotherActor = withEffectStore({ id: "another" }, new Map());
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const first = withWalletLocks([shared], async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  try {
+    await assert.rejects(withWalletLocks([anotherActor, otherClient], () => assert.fail("conflicting wallet write")), { code: "actor-mutation-busy" });
+    assert.equal(anotherActor.getEmbeddedCollection().size, 0);
+  } finally { release.resolve(); }
+  await first;
+  assert.equal(server.size, 0);
+  assert.equal(await withWalletLocks([otherClient], () => "completed"), "completed");
+});
+
+test("a separate client cannot replace a pending Mor gain", async () => {
+  reset();
+  const server = new Map();
+  const firstItem = item("mor", { healingTime: "1/0" }, "Mor");
+  const secondItem = item("mor", { healingTime: "1/0" }, "Mor");
+  const firstActor = withEffectStore(actor([firstItem]), server);
+  const secondActor = withEffectStore(actor([secondItem]), server);
+  secondActor.id = firstActor.id;
+  firstActor.system.attribute.strength.value = 4;
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  let rolls = 0;
+  globalThis.Roll = class {
+    async evaluate() {
+      rolls += 1;
+      entered.resolve();
+      await release.promise;
+      this.terms = [{ results: [{ result: 1 }] }];
+      return this;
+    }
+  };
+  const first = applyMorGain(firstActor, firstItem);
+  await entered.promise;
+  try {
+    await assert.rejects(applyMorGain(secondActor, secondItem), { code: "actor-mutation-busy" });
+  } finally { release.resolve(); }
+  const result = await first;
+  assert.equal(rolls, 1);
+  assert.equal(result.state.current, 2);
+  assert.equal(firstActor.system.attribute.strength.value, 3);
+  assert.equal(server.size, 0);
+});
+
+test("New Day leaves custom conditions intact while another client is editing the list", async () => {
+  reset();
+  const server = new Map();
+  const editor = withEffectStore(actor(), server);
+  const dayClient = withEffectStore(actor(), server);
+  dayClient.id = editor.id;
+  const key = "conditions.list";
+  const conditions = [{ id: "cold", name: "Cold", time: "3 days", notes: "", order: 10 }];
+  await dayClient.setFlag(scope, key, conditions);
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const editing = enqueueCustomConditionOperation(editor, async () => {
+    entered.resolve();
+    await release.promise;
+  });
+  await entered.promise;
+  try {
+    const plan = buildNewDayPlan(dayClient);
+    await assert.rejects(applyNewDayPlan(dayClient, plan, ["custom:cold:timer"], { postChat: false }), { code: "actor-mutation-busy" });
+    assert.deepEqual(dayClient.updates, []);
+    assert.deepEqual(dayClient.getFlag(scope, key), conditions);
+  } finally { release.resolve(); }
+  await editing;
+});
 
 test("A01: overlapping calendar requests read the live marker inside the queue", async () => {
   reset(); const a = actor([item("timer", { healingTime: "10 days" })]);
@@ -203,6 +305,8 @@ test("bulk rewind keeps Resolve available for an interrupted day", async () => {
   };
   await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: start });
   await character.setFlag(scope, "stateProgressionOperation", unfinished);
+  const eligible = assignedActor();
+  await eligible.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: context.date });
   const manager = await calendar.openStateProgressionManager();
   const rewinding = calendar.rewindAllFromGMSummary(manager);
   await dialogs.at(-1).submit("rewind");
@@ -210,6 +314,81 @@ test("bulk rewind keeps Resolve available for an interrupted day", async () => {
   assert.equal(manager.statuses.get(character.id).state, "recovery");
   assert.equal(manager.statuses.get(character.id).canAcknowledge, true);
   assert.deepEqual(character.getFlag(scope, "stateProgressionOperation"), unfinished);
+  assert.deepEqual(calendar.getActorCalendarMarker(character).date, start);
+  assert.equal(calendar.getActorCalendarMarker(eligible).date.day, 2);
+});
+
+test("the manager drops an unassigned character when it refreshes", async () => {
+  reset();
+  const original = assignedActor();
+  const player = game.users.at(-1);
+  const state = await calendar.openStateProgressionManager();
+  assert.ok(state.entries.has(original.id));
+  player.character = actor();
+  const updated = await calendar.openStateProgressionManager();
+  assert.deepEqual([...updated.entries.keys()], [player.character.id]);
+  assert.equal(updated.statuses.has(original.id), false);
+});
+
+test("changing a pending marker invalidates an open time-skip approval", async () => {
+  reset();
+  const dialogs = captureCalendarDialogs();
+  const wound = item("wound", { healingTime: "10 days" });
+  const character = assignedActor([wound]);
+  await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: start });
+  const skip = calendar.handleCalendariaMultiDayJump(start, { ...context, api: CALENDARIA.api }, 2);
+  await delay(0);
+  const changed = { calendarId: context.calendarId, date: { ...start, day: 2 } };
+  await character.setFlag(scope, "stateProgressionCalendaria", changed);
+  await dialogs.at(-1).submit("yes");
+  await skip;
+  assert.deepEqual(calendar.getActorCalendarMarker(character), changed);
+  assert.equal(wound.system.healingTime, "10 days");
+});
+
+for (const [change, code] of [["mode", "wrong-progression-mode"], ["date", "stale-calendar-day"], ["timer", "stale-plan"]]) {
+  test(`Calendaria keeps the marker pending if the ${change} changes while journaling`, async () => {
+    reset();
+    const date = { ...start, day: 2 };
+    const live = { ...context, date, api: CALENDARIA.api };
+    CALENDARIA.api.getCurrentDateTime = () => date;
+    const wound = item("wound", { healingTime: "6 days" });
+    const character = actor([wound]);
+    await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: live.calendarId, date: start });
+    const plan = buildNewDayPlan(character);
+    const write = character.update;
+    const settings = game.settings.get;
+    character.update = async patch => {
+      await write(patch);
+      if (patch[`flags.${scope}.==stateProgressionOperation`]?.phase !== "applying") return;
+      if (change === "mode") game.settings.get = (scope, key) => key === "stateProgressionMode" ? "long-rest" : settings(scope, key);
+      else if (change === "date") CALENDARIA.api.getCurrentDateTime = () => start;
+      else wound.system.healingTime = "9 days";
+    };
+    await assert.rejects(calendar.applyCalendarDay(character, live, start, date, date, plan, ["injury:wound:healing"]), { code });
+    assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
+    assert.deepEqual(calendar.getActorCalendarMarker(character).date, start);
+    assert.deepEqual(wound.updates, []);
+  });
+}
+
+test("a time skip stops after its current day when switched to Long Rest", async () => {
+  reset();
+  const wound = item("wound", { healingTime: "6 days" });
+  const character = actor([wound]);
+  await character.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: start });
+  const settings = game.settings.get;
+  const write = character.update;
+  character.update = async patch => {
+    await write(patch);
+    if (patch[`flags.${scope}.==stateProgressionCalendaria`]?.date.day === 2) {
+      game.settings.get = (scope, key) => key === "stateProgressionMode" ? "long-rest" : settings(scope, key);
+    }
+  };
+  await assert.rejects(calendar.processActorAutomaticDays(character, start, context, 2), { code: "wrong-progression-mode" });
+  assert.equal(wound.system.healingTime, "5 days");
+  assert.equal(calendar.getActorCalendarMarker(character).date.day, 2);
+  assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
 });
 
 test("the player result distinguishes marker recovery from an empty day", () => {
@@ -469,6 +648,24 @@ test("the rebuilt provider action is dispatched without another async actor look
   }
 });
 
+test("unregistering a provider while its plan rebuilds prevents dispatch", async () => {
+  reset();
+  const character = actor();
+  const { handleApplyProviderAction, registerNewDayProvider } = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]);
+  const action = { id: "daily" };
+  let called = false;
+  const unregister = registerNewDayProvider({
+    id: "audit.unregister", category: "audit",
+    async buildActions() { unregister(); return [action]; },
+    async applyAction() { called = true; return { changed: true }; },
+    describeAction: () => "", icon: () => "fa-check"
+  });
+  await assert.rejects(handleApplyProviderAction({ actorUuid: character.uuid, providerId: "audit.unregister", action }, {
+    requesterId: game.user.id, requestUser: game.user, activeGM: game.user, isRemote: false
+  }), { code: "provider-registration-changed" });
+  assert.equal(called, false);
+});
+
 test("Mor gain resumes a vetoed Item write after reload without repeating damage or the roll", async () => {
   reset();
   let rolls = 0;
@@ -551,6 +748,33 @@ test("Biography keeps the more recent field edit when a queued write is vetoed",
   assert.equal((await newer)[0], true);
   await flushBiographySaves(character);
   assert.equal(getBiographyProfile(character).concept, "newer edit");
+});
+
+test("the BIO tab restores running and pending patches over persisted fields", async () => {
+  reset();
+  const bio = await expose("scripts/biography.js", ["getBiographyDraft"]);
+  const character = actor();
+  const original = bio.getBiographyProfile(character);
+  await character.setFlag(scope, "biographyProfile", original);
+  const entered = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  character.update = async () => { entered.resolve(); await release.promise; };
+  bio.queueProfileSave(character, { ...original, concept: "draft concept" }, null, 10_000, "concept");
+  const saving = bio.flushBiographySaves(character);
+  await entered.promise;
+  bio.queueProfileSave(character, { ...original, languages: [{ name: "Draft language" }] }, null, 10_000, "languages");
+  try {
+    const draft = bio.getBiographyDraft(character);
+    assert.equal(draft.concept, "draft concept");
+    assert.equal(draft.languages[0].name, "Draft language");
+    assert.equal(bio.getBiographyProfile(character).concept, original.concept);
+    release.resolve();
+    assert.equal((await saving)[0], false);
+    assert.equal(bio.getBiographyDraft(character).concept, "draft concept");
+  } finally {
+    release.resolve();
+    bio.releaseBiographyState(character);
+  }
 });
 
 test("whole BIO and Pilgrim Card saves drop obsolete keys while keeping migrated values", async () => {
@@ -674,7 +898,7 @@ test("New Day rejects a changed legacy timer after waiting behind a STAT operati
   assert.equal(character.getFlag(scope, key)[0].time, "8 days");
 });
 
-test("Long Rest verifies the source under Sleepy and resumes without recovering twice", async () => {
+test("Long Rest verifies the source under Sleepy and can finish remaining effect deletion", async () => {
   reset();
   const { applyRest } = await expose("scripts/rest.js", ["applyRest"]);
   const character = actor();
@@ -699,12 +923,104 @@ test("Long Rest verifies the source under Sleepy and resumes without recovering 
   const reloaded = actor();
   reloaded.flags = structuredClone(character.flags);
   reloaded.system = structuredClone(character._source.system);
-  reloaded.deleteEmbeddedDocuments = async () => { assert.fail("the effect is already gone"); };
+  reloaded.effects = structuredClone(character.effects);
+  reloaded.deleteEmbeddedDocuments = async (_type, ids) => {
+    assert.deepEqual(ids, ["sleepy"]);
+    reloaded.effects.length = 0;
+  };
   const resumed = await applyRest(null, reloaded, { type: "long" });
   assert.equal(resumed.changed, true);
   assert.equal(resumed.failed, undefined);
   assert.equal(reloaded.getFlag(scope, "pendingRestCleanup"), null);
   assert.equal(reloaded.system.attribute.strength.value, 2);
+  assert.deepEqual(reloaded.effects, []);
+
+  const alreadyClean = actor();
+  alreadyClean.flags = structuredClone(character.flags);
+  alreadyClean.system = structuredClone(character._source.system);
+  alreadyClean.deleteEmbeddedDocuments = async () => assert.fail("the effect is already gone");
+  assert.equal((await applyRest(null, alreadyClean, { type: "long" })).failed, undefined);
+  assert.equal(alreadyClean.getFlag(scope, "pendingRestCleanup"), null);
+  assert.equal(alreadyClean.system.attribute.strength.value, 2);
+});
+
+for (const intervening of [false, true]) {
+  test(`Long Rest ${intervening ? "preserves a conflicting edit" : "retries recovery omitted by a hook"}`, async () => {
+    reset();
+    const character = actor();
+    character.system.condition.sleepy = { value: true };
+    character.effects = [{ id: "sleepy", active: true, statuses: ["sleepy"] }];
+    const write = character.update;
+    const strengthPath = "system.attribute.strength.value";
+    character.update = patch => {
+      const filtered = { ...patch };
+      delete filtered[strengthPath];
+      return write(filtered);
+    };
+    let effectsDeleted = 0;
+    character.deleteEmbeddedDocuments = async () => { effectsDeleted += 1; character.effects.length = 0; };
+    assert.equal((await rest.applyRest(null, character, { type: "long" })).failed, true);
+    assert.equal(character.system.attribute.strength.value, 1);
+    const pending = character.getFlag(scope, "pendingRestCleanup");
+    assert.ok(pending);
+    assert.equal(effectsDeleted, 0);
+    character.update = write;
+    if (intervening) character.system.attribute.strength.value = 4;
+
+    const result = await rest.applyRest(null, character, { type: "long" });
+    assert.equal(character.system.attribute.strength.value, intervening ? 4 : 2);
+    assert.equal(effectsDeleted, intervening ? 0 : 1);
+    if (intervening) {
+      assert.equal(result.error?.code, "rest-recovery-conflict");
+      assert.deepEqual(character.getFlag(scope, "pendingRestCleanup"), pending);
+    } else {
+      assert.equal(result.changed, true);
+      assert.equal(result.failed, undefined);
+      assert.equal(character.getFlag(scope, "pendingRestCleanup"), null);
+    }
+  });
+}
+
+test("Short Rest verifies the replacement record even within the same quarter", async () => {
+  reset();
+  const character = actor();
+  const getQuarter = (await import("../scripts/rest.js")).getCurrentQuarterInfo;
+  const used = { quarterKey: getQuarter().key, attribute: "strength" };
+  await character.setFlag(scope, "shortRestRecovery", used);
+  const write = character.update;
+  character.update = patch => write(Object.fromEntries(Object.entries(patch).filter(([path]) => !path.endsWith("shortRestRecovery"))));
+  const result = await rest.applyRest(null, character, {
+    type: "short", resetShortQuarter: true, useShortRecovery: true, shortAttribute: "agility", shortConsumable: "water"
+  });
+  assert.equal(result.error?.code, "write-not-persisted");
+  assert.equal(character.system.attribute.agility.value, 2);
+  assert.deepEqual(character.getFlag(scope, "shortRestRecovery"), used);
+});
+
+test("Short Rest rechecks the owner's reset permission after waiting in the queue", async () => {
+  reset();
+  const character = actor();
+  game.user = user("player");
+  const settings = game.settings.get;
+  let allowReset = true;
+  game.settings.get = (scope, key) => key === "playersCanResetShortRest" ? allowReset : settings(scope, key);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const write = character.update;
+  character.update = async patch => {
+    started.resolve();
+    await release.promise;
+    return write(patch);
+  };
+  const first = rest.applyRest(null, character, { type: "short", useShortRecovery: true, shortAttribute: "strength", shortConsumable: "food" });
+  await started.promise;
+  const queued = rest.applyRest(null, character, { type: "short", resetShortQuarter: true, useShortRecovery: true, shortAttribute: "agility", shortConsumable: "water" });
+  allowReset = false;
+  release.resolve();
+  assert.equal((await first).changed, true);
+  assert.ok((await queued).errors.length);
+  assert.equal(character.system.attribute.agility.value, 1);
+  assert.equal(character.getFlag(scope, "shortRestRecovery").attribute, "strength");
 });
 
 test("bulk reset reports a refused marker and continues resetting the next Actor", async () => {

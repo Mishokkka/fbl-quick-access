@@ -908,6 +908,35 @@ test("Rest detects ActiveEffect even when system.condition value is false, and s
 
     assert.equal(strengthUpdates, 1, "parallel Short Rests in the same quarter must serialize and apply at most once");
     assert.equal(actor.system.attribute.strength.value, 2);
+
+    const started = Promise.withResolvers();
+    const resume = Promise.withResolvers();
+    const anotherActor = makeFlaggedActor({
+      id: "rest-close-actor",
+      system: { attribute: { strength: { value: 1, max: 4 } }, condition: {} }
+    });
+    const update = anotherActor.update.bind(anotherActor);
+    anotherActor.update = async patch => {
+      started.resolve();
+      await resume.promise;
+      return update(patch);
+    };
+    const restResult = rest.openRestDialog(null, anotherActor, null);
+    const submitted = dialogs.at(-1);
+    const submit = action => submitted.config.buttons.find(button => button.action === action)
+      .callback({}, { form: submitted.form }, submitted);
+    const apply = submit("apply");
+    await started.promise;
+    try {
+      await submit("cancel");
+      assert.equal(submitted.closed, false);
+      const unsettled = Symbol();
+      await submitted.close();
+      assert.equal(await Promise.race([restResult, Promise.resolve(unsettled)]), unsettled);
+    } finally { resume.resolve(); }
+    await apply;
+    assert.equal((await restResult)?.changed, true);
+    assert.equal(anotherActor.system.attribute.strength.value, 2);
   } finally {
     restore();
   }

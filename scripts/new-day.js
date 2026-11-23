@@ -105,7 +105,7 @@ export function buildNewDayPlan(actor, options = {}) {
 
     if (["heat", "mor", "arc", "addiction"].includes(conditionKind) || (conditionKind === "wash" && !isWashCondition(item))) continue;
 
-    const healingTime = item.system?.healingTime;
+    const healingTime = timerSystem(item)?.healingTime;
     const healing = decrementFirstInteger(healingTime, 1);
     const healingIsPermanent = isPermanentTime(healingTime);
 
@@ -165,8 +165,8 @@ export function buildNewDayPlan(actor, options = {}) {
       });
     }
 
-    if (!injuryExpires && item.system?.lethal === "yes" && isDailyLethalLimit(item.system?.limit)) {
-      const limit = decrementFirstInteger(item.system?.limit, 1);
+    if (!injuryExpires && item.system?.lethal === "yes" && isDailyLethalLimit(timerSystem(item)?.limit)) {
+      const limit = decrementFirstInteger(timerSystem(item)?.limit, 1);
       if (limit && limit.beforeNumber > 0) {
         actions.push({
           id: `injury:${item.id}:lethal`,
@@ -245,13 +245,13 @@ function actionPrecondition(actor, action, customConditions, appliedHealing) {
   if (action.kind === "addiction-day") {
     return opaquePreconditionToken(["addiction-day", item.id, getConditionKind(item), isAddictionCondition(item), getAddictionState(item), getAddictionMorning(item)]);
   }
-  let healingTime = item.system?.healingTime;
+  let healingTime = timerSystem(item)?.healingTime;
   if (action.kind === "lethal-limit" && appliedHealing) {
     if (!Object.is(healingTime, appliedHealing.after)) return null;
     healingTime = appliedHealing.before;
   }
   return opaquePreconditionToken([action.kind, item.id, item.type, item.name, healingTime,
-    action.kind === "lethal-limit" ? item.system?.limit : null, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
+    action.kind === "lethal-limit" ? timerSystem(item)?.limit : null, item.system?.lethal, getConditionKind(item), getWashStage(item)]);
 }
 
 function assertActionCurrent(actor, plan, action, { customConditions, appliedHealing } = {}) {
@@ -293,9 +293,13 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
 }
 
 async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options = {}) {
+  const preflight = options.beforeApply?.();
+  if (preflight) await preflight;
   const selected = new Set(selectedActionIds ?? []);
   const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
+  let dispatched = false;
+  const stalePlan = () => !dispatched && results.length > 0 && results.every(entry => entry.code === "stale-plan");
   const actions = selectedActions.filter(action => {
     try { assertActionCurrent(actor, plan, action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
@@ -304,11 +308,13 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
   const suppressNotifications = Boolean(options.suppressNotifications);
   const documentOptions = options.documentOptions ?? {};
 
-  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [] };
+  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [], stalePlan: stalePlan() };
 
   const customActions = actions.filter(isCustomConditionAction);
   if (customActions.length) {
     await enqueueCustomConditionOperation(actor, async () => {
+      const validation = options.beforeApply?.();
+      if (validation) await validation;
       const conditions = getCustomConditions(actor);
       const current = customActions.filter(action => {
         try { assertActionCurrent(actor, plan, action, { customConditions: conditions }); return true; }
@@ -323,12 +329,16 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
           if (!timer || isPermanentTime(condition.time) || timer.beforeNumber <= 0) return [condition];
           return timer.afterNumber === 0 ? [] : [{ ...condition, time: timer.afterText }];
         });
+        dispatched = true;
         await setDocumentFlagVerified(actor, MODULE_ID, CONDITION_FLAGS.LIST, next, documentOptions);
         for (const action of current) results.push(successResult(action));
       } catch (error) {
         console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
         for (const action of current) results.push(failureResult(action, error));
       }
+    }).catch(error => {
+      if (error?.code === "actor-mutation-busy" && !dispatched) error.beforeNewDayWrites = true;
+      throw error;
     });
   }
 
@@ -346,6 +356,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
       try { assertActionCurrent(actor, plan, action); return true; }
       catch (error) { results.push(failureResult(action, error)); return false; }
     });
+    dispatched ||= current.length > 0;
     if (kind === "update") await applyItemUpdateBatch(actor, plan, current, results, documentOptions);
     else if (kind === "delete") await applyItemDeleteBatch(actor, plan, current, results, documentOptions);
   };
@@ -365,6 +376,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
 
     try {
       assertActionCurrent(actor, plan, action);
+      dispatched = true;
       if (action.providerId) {
         const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
         results.push(successResult(action, providerResult));
@@ -424,6 +436,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     succeeded,
     failed,
     pending: succeeded.filter(entry => entry.pending),
+    stalePlan: stalePlan(),
     notificationError
   };
 }
@@ -446,12 +459,16 @@ function getSimpleItemUpdate(action) {
 function isSimpleItemUpdatePersisted(item, action) {
   if (!item) return false;
   if (action.kind === "injury-healing" || action.kind === "wash-timer") {
-    return String(item.system?.healingTime ?? "") === String(action.afterText ?? "");
+    return String(timerSystem(item)?.healingTime ?? "") === String(action.afterText ?? "");
   }
   if (action.kind === "lethal-limit") {
-    return String(item.system?.limit ?? "") === String(action.afterText ?? "");
+    return String(timerSystem(item)?.limit ?? "") === String(action.afterText ?? "");
   }
   return false;
+}
+
+function timerSystem(item) {
+  return item._source?.system ?? item.system;
 }
 
 function isItemDeletedOnActor(actor, itemId, itemRef = null) {
@@ -470,7 +487,7 @@ async function applyItemUpdateBatch(actor, plan, actions, results, documentOptio
       results.push(failureResult(action, error));
       continue;
     }
-    valid.push({ action, healingBefore: item.system?.healingTime });
+    valid.push({ action, healingBefore: timerSystem(item)?.healingTime });
   }
   if (!valid.length) return;
 
@@ -520,7 +537,7 @@ async function applyItemUpdateBatch(actor, plan, actions, results, documentOptio
     if (action.kind === "injury-healing") {
       // The lethal-limit preview also depends on healing time. Account for a
       // verified write from this batch, then require that value to still match.
-      appliedHealing.set(action.itemId, { before: healingBefore, after: item.system?.healingTime });
+      appliedHealing.set(action.itemId, { before: healingBefore, after: timerSystem(item)?.healingTime });
     }
     results.push(successResult(action));
     return true;
@@ -1031,7 +1048,7 @@ function successResult(action, result = null) {
 }
 
 function failureResult(action, error) {
-  return { ok: false, action, error: String(error?.message ?? error ?? "Unknown error") };
+  return { ok: false, action, error: String(error?.message ?? error ?? "Unknown error"), code: error?.code };
 }
 
 function getActorItems(actor) {

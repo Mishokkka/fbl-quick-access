@@ -15,6 +15,7 @@ import {
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
 import { getActiveGM } from "./integration/socket-api.js";
 import { enqueueCurrencyOperation } from "./operation-queue.js";
+import { withWalletLocks } from "./actor-mutation-lock.js";
 import { migrateLegacyReconciliations, readReconciliationRecords, writeReconciliationRecords } from "./transfer-reconciliation-store.js";
 import { readDocumentFlag } from "./document-writes.js";
 
@@ -699,24 +700,33 @@ export async function resolveMoneyTransferReconciliation(requestId, { applyRemai
       if (!Object.hasOwn(records, key)) return { ok: false, error: "missing-request" };
       const record = records[key];
       if (record.status === "resolved") return { ok: true, alreadyResolved: true, record };
-
-      if (applyRemaining) {
-        if (getActiveGM()?.id !== game.user.id) return { ok: false, error: "active-gm-only" };
-        const applied = await applyRemainingTransfer(record);
-        if (!applied.ok) return applied;
-      }
-
-      const resolved = {
-        ...record,
-        status: "resolved",
-        resolvedAt: Date.now(),
-        resolvedBy: game.user.id,
-        appliedRemaining: Boolean(applyRemaining)
-      };
-      saveReconciliationRecord(resolved);
-      await clearTransferReceipts(record);
-      return { ok: true, record: resolved };
+      const actors = [record.sourceActorId, record.targetActorId].map(id => game.actors?.get?.(id));
+      if (applyRemaining && getActiveGM()?.id !== game.user.id) return { ok: false, error: "active-gm-only" };
+      return await withWalletLocks(actors, async () => {
+        const current = readReconciliationRecords()[key];
+        if (!current) return { ok: false, error: "missing-request" };
+        if (current.status === "resolved") return { ok: true, alreadyResolved: true, record: current };
+        if (current.sourceActorId !== record.sourceActorId || current.targetActorId !== record.targetActorId) {
+          return { ok: false, error: "intervening-update" };
+        }
+        if (applyRemaining) {
+          if (getActiveGM()?.id !== game.user.id) return { ok: false, error: "active-gm-only" };
+          const applied = await applyRemainingTransfer(current);
+          if (!applied.ok) return applied;
+        }
+        const resolved = {
+          ...current,
+          status: "resolved",
+          resolvedAt: Date.now(),
+          resolvedBy: game.user.id,
+          appliedRemaining: Boolean(applyRemaining)
+        };
+        saveReconciliationRecord(resolved);
+        await clearTransferReceipts(current);
+        return { ok: true, record: resolved };
+      });
     } catch (error) {
+      if (error?.code === "actor-mutation-busy") return { ok: false, error: error.code };
       notifyReconciliationWriteFailure(error);
       return { ok: false, error: "reconciliation-not-persisted" };
     }
@@ -813,6 +823,15 @@ function notifyReconciliationWriteFailure(error) {
 }
 
 async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata = {}) {
+  try {
+    return await withWalletLocks([sourceActor, targetActor], () => executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata));
+  } catch (error) {
+    if (error?.code === "actor-mutation-busy") return { ok: false, error: error.code };
+    throw error;
+  }
+}
+
+async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata) {
   const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
   if (!plan.ok) return plan;
   const ActorClass = sourceActor.constructor.implementation ?? sourceActor.constructor;
@@ -1069,6 +1088,9 @@ function formatTransferAmounts(amounts) {
 }
 
 function localizeTransferError(code) {
+  if (code === "actor-mutation-busy") {
+    return qaLocalize("Common.ActorBusy", "Another Quick Access operation is using this character, or its lock could not be saved. Check the character and retry.");
+  }
   const key = {
     "missing-actor": "MissingActor",
     "same-actor": "SameActor",

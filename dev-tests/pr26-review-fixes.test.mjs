@@ -1046,14 +1046,12 @@ test("PR26: Calendaria bulk rewind partial retry, vetoed marker non-replay, and 
   }
 });
 
-test("PR26: static guards confirm tooltips pinned/catch guards, STAT live-merge, and Calendaria revalidation hooks", () => {
+test("PR26: static guards confirm tooltip ownership and STAT live merge", () => {
   const tooltipsSrc = readFileSync(join(root, "scripts", "tooltips.js"), "utf8");
   const condMainSrc = readFileSync(join(root, "scripts", "conditions", "main.js"), "utf8");
-  const spSrc = readFileSync(join(root, "scripts", "state-progression.js"), "utf8");
 
   assert.match(tooltipsSrc, /if\s*\(itemTooltipPinned\)\s*return;\s*\r?\n\s*itemTooltipPointer\s*=/);
   assert.match(tooltipsSrc, /if\s*\(request === itemTooltipRequest && itemTooltipAnchor === anchor\)\s*hideItemTooltip\(\);/);
   assert.match(condMainSrc, /enqueueCustomConditionOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
   assert.match(condMainSrc, /if \(!entry\) return false;\s*value = edit\(entry\[field\]\)/);
-  assert.match(spSrc, /sameCalendariaDay\(liveContext\.date, approvedContext\.date\) && liveDays === approvedDays/);
 });

@@ -214,6 +214,7 @@ async function handleApplyProviderAction(payload, context) {
   assertRequesterCanManageActor(actor, context.requestUser);
 
   return enqueueProviderApply(actor, async () => {
+    assertCurrentProvider(provider);
     const requestUser = requireLiveApplyAuthority(actor, context);
     const buildContext = Object.freeze({
       requesterId: context.requesterId,
@@ -221,7 +222,9 @@ async function handleApplyProviderAction(payload, context) {
       activeGM: context.activeGM,
       isRemote: context.isRemote
     });
-    const freshActions = normalizeProviderActions(provider, await provider.buildActions(actor, buildContext));
+    const rawActions = await provider.buildActions(actor, buildContext);
+    assertCurrentProvider(provider);
+    const freshActions = normalizeProviderActions(provider, rawActions);
     const actionId = normalizeProviderActionId(payload?.actionId ?? payload?.action?.id, 0);
     const action = freshActions.find(candidate => candidate.providerActionId === actionId)?.providerAction;
     const liveUser = requireLiveApplyAuthority(actor, context);
@@ -247,6 +250,12 @@ async function handleApplyProviderAction(payload, context) {
 
     return normalized;
   });
+}
+
+function assertCurrentProvider(provider) {
+  if (getNewDayProvider(provider.id) !== provider) {
+    throw createCodedError("provider-registration-changed", `New-day provider registration changed: ${provider.id}`);
+  }
 }
 
 function requireLiveApplyAuthority(actor, context) {

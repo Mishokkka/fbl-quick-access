@@ -1,3 +1,5 @@
+import { withActorMutationLock } from "./actor-mutation-lock.js";
+
 /**
  * Create a per-object serial queue. Failed operations do not block later work.
  */
@@ -20,7 +22,11 @@ export function createObjectOperationQueue() {
   };
 }
 
-export const enqueueCustomConditionOperation = createObjectOperationQueue();
+const enqueueCustomCondition = createObjectOperationQueue();
+
+export function enqueueCustomConditionOperation(actor, operation) {
+  return enqueueCustomCondition(actor, () => withActorMutationLock(actor, "conditions", operation));
+}
 
 // Wallet edits and accepted transfers share the same authority-side queue.
 // A global queue is sufficient for infrequent monetary writes and avoids a

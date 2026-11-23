@@ -22,7 +22,7 @@ export function registerCoreSettings() {
     game.settings.registerMenu(MODULE_ID, "stateProgressionManager", {
       name: qaLocalize("Settings.StateProgressionManager.Name", "Calendaria processed days"),
       label: qaLocalize("Settings.StateProgressionManager.Label", "Manage Calendaria days"),
-      hint: qaLocalize("Settings.StateProgressionManager.Hint", "Inspect processed-day markers, reset markers to the current date, or rewind days to process them again."),
+      hint: qaLocalize("Settings.StateProgressionManager.Hint", "Inspect processed-day markers. Reset a marker that is ahead of the current date or skip pending days by setting it to today. Rewind a marker to make days pending again."),
       icon: "fas fa-calendar-check",
       type: createStateProgressionMenuLauncher(),
       restricted: true

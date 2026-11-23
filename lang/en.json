@@ -2,6 +2,8 @@
   "FBLQA": {
     "Common": {
       "Cancel": "Cancel",
+      "ActorBusy": "Another Quick Access operation is using this character, or its lock could not be saved. Check the character and retry.",
+      "ActorLockReleaseFailed": "Quick Access could not remove an operation lock from {actor}. Review its Active Effects before retrying.",
       "Save": "Save",
       "Untitled": "Untitled",
       "Yes": "Yes",
@@ -248,6 +250,7 @@
       "NotSpecified": "not specified",
       "NoChanges": "Rest completed with no character-sheet changes.",
       "UpdateFailed": "Could not apply rest.",
+      "RecoveryConflict": "A character field changed during an unfinished Long Rest. Review the saved recovery and restore its expected value before retrying.",
       "ChatRecovered": "Recovered",
       "ChatCleared": "Cleared",
       "ChatBlocked": "Blocked",
@@ -290,7 +293,7 @@
       "StateProgressionManager": {
         "Name": "Calendaria processed days",
         "Label": "Manage Calendaria days",
-        "Hint": "Inspect processed-day markers, reset markers to the current date (if the calendar jumped ahead), or rewind days to process them again."
+        "Hint": "Inspect processed-day markers. Reset a marker that is ahead of the current date or skip pending days by setting it to today. Rewind a marker to make days pending again."
       }
     },
     "NewDay": {
@@ -557,7 +560,7 @@
       "AcknowledgeDayTitle": "Close interrupted calendar day?",
       "AcknowledgeDayWarning": "Check and correct the character’s states first. No daily actions will be repeated or undone; later days remain pending.",
       "ResetAllPartial": "Markers reset to {date}: {count}; skipped: {skipped}; failed: {failed}. Review the affected characters before retrying.",
-      "CalendarChangedPartial": "The calendar changed during the operation. Some characters may have been updated; review the results.",
+      "CalendarChangedPartial": "After switching calendars, baselines saved: {count}. Skipped: {skipped}. Failed: {failed}.",
       "FinishMarker": "Actions for {date} are already applied. Resolve saves the marker without repeating them.",
       "DayAwaitingGM": "The GM needs to review an unfinished calendar day for this character.",
       "ReviewUnfinishedDays": "Some calendar days are unfinished. Open Manage Calendaria days to review them.",

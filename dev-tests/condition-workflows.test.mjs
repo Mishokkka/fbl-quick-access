@@ -295,6 +295,7 @@ test("a calendar skip consumes only the started day and resumes after its manual
   game.user.active = true;
   game.users = [game.user];
   game.modules.set("calendaria", { active: true, api: context.api });
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
   await worker.setActorCalendarMarker(owner, { ...context, date: start });
   const first = await worker.processActorAutomaticDays(owner, start, context, 3);
   assert.equal(first.processedDays, 1); assert.equal(first.limitedDays, 2); assert.equal(first.pendingManual, 1);
@@ -353,8 +354,11 @@ for (const mode of ["interactive", "automatic"]) {
       };
       const processDay = (worker, owner) => {
         if (mode === "automatic") return worker.processActorAutomaticDays(owner, start, context, 1);
+        const actionId = "injury:recovery-injury:healing";
+        const plan = buildNewDayPlan(owner);
         return worker.handleCalendariaApplyRequest({
-          actorId: owner.id, calendarId, targetDate: date, selectedIds: ["injury:recovery-injury:healing"]
+          actorId: owner.id, calendarId, targetDate: date, selectedIds: [actionId],
+          selectedPreconditions: { [actionId]: plan.preconditions[actionId] }
         }, { requestUser: player });
       };
       const first = loadActor({ flags: { [scope]: { [markerKey]: { calendarId, date: start } } }, healingTime: "5 days", blockedWrite: veto });

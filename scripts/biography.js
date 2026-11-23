@@ -224,7 +224,7 @@ export function setupBiographyTab(app, actor, root) {
   const headingSpec = captureNativeHeadingSpec(bioTab);
   bioTab.classList.add("fblqa-biography-tab");
   const editable = canModifyActor(actor);
-  const state = getBiographyProfile(actor);
+  const state = editable ? getBiographyDraft(actor) : getBiographyProfile(actor);
 
   const render = () => {
     commitActiveRichEditor(bioTab);
@@ -252,7 +252,7 @@ export function cleanupBiographyTab(root) {
 export function releaseBiographyState(actorOrId) {
   const key = drawerKey(actorOrId);
   const actor = typeof actorOrId === "string"
-    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key) ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)?.actor
+    ? SAVE_PENDING.get(key)?.actor ?? SAVE_RUNNING.get(key)?.actor ?? PILGRIM_PENDING.get(key)?.actor ?? PILGRIM_RUNNING.get(key)?.actor
     : actorOrId;
   if (actor && typeof actor === "object") DELETED_ACTORS.add(actor);
   closeBiographyDrawer(key, { discardPending: true });
@@ -1412,6 +1412,18 @@ function cloneProfileValue(value) {
   return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
+function getBiographyDraft(actor) {
+  let state = getBiographyProfile(actor);
+  const key = drawerKey(actor);
+  for (const draft of [SAVE_RUNNING.get(key), SAVE_PENDING.get(key)]) {
+    for (const [path, value] of draft?.patches ?? []) {
+      if (path === "*") state = cloneProfileValue(value);
+      else setPath(state, path, value);
+    }
+  }
+  return state;
+}
+
 function flushProfileSave(key) {
   const timer = SAVE_TIMERS.get(key);
   if (timer) globalThis.clearTimeout?.(timer);
@@ -1422,7 +1434,7 @@ function flushProfileSave(key) {
     if (!pending) return true;
     SAVE_PENDING.delete(key);
     if (DELETED_ACTORS.has(pending.actor)) return false;
-    SAVE_RUNNING.set(key, pending.actor);
+    SAVE_RUNNING.set(key, pending);
     try {
       for (const [path, value] of pending.patches) {
         if (DELETED_ACTORS.has(pending.actor)) return false;

@@ -2,6 +2,7 @@ import { FLAGS, MODULE_ID, SETTINGS, DEFAULT_ADDICTION_STATE, flagUpdatePath } f
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind } from "../condition-kind.js";
 import { createObjectOperationQueue } from "../../operation-queue.js";
+import { withActorMutationLock } from "../../actor-mutation-lock.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
 import { clearDocumentFlagNullVerified, createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
 
@@ -9,8 +10,12 @@ import { isFeatureEnabled } from "../settings.js";
 import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger } from "../utils.js";
 
 const enqueueHeatChange = createObjectOperationQueue();
-const enqueueMorChange = createObjectOperationQueue();
+const enqueueMorOperation = createObjectOperationQueue();
 const MOR_PENDING_GAIN = "conditions.morPendingGain";
+
+function enqueueMorChange(actor, item, operation) {
+  return enqueueMorOperation(item, () => withActorMutationLock(actor, "mor", operation));
+}
 
 export function getHeatDefinition() {
   const definition = CONDITION_DEFINITIONS.heat || { names: ["жара", "heat"], max: 4, levels: {} };
@@ -264,7 +269,7 @@ export async function applyHeatFailure(actor, item, documentOptions = {}) {
 
 export function needsHeatModifierSync(item, value = parseHeatValue(item)) {
   const update = buildHeatModifierUpdate(value);
-  const current = item?.system?.rollModifiers ?? {};
+  const current = (item?._source ?? item)?.system?.rollModifiers ?? {};
   return Object.entries(update).some(([path, modifier]) => {
     const key = path.split(".").at(-1);
     if (key.startsWith("-=")) return current[key.slice(2)] !== undefined;
@@ -291,10 +296,12 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
     error.fblqaUserMessage = message;
     throw error;
   }
-  if (!pending && !overcap && previousValue === value
-    && item.getFlag?.(MODULE_ID, FLAGS.HEAT_VALUE) === value
-    && !String(item.system?.healingTime ?? "").trim()
-    && !needsHeatModifierSync(item, value)) {
+  const hasStoredHeatState = () => {
+    const stored = item._source ?? item;
+    return readDocumentFlag(stored, MODULE_ID, FLAGS.HEAT_VALUE) === value
+      && String(stored.system?.healingTime ?? "") === "" && !needsHeatModifierSync(item, value);
+  };
+  if (!pending && !overcap && previousValue === value && hasStoredHeatState()) {
     return {
       previousValue,
       value,
@@ -330,7 +337,7 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
     [flagUpdatePath(pendingKey)]: null,
     "system.healingTime": ""
   }, documentOptions);
-  if (parseHeatValue(item) !== value || item.getFlag?.(MODULE_ID, pendingKey) != null) {
+  if (!hasStoredHeatState() || readDocumentFlag(item._source ?? item, MODULE_ID, pendingKey) != null) {
     throw createCodedError("write-not-persisted", "Heat update was not persisted.");
   }
 
@@ -348,7 +355,7 @@ async function applyHeatChange(actor, item, newValue, reason, documentOptions) {
 }
 
 export function changePermanentMor(item, delta, documentOptions = {}) {
-  return enqueueMorChange(item, () => {
+  return enqueueMorChange(item?.parent, item, () => {
     assertMorChangeAvailable(item);
     const { current, permanent } = getMorState(item);
     return writeMorState(item, current, permanent + delta, documentOptions);
@@ -356,7 +363,7 @@ export function changePermanentMor(item, delta, documentOptions = {}) {
 }
 
 export function removeCurrentMor(item, documentOptions = {}) {
-  return enqueueMorChange(item, async () => {
+  return enqueueMorChange(item?.parent, item, async () => {
     assertMorChangeAvailable(item);
     const before = getMorState(item);
     if (before.current <= 0) return null;
@@ -395,7 +402,7 @@ function assertPendingMorGainCurrent(item, pending) {
 }
 
 export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
-  return enqueueMorChange(item, async () => {
+  return enqueueMorChange(item?.parent, item, async () => {
     const pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
     if (!pending || pending.id !== pendingGainId || sameMorState(getMorState(item), pending.before)) {
       throw createCodedError("stale-mor-state", "The pending Mor gain changed while awaiting confirmation.");
@@ -405,7 +412,7 @@ export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
 }
 
 export function applyMorGain(actor, item, documentOptions = {}) {
-  return enqueueMorChange(item, async () => {
+  return enqueueMorChange(actor, item, async () => {
     let pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
     let roll;
     if (pending == null) {

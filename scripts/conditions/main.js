@@ -283,7 +283,7 @@ export async function renderExpandedConditions(app, html) {
       });
     } catch (error) {
       console.error(`${MODULE_ID} | custom condition save failed`, error);
-      ui.notifications?.error?.(localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
+      ui.notifications?.error?.(error?.fblqaUserMessage ?? localize("Notifications.ConditionActionFailed", "The action could not be completed. Refresh the sheet and retry."));
       return false;
     }
   }
@@ -400,7 +400,8 @@ export async function renderExpandedConditions(app, html) {
   function syncAttributeDamageInputs(appliedDamage = []) {
     for (const entry of appliedDamage) {
       if (!entry?.path) continue;
-      html.find(`[name="${entry.path}"]`).val(entry.value);
+      const current = foundry.utils.getProperty(app.actor, entry.path);
+      if (current !== undefined) html.find(`[name="${entry.path}"]`).val(current);
     }
   }
 
@@ -754,7 +755,7 @@ export async function renderExpandedConditions(app, html) {
     const input = btn.siblings(".condition-time");
     const delta = btn.hasClass("time-plus") ? 1 : -1;
     await editCustomField(input, "time", time => canStepDurationText(time)
-      ? time.replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time, true);
+      ? String(time).replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time, true);
   });
 
   html.find(".add-condition").off("click").on("click", async () => {

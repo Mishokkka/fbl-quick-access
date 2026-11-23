@@ -89,6 +89,7 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
   });
   const previousDate = { year: 882, month: 4, day: 11 };
   const date = { ...previousDate, day: 12 };
+  let currentDate = date;
   let marker = { calendarId: "air-islands", date: previousDate };
   const actor = {
     id: "pc", type: "character", documentName: "Actor",
@@ -98,7 +99,7 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
   let missingMarker;
   const uninitialized = {
     id: "uninitialized", type: "character", documentName: "Actor",
-    getFlag: () => missingMarker,
+    getFlag: (_scope, key) => key === "stateProgressionCalendaria" ? missingMarker : undefined,
     async setFlag(_scope, key, value) { assert.equal(key, "stateProgressionCalendaria"); missingMarker = value; }
   };
   const gm = { id: "gm", isGM: true, active: true };
@@ -117,7 +118,7 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
   assert.deepEqual(warnings, []);
 
   const api = {
-    getCurrentDateTime: () => date, getActiveCalendar: () => ({ id: "air-islands" }),
+    getCurrentDateTime: () => currentDate, getActiveCalendar: () => ({ id: "air-islands" }),
     daysBetween: (start, end) => end.day - start.day, addDays: (value, days) => ({ ...value, day: value.day + days })
   };
   game.modules.get("calendaria").api = api;
@@ -131,9 +132,11 @@ test("Calendaria startup waits for the ready hook without warning or rebaselinin
   assert.equal(getCalendariaContext().api, api);
   assert.deepEqual(marker.date, previousDate);
   assert.deepEqual(missingMarker, { calendarId: "air-islands", date });
+  currentDate = { ...date, day: 13 };
   for (const callback of hooks.get("calendaria.calendarSwitched")) callback();
   await nextTurn();
-  assert.deepEqual(marker.date, date);
+  assert.deepEqual(marker.date, currentDate);
+  assert.deepEqual(missingMarker.date, currentDate);
 });
 
 test("Short Rest quarters respect Calendaria's minutes and seconds as well as hours", testContext => {

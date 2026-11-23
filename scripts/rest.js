@@ -9,7 +9,7 @@ import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.
 import { openNewDayDialog } from "./new-day.js";
 import { usesCalendariaStateProgression } from "./state-progression.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
-import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
 import { getCalendariaApi, getCalendariaQuarterInfo as readCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
 const enqueueRestOperation = createObjectOperationQueue();
@@ -158,6 +158,7 @@ export async function openRestDialog(app, actor, root = null) {
   return new Promise((resolve) => {
     let resolved = false;
     let applying = false;
+    let closed = false;
     let dialog = null;
     const finish = (value) => {
       if (resolved) return;
@@ -182,7 +183,7 @@ export async function openRestDialog(app, actor, root = null) {
           icon: '<i class="fas fa-campground"></i>',
           label: qaLocalize("Rest.Apply", "Применить отдых"),
           callback: async (html, _event, _button, renderedDialog) => {
-            if (applying) return false;
+            if (applying || resolved) return false;
             applying = true;
 
             const form = findDialogForm(_button?.form ?? renderedDialog ?? html, "form");
@@ -194,21 +195,26 @@ export async function openRestDialog(app, actor, root = null) {
             }
 
             const options = readRestOptionsFromForm(form);
-            const result = await applyRest(app, actor, options, {
-              root,
-              allowResetShortQuarter: canResetShortRestLimit(actor)
-            });
+            let result;
+            try {
+              result = await applyRest(app, actor, options, { root });
+            } catch (error) {
+              result = { failed: true, error };
+              console.error(`${MODULE_ID} | rest apply failed`, error);
+              ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+            }
 
             if (!result || result.failed || result.errors?.length) {
               applying = false;
+              if (closed) finish(result ?? { failed: true });
               return false;
             }
 
-            const startsNewDay = options.type === "long" && options.startsNewDay && !usesCalendariaStateProgression();
+            const startsNewDay = !closed && options.type === "long" && options.startsNewDay && !usesCalendariaStateProgression();
             finish(result);
             await runPostRestWorkflow({
               startsNewDay,
-              closeDialog: () => closeDialog(renderedDialog),
+              closeDialog: () => { if (!closed) return closeDialog(renderedDialog); },
               openNewDay: () => openNewDayDialog(app, actor)
             });
             return false;
@@ -218,6 +224,7 @@ export async function openRestDialog(app, actor, root = null) {
           icon: '<i class="fas fa-times"></i>',
           label: qaLocalize("Common.Cancel", "Отмена"),
           callback: async (_html, _event, _button, renderedDialog) => {
+            if (applying) return false;
             finish(null);
             await closeDialog(renderedDialog);
             return false;
@@ -236,7 +243,10 @@ export async function openRestDialog(app, actor, root = null) {
         );
         resize();
       },
-      close: () => finish(null)
+      close: () => {
+        closed = true;
+        if (!applying) finish(null);
+      }
     }, {
       classes: ["fblqa-rest-dialog"],
       width: 560,
@@ -535,8 +545,8 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
   }
 
   const pendingCleanup = options.type === "long" ? readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP) : null;
-  const result = pendingCleanup ? clonePlainJson(pendingCleanup.result) : options.type === "short"
-    ? calculateShortRestChanges(actor, options, context)
+  const result = pendingCleanup ? readPendingRestResult(pendingCleanup) : options.type === "short"
+    ? calculateShortRestChanges(actor, options, { ...context, allowResetShortQuarter: canResetShortRestLimit(actor) })
     : calculateLongRestChanges(actor, options, context);
 
   if (result.errors.length) {
@@ -551,9 +561,10 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
 
     // Actor data and the short-rest flag are one logical mutation. Keep them in
     // one Actor.update so a rest does not emit multiple updateActor/render cycles.
-    const actorUpdate = pendingCleanup ? {} : { ...result.updates };
+    const cleanupPath = `flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`;
+    const actorUpdate = pendingCleanup ? planRestRecoveryRetry(actor, pendingCleanup, result.updates) : { ...result.updates };
     if (result.flagValue !== undefined) {
-      actorUpdate[`flags.${MODULE_ID}.${FLAG_SHORT_REST_RECOVERY}`] = result.flagValue;
+      actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = result.flagValue;
     }
     // Reset clears the previous use; a successful recovery records the new use.
     // Use a normal null assignment instead of Foundry's `.-=` deletion path:
@@ -564,25 +575,29 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     }
 
     if (effectIds.length && !pendingCleanup) {
-      actorUpdate[`flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`] = clonePlainJson({
-        effectIds, result: { ...result, effectsToDelete: [] }
+      const { updates, ...recordedResult } = result;
+      actorUpdate[cleanupPath] = clonePlainJson({
+        effectIds, result: { ...recordedResult, effectsToDelete: [] },
+        writes: Object.entries(updates).map(([path, target]) => ({ path, target, before: getProperty(actor._source ?? actor, path) }))
       });
     }
     const hasActorUpdate = Object.keys(actorUpdate).length > 0;
     if (hasActorUpdate) {
       await actor.update(actorUpdate);
-      if (effectIds.length && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP),
-        actorUpdate[`flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`])) {
-        throw createCodedError("write-not-persisted", "Rest cleanup was not recorded.");
+    }
+    if (effectIds.length && !plainValuesEqual(readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP), pendingCleanup ?? actorUpdate[cleanupPath])) {
+      throw createCodedError("write-not-persisted", "Rest cleanup was not recorded.");
+    }
+    for (const [path, expected] of Object.entries(result.updates)) {
+      if (getProperty(actor._source ?? actor, path) !== expected) {
+        throw createCodedError("write-not-persisted", `Rest update for ${path} was not persisted.`);
       }
-      for (const [path, expected] of Object.entries(result.updates)) {
-        if (getProperty(actor._source ?? actor, path) !== expected) {
-          throw createCodedError("write-not-persisted", `Rest update for ${path} was not persisted.`);
-        }
-      }
+    }
+    if (hasActorUpdate) {
       if (result.flagValue !== undefined) {
-        const persistedFlag = getShortRestRecoveryFlag(actor);
-        if (persistedFlag?.quarterKey !== result.flagValue.quarterKey) {
+        const source = actor._source?.flags?.[MODULE_ID] ?? actor.flags?.[MODULE_ID];
+        const persistedFlag = source ? source[FLAG_SHORT_REST_RECOVERY] : getShortRestRecoveryFlag(actor);
+        if (!plainValuesEqual(persistedFlag, result.flagValue)) {
           throw createCodedError("write-not-persisted", "Short Rest recovery flag was not persisted.");
         }
       } else if (result.clearShortRestFlag) {
@@ -623,11 +638,34 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     if (!hasActorUpdate && !effectIds.length) rerenderSheet(app);
   } catch (error) {
     console.error(`${MODULE_ID} | rest update failed`, error);
-    ui.notifications?.error?.(qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
+    ui.notifications?.error?.(error?.code === "rest-recovery-conflict" ? error.message : qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых."));
     return { ...result, failed: true, error };
   }
 
   return result;
+}
+
+function readPendingRestResult(pending) {
+  const result = clonePlainJson(pending.result);
+  result.updates = pending.writes
+    ? Object.fromEntries(pending.writes.map(({ path, target }) => [path, target]))
+    : globalThis.foundry?.utils?.flattenObject?.(result.updates) ?? result.updates;
+  return result;
+}
+
+function planRestRecoveryRetry(actor, pending, targets) {
+  const previous = new Map(pending.writes?.map(({ path, before }) => [path, before]));
+  const update = {};
+  for (const [path, target] of Object.entries(targets)) {
+    const current = getProperty(actor._source ?? actor, path);
+    if (current === target) continue;
+    if (!previous.has(path) || current !== previous.get(path)) {
+      throw createCodedError("rest-recovery-conflict", qaLocalize("Rest.RecoveryConflict",
+        "A character field changed during an unfinished Long Rest. Review the saved recovery and restore its expected value before retrying."));
+    }
+    update[path] = target;
+  }
+  return update;
 }
 
 function matchesQuarterKey(savedKey, quarterInfo) {

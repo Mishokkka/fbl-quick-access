@@ -522,11 +522,13 @@ await qa.rewindAllCalendarMarkers(3);
 ```
 
 - `resetActorCalendarMarkerToCurrent` and `resetAllCalendarMarkersToCurrent` stamp the processed-day marker with the date captured when called, or the explicit context date. The bulk API uses one date for the entire batch. The GM manager checks the confirmed date before each write.
-- `rewindActorCalendarMarker` and `rewindAllCalendarMarkers` move the marker backwards by `days`, using the earlier of the existing marker or the current date. The resulting backlog may contain up to 365 days. Rewinding changes the marker only.
+- `rewindActorCalendarMarker` and `rewindAllCalendarMarkers` move the marker backwards by `days`. They start from a usable marker in the active calendar when it is on or before the current date. They start from the current date for missing, unusable, ahead, or different-calendar markers. The resulting backlog may contain up to 365 days. Rewinding changes the marker only.
 - A bulk rewind returns `succeeded`, `failed`, and `targetDates`. To retry failed writes at their original targets, pass `{ targetDates: outcome.targetDates }` as the fourth argument to `rewindAllCalendarMarkers`. The retry checks the original marker before writing and treats an actor already at the target date as complete. Review unfinished days in the GM manager before retrying affected characters individually.
 - Ordinary reset, rewind and absence actions cannot overwrite an unfinished day. The bulk reset returns `skippedActorIds` for characters with an unfinished day.
 
 ## Money transfer reconciliation
+
+Quick Access uses disabled, statusless Active Effects as operation locks for its wallet writes, Mor changes, and custom-condition list writes. Foundry v13 rejects a duplicate embedded ID on the server, so Quick Access operations that share a lock run exclusively across clients. If a client closes or disconnects mid-write, review the affected data and any unfinished operation. A GM can then remove the corresponding `Quick Access — … operation` effect once the operation has stopped.
 
 The recovery journal stays in the browser profile of the GM client that processed the transfer. It is keyed by world and GM user, but is not synchronized to other GM clients or devices and is not an access-control boundary between accounts sharing a browser profile. Do not clear Foundry site data while transfers are unresolved. New reconciliation notices contain only the transfer ID, not wallet snapshots. If testing an earlier build that wrote snapshots to chat, remove those old notices separately; removing them cannot revoke copies already received.
 

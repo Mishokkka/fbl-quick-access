@@ -15,6 +15,7 @@ import { buildActorCurrencyUpdate } from "./actor-data.js";
 import { createCodedError } from "./document-writes.js";
 import { createObjectOperationQueue, enqueueCurrencyOperation } from "./operation-queue.js";
 import { executeAsActiveGM, getActiveGM, hasSocketHandler, registerSocketHandler } from "./integration/socket-api.js";
+import { withWalletLocks } from "./actor-mutation-lock.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback, rerenderSheet } from "./utils.js";
 import { openMoneyTransferDialog } from "./money-transfer.js";
@@ -59,13 +60,18 @@ export function initializeWalletOperations() {
       if (payload.mode !== "input" && payload.mode !== "delta") throw new TypeError("Invalid wallet operation");
       if (payload.mode === "delta" && !Number.isSafeInteger(payload.value)) throw new TypeError("Invalid wallet delta");
       if (payload.mode === "input" && (typeof payload.value !== "string" || payload.value.length > 200)) throw new TypeError("Invalid wallet expression");
-      const parsed = payload.mode === "input" ? parseCurrencyExpression(String(payload.value)) : null;
-      if (parsed && !parsed.ok) throw new TypeError("Invalid wallet expression");
-      const delta = payload.mode === "delta" ? payload.value : parsed.relative ? parsed.value : parsed.value - getCurrencyValue(actor, payload.key);
-      validateWalletDelta(actor, payload.key, delta);
-      if (payload.mode === "delta") await changeCurrencyUnlocked(null, actor, payload.key, payload.value);
-      else await applyCurrencyInputUnlocked(null, actor, payload.key, payload.value, null);
-      return { values: getWalletValues(actor) };
+      return withWalletLocks([actor], async () => {
+        if (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER")) {
+          throw new Error("Wallet change requires ownership of a character");
+        }
+        const parsed = payload.mode === "input" ? parseCurrencyExpression(String(payload.value)) : null;
+        if (parsed && !parsed.ok) throw new TypeError("Invalid wallet expression");
+        const delta = payload.mode === "delta" ? payload.value : parsed.relative ? parsed.value : parsed.value - getCurrencyValue(actor, payload.key);
+        validateWalletDelta(actor, payload.key, delta);
+        if (payload.mode === "delta") await changeCurrencyUnlocked(null, actor, payload.key, payload.value);
+        else await applyCurrencyInputUnlocked(null, actor, payload.key, payload.value, null);
+        return { values: getWalletValues(actor) };
+      });
     });
   });
 }
@@ -77,9 +83,7 @@ async function dispatchWalletChange(actor, payload, localOperation) {
     initializeWalletOperations();
     return executeAsActiveGM(WALLET_OPERATION, { actorUuid: actor.uuid, actorId: actor.id, ...payload });
   }
-  // Preserve owner-only play without a GM; cross-client coordination requires
-  // an active authority. Transfers already require an active GM.
-  return enqueueCurrencyOperation(localOperation);
+  return enqueueCurrencyOperation(() => withWalletLocks([actor], localOperation));
 }
 
 export function registerWalletListeners() {
