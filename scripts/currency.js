@@ -1,5 +1,5 @@
 import { CURRENCIES } from "./constants.js";
-import { getActorCurrencyValue } from "./actor-data.js";
+import { getActorCurrencyPath, getActorCurrencyValue, getProperty } from "./actor-data.js";
 import { qaLocalize } from "./i18n.js";
 
 const MAX_SAFE_BIGINT = BigInt(Number.MAX_SAFE_INTEGER);
@@ -7,6 +7,47 @@ const MIN_SAFE_BIGINT = BigInt(Number.MIN_SAFE_INTEGER);
 
 export function getCurrencyValue(actor, key) {
   return getActorCurrencyValue(actor, key);
+}
+
+export function readCurrencyBalances(actor) {
+  return Object.fromEntries(CURRENCIES.map(({ key }) => {
+    const raw = getProperty(actor, getActorCurrencyPath(actor, key)) ?? 0;
+    const value = typeof raw === "number" || (typeof raw === "string" && raw.trim()) ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(value) || value < 0) throw new RangeError(`Invalid ${key} balance`);
+    return [key, value];
+  }));
+}
+
+export function currencyError(code, message) {
+  return Object.assign(new Error(message), { code });
+}
+
+export async function writeCurrencyUpdate(actor, update) {
+  const socket = globalThis.game?.socket;
+  if (socket?.connected === false) throw currencyError("socket-unavailable", "Foundry socket is disconnected");
+  const expected = Object.entries(update).map(([path, value]) => ({ path, value, before: getProperty(actor, path) }));
+  const unknownOutcome = () => currencyError("outcome-unknown", "Currency update outcome is unknown");
+  let onDisconnect;
+  const disconnected = new Promise((_resolve, reject) => { onDisconnect = () => reject(unknownOutcome()); });
+  const canWatch = typeof socket?.on === "function" && typeof socket?.off === "function";
+  if (canWatch) socket.on("disconnect", onDisconnect);
+  try {
+    const writing = actor.update(update);
+    await Promise.race([writing, disconnected]);
+  } catch (error) {
+    if (socket?.connected === false || ["timeout", "ETIMEDOUT"].includes(error?.code) || error?.name === "TimeoutError") {
+      throw unknownOutcome();
+    }
+    throw error;
+  } finally {
+    if (canWatch) socket.off("disconnect", onDisconnect);
+  }
+
+  const actual = expected.map(entry => ({ ...entry, after: getProperty(actor, entry.path) }));
+  if (actual.some(({ value, after }) => after !== value)) {
+    if (actual.some(({ before, after }) => after !== before)) throw unknownOutcome();
+    throw currencyError("write-not-persisted", "Currency update was not persisted");
+  }
 }
 
 export function getCurrencyAbbreviation(currency) {

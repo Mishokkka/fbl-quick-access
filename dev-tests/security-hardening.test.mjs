@@ -138,9 +138,10 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
 
   class FakeActor {
     static calls = [];
-    static async updateDocuments(updates) {
-      this.calls.push(structuredClone(updates));
-      return updates;
+    async update(patch) {
+      FakeActor.calls.push({ id: this.id, patch: structuredClone(patch) });
+      for (const [path, value] of Object.entries(patch)) this.system.currency[path.split(".")[2]].value = value;
+      return this;
     }
 
     constructor(id, currency) {
@@ -186,7 +187,7 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
     users,
     actors,
     socket: {
-      on(_channel, callback) { listener = callback; },
+      on(channel, callback) { if (channel === "module.fbl-quick-access") listener = callback; },
       emit(_channel, message) { emitted.push(structuredClone(message)); }
     }
   };
@@ -258,8 +259,10 @@ test("money-transfer GM path rejects unauthenticated offers and decisions", asyn
         await tick();
       }
 
-      assert.equal(FakeActor.calls.length, 1);
-      assert.equal(FakeActor.calls[0].length, 2, "both wallets must be updated in one embedded batch");
+      assert.deepEqual(FakeActor.calls, [
+        { id: source.id, patch: { "system.currency.gold.value": 1 } },
+        { id: target.id, patch: { "system.currency.gold.value": 1 } }
+      ]);
       assert.equal(resultProofAttempts, 2, "result proof creation should receive one bounded retry");
       assert.ok(emitted.some((message) => message.type === "wallet-transfer-result" && message.requestId === validOffer.requestId));
     } finally {
@@ -425,7 +428,7 @@ test("recipient transfer accept and Dialog close emit only one decision", async 
     actors,
     i18n: { localize: (key) => key, format: (_key, data) => JSON.stringify(data) },
     socket: {
-      on(_channel, callback) { listener = callback; },
+      on(channel, callback) { if (channel === "module.fbl-quick-access") listener = callback; },
       emit(_channel, message) { emitted.push(structuredClone(message)); }
     }
   };
@@ -475,7 +478,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
   const previousHTMLElement = globalThis.HTMLElement;
 
   let dialogData = null;
-  let infoCount = 0;
+  let errorCount = 0;
 
   class FakeHTMLElement {
     querySelector(selector) {
@@ -515,9 +518,8 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
   globalThis.Dialog = FakeDialog;
   globalThis.ui = {
     notifications: {
-      info() { infoCount += 1; },
       warn() {},
-      error() {}
+      error() { errorCount += 1; }
     }
   };
   globalThis.game = {
@@ -541,7 +543,7 @@ test("sender transfer submit survives Dialog close and rejects duplicate submit"
     await first;
     await second;
     assert.equal(result?.error, "empty-amount", "Dialog close must not replace the submitted result with null");
-    assert.equal(infoCount, 1, "rapid duplicate submit must start only one transfer attempt");
+    assert.equal(errorCount, 1, "rapid duplicate submit must report invalid input only once");
   } finally {
     globalThis.game = previousGame;
     globalThis.Dialog = previousDialog;
