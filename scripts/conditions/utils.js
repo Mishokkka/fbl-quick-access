@@ -139,14 +139,13 @@ export async function applyActorAttributeDamage(actor, plan, documentOptions) {
   const readValue = path => readNumericValue(getProperty(actor._source ?? actor, path));
   for (const { attribute, path, previous, value } of plan) {
     const current = readValue(path);
-    if (current === value) continue;
     if (current !== previous) {
       const message = localize("Notifications.DamageConflict",
-        "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after}).",
-        { attribute, before: previous, after: value });
+        "An attribute changed before damage was written. Check {attribute} and retry.",
+        { attribute });
       throw Object.assign(createCodedError("damage-conflict", message), { fblqaUserMessage: message });
     }
-    update[path] = value;
+    if (current !== value) update[path] = value;
   }
   if (Object.keys(update).length) {
     await actor.update(update, documentOptions);

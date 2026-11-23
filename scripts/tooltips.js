@@ -26,9 +26,8 @@ export function registerTooltipListeners() {
   });
 
   document.addEventListener("mousemove", (event) => {
-    if (itemTooltipPinned) return;
+    if (itemTooltipPinned || itemTooltipHovered) return;
     itemTooltipPointer = { x: event.clientX, y: event.clientY };
-    if (itemTooltipHovered) return;
     scheduleItemTooltipPosition();
   }, true);
 

@@ -2,7 +2,7 @@ import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID, flagDeletePath, 
 import { confirmDangerAction, createFoundryDialog, findDialogForm } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
-import { runWorldMigration } from "./migrations.js";
+import { finishPendingConditionOrders, runWorldMigration } from "./migrations.js";
 import {
   canStepDurationText,
   canUserEditActor,
@@ -268,7 +268,7 @@ export async function renderExpandedConditions(app, html) {
       return await enqueueActorMutationOperation(app.actor, async () => {
         if (!canUserEditActor(app.actor)) return false;
         const list = getLiveCustomConditions();
-        const changed = mutate(list);
+        const changed = await mutate(list);
         if (changed) {
           list.sort((left, right) => left.order - right.order);
           await setDocumentFlagVerified(app.actor, MODULE_ID, FLAGS.LIST, list, { render: false });
@@ -336,7 +336,8 @@ export async function renderExpandedConditions(app, html) {
       }
     });
 
-    await mutateCustomConditions(list => {
+    await mutateCustomConditions(async list => {
+      await finishPendingConditionOrders(app.actor, list);
       let changed = false;
       for (const condition of list) {
         const order = customOrders.get(condition.id);
@@ -779,8 +780,11 @@ export async function renderExpandedConditions(app, html) {
     const btn = $(ev.currentTarget);
     const input = btn.siblings(".condition-time");
     const delta = btn.hasClass("time-plus") ? 1 : -1;
-    await editCustomField(input, "time", time => canStepDurationText(time)
-      ? String(time).replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time, true);
+    await editCustomField(input, "time", time => {
+      const value = String(time ?? "").trim() || "0";
+      return canStepDurationText(value)
+        ? value.replace(/\d+/, digits => Math.max(0, Number(digits) + delta)) : time;
+    }, true);
   });
 
   html.find(".add-condition").off("click").on("click", async () => {
@@ -860,11 +864,15 @@ export async function renderExpandedConditions(app, html) {
     else target.after(pointerDrag.row);
   }
 
-  const cancelActiveDrag = () => {
+  const cancelActiveDrag = (restoreOrder = true) => {
     if (!pointerDrag) return;
     if (pointerDrag.frame) cancelAnimationFrame(pointerDrag.frame);
     $(document).off("mousemove.fblecSort", onDragMove).off("mouseup.fblecSort", onDragUp);
     $(pointerDrag.row).removeClass("fblec-dragging");
+    if (restoreOrder && pointerDrag.row.parentNode === pointerDrag.parent) {
+      const next = pointerDrag.next;
+      pointerDrag.parent.insertBefore(pointerDrag.row, next?.parentNode === pointerDrag.parent ? next : null);
+    }
     pointerDrag = null;
     if (activeStatDragCleanup === cancelActiveDrag) activeStatDragCleanup = null;
   };
@@ -879,7 +887,7 @@ export async function renderExpandedConditions(app, html) {
       pointerDrag.frame = 0;
       applyPointerDragPosition();
     }
-    cancelActiveDrag();
+    cancelActiveDrag(!save);
 
     if (save && editable) await persistRowOrder();
   }
@@ -897,6 +905,8 @@ export async function renderExpandedConditions(app, html) {
     activeStatDragCleanup = cancelActiveDrag;
     pointerDrag = {
       row,
+      parent: row.parentNode,
+      next: row.nextSibling,
       startX: ev.clientX,
       startY: ev.clientY,
       active: false,

@@ -15,8 +15,8 @@ import {
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
 import { getActiveGM } from "./integration/socket-api.js";
 import { enqueueCurrencyOperation, withWalletLocks } from "./operation-queue.js";
-import { migrateLegacyReconciliations, readReconciliationRecords, writeReconciliationRecords } from "./transfer-reconciliation-store.js";
-import { readDocumentFlag } from "./document-writes.js";
+import { migrateLegacyReconciliations, readReconciliationRecords, updateReconciliationRecords } from "./transfer-reconciliation-store.js";
+import { readDocumentFlag, setDocumentFlagVerified } from "./document-writes.js";
 
 const SOCKET_CHANNEL = `module.${MODULE_ID}`;
 const OFFER_TYPE = "wallet-transfer-offer";
@@ -30,6 +30,7 @@ const RESULT_GRACE_MS = 5_000;
 const PROOF_GRACE_MS = 60_000;
 const SEEN_PACKET_LIMIT = 200;
 const RECEIPTS_FLAG = "walletTransferReceipts";
+const COMPLETED_RECEIPT_TTL_MS = 24 * 60 * 60_000;
 
 let socketRegistered = false;
 const pendingRequests = new Map();
@@ -108,23 +109,20 @@ export async function openMoneyTransferDialog(app, sourceActor) {
             // sender dialog closes immediately instead of freezing up to 95s while
             // waiting for the recipient's decision.
             void (async () => {
-              const result = await requestMoneyTransfer(sourceActor.id, targetActorId, amounts, {
-                onSent: () => {
-                  ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
-                }
-              });
-
-              if (result.ok) {
-                ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
-                  target: result.targetName,
-                  amount: formatTransferAmounts(result.amounts)
-                }));
-              } else if (result.error === "declined") {
-                ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
-              } else {
-                ui.notifications?.error?.(localizeTransferError(result.error));
+              let result;
+              try {
+                result = await requestMoneyTransfer(sourceActor.id, targetActorId, amounts, {
+                  onSent: () => {
+                    ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
+                  },
+                  onLateResult: notifyTransferResult
+                });
+              } catch (error) {
+                console.error(`${MODULE_ID} | money transfer request failed`, error);
+                result = { ok: false, error: "unknown" };
               }
               finish(result);
+              notifyTransferResult(result);
             })();
           }
         },
@@ -150,6 +148,25 @@ export async function openMoneyTransferDialog(app, sourceActor) {
       resizable: false
     }).render(true);
   });
+}
+
+function notifyTransferResult(result) {
+  try {
+    if (result.ok) {
+      ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
+        target: result.targetName, amount: formatTransferAmounts(result.amounts)
+      }));
+    } else if (result.error === "declined") {
+      ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
+    } else if (result.error === "outcome-unknown") {
+      ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.OutcomeUnknown",
+        "No result was received for transfer {id}. Check with the GM before sending again.", { id: result.requestId }));
+    } else {
+      ui.notifications?.error?.(localizeTransferError(result.error));
+    }
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer notification failed`, error);
+  }
 }
 
 export function normalizeTransferAmounts(rawAmounts = {}) {
@@ -245,7 +262,7 @@ export function buildTransferWhisperModel(offer, result) {
   };
 }
 
-export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts, { onSent = null } = {}) {
+export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts, { onSent = null, onLateResult = null } = {}) {
   const sourceActor = game.actors?.get?.(sourceActorId);
   const targetActor = game.actors?.get?.(targetActorId);
   const amounts = normalizeTransferAmounts(rawAmounts);
@@ -285,9 +302,15 @@ export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmou
 
   const response = new Promise((resolve) => {
     const timeout = globalThis.setTimeout(() => {
-      pendingRequests.delete(requestId);
-      void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
-      resolve({ ok: false, error: "timeout" });
+      const pending = pendingRequests.get(requestId);
+      if (!pending) return;
+      pending.resolve = onLateResult ?? (() => {});
+      pending.timeout = globalThis.setTimeout(() => {
+        pendingRequests.delete(requestId);
+        void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
+      }, PROOF_GRACE_MS);
+      pending.timeout?.unref?.();
+      resolve({ ok: false, error: "outcome-unknown", requestId });
     }, REQUEST_TIMEOUT_MS + RESULT_GRACE_MS);
     pendingRequests.set(requestId, { resolve, timeout, primaryGmId: primaryGm.id });
   });
@@ -650,15 +673,11 @@ function readWalletSnapshot(actor) {
 }
 
 function saveReconciliationRecord(record) {
-  const records = readReconciliationRecords();
-  records[record.requestId] = record;
-  writeReconciliationRecords(records);
+  return updateReconciliationRecords(records => { records[record.requestId] = record; });
 }
 
 function removeReconciliationRecord(requestId) {
-  const records = readReconciliationRecords();
-  delete records[requestId];
-  writeReconciliationRecords(records);
+  return updateReconciliationRecords(records => { delete records[requestId]; });
 }
 
 export function getPendingMoneyTransferReconciliations() {
@@ -700,8 +719,14 @@ export async function resolveMoneyTransferReconciliation(requestId, { applyRemai
           resolvedBy: game.user.id,
           appliedRemaining: Boolean(applyRemaining)
         };
-        saveReconciliationRecord(resolved);
-        await clearTransferReceipts(current);
+        await saveReconciliationRecord(resolved);
+        const source = actors[0];
+        const rememberCompletion = applyRemaining && source && current.receiptId === current.requestId;
+        if (rememberCompletion) {
+          try { await keepCompletedTransferReceipt(source, current); }
+          catch (error) { console.error(`${MODULE_ID} | could not checkpoint transfer completion`, error); }
+        }
+        await clearTransferReceipts(current, { keepSource: Boolean(rememberCompletion) });
         return { ok: true, record: resolved };
       });
     } catch (error) {
@@ -728,8 +753,10 @@ async function applyRemainingTransfer(record) {
     return interveningUpdate();
   }
   if (!remaining.length) return { ok: true };
-  if (record.status !== "pending") return { ok: false, error: "manual-reconciliation-required", record };
-  if (remaining.some(([actor, wallet]) => !walletMatchesExpected(actor, wallet.observed))) {
+  if (record.status !== "pending" && !(record.status === "applying" && remaining.length < pairs.length)) {
+    return { ok: false, error: "manual-reconciliation-required", record };
+  }
+  if (record.status === "pending" && remaining.some(([actor, wallet]) => !walletMatchesExpected(actor, wallet.observed))) {
     return interveningUpdate();
   }
   if (remaining.some(([actor, wallet]) => wallet.updated || !walletMatchesExpected(actor, wallet.before))) {
@@ -757,16 +784,18 @@ function transferReceiptKey(record) {
 }
 
 function hasTransferReceipt(actor, record) {
-  return readDocumentFlag(actor, MODULE_ID, transferReceiptKey(record)) === true;
+  const receipt = readDocumentFlag(actor, MODULE_ID, transferReceiptKey(record));
+  return receipt === true || Number.isFinite(receipt);
 }
 
 function buildTransferUpdate(actor, currencyUpdate, record) {
   return { _id: actor.id, ...currencyUpdate, [`flags.${MODULE_ID}.${transferReceiptKey(record)}`]: true };
 }
 
-async function clearTransferReceipts(record) {
+async function clearTransferReceipts(record, { keepSource = false } = {}) {
   if (!isValidSocketRequestId(record.receiptId)) return;
   for (const id of [record.sourceActorId, record.targetActorId]) {
+    if (keepSource && id === record.sourceActorId) continue;
     const actor = game.actors?.get?.(id);
     if (!hasTransferReceipt(actor, record)) continue;
     try {
@@ -778,9 +807,10 @@ async function clearTransferReceipts(record) {
 }
 
 function buildReconciliationRecord(sourceActor, targetActor, plan, metadata = {}) {
+  const requestId = String(metadata.requestId || makeSocketRequestId());
   return {
-    requestId: String(metadata.requestId || makeSocketRequestId()),
-    receiptId: makeSocketRequestId(),
+    requestId,
+    receiptId: requestId,
     status: "applying",
     createdAt: Date.now(),
     requesterId: metadata.requesterId ?? null,
@@ -793,6 +823,27 @@ function buildReconciliationRecord(sourceActor, targetActor, plan, metadata = {}
     source: { before: plan.sourceBefore, expected: plan.sourceAfter, observed: plan.sourceBefore, updated: false },
     target: { before: plan.targetBefore, expected: plan.targetAfter, observed: plan.targetBefore, updated: false }
   };
+}
+
+export function getMoneyTransferStatus(requestId, sourceActorId) {
+  const actor = game.actors?.get?.(sourceActorId);
+  if (!isValidSocketRequestId(requestId) || !actor || !canModifyActor(actor)) return "unknown";
+  return hasCompletedTransferReceipt(actor, requestId) ? "completed" : "unknown";
+}
+
+function hasCompletedTransferReceipt(actor, requestId) {
+  return Number.isFinite(readDocumentFlag(actor, MODULE_ID, transferReceiptKey({ receiptId: requestId })));
+}
+
+async function keepCompletedTransferReceipt(actor, record) {
+  const now = Date.now();
+  await setDocumentFlagVerified(actor, MODULE_ID, transferReceiptKey(record), now, { render: false });
+  for (const [id, completedAt] of Object.entries(readDocumentFlag(actor, MODULE_ID, RECEIPTS_FLAG) ?? {})) {
+    if (Number.isFinite(completedAt) && now - completedAt > COMPLETED_RECEIPT_TTL_MS) {
+      try { await actor.unsetFlag?.(MODULE_ID, transferReceiptKey({ receiptId: id })); }
+      catch (error) { console.error(`${MODULE_ID} | old transfer receipt cleanup failed`, error); }
+    }
+  }
 }
 
 function notifyReconciliationWriteFailure(error) {
@@ -826,6 +877,14 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, offer 
 }
 
 async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata) {
+  const existing = { receiptId: metadata.requestId };
+  const success = amounts => ({ ok: true, sourceName: sourceActor.name, targetName: targetActor.name, amounts });
+  if (metadata.requestId) {
+    if (hasCompletedTransferReceipt(sourceActor, metadata.requestId)) return success(normalizeTransferAmounts(rawAmounts));
+    if ([sourceActor, targetActor].some(actor => hasTransferReceipt(actor, existing))) {
+      return { ok: false, error: "update-incomplete" };
+    }
+  }
   const plan = buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts);
   if (!plan.ok) return plan;
   const ActorClass = sourceActor.constructor.implementation ?? sourceActor.constructor;
@@ -833,10 +892,11 @@ async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, 
 
   const record = buildReconciliationRecord(sourceActor, targetActor, plan, metadata);
   try {
-    const records = readReconciliationRecords();
-    if (Object.hasOwn(records, record.requestId)) return { ok: false, error: "duplicate-request" };
-    records[record.requestId] = record;
-    writeReconciliationRecords(records);
+    const reserved = await updateReconciliationRecords(records => {
+      if (Object.hasOwn(records, record.requestId)) return false;
+      records[record.requestId] = record;
+    });
+    if (!reserved) return { ok: false, error: "duplicate-request" };
   } catch (error) {
     notifyReconciliationWriteFailure(error);
     return { ok: false, error: "update-failed" };
@@ -859,10 +919,11 @@ async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, 
     && walletMatchesExpected(sourceActor, plan.sourceBefore) && walletMatchesExpected(targetActor, plan.targetBefore);
   try {
     if (completed || unchanged) {
-      removeReconciliationRecord(record.requestId);
-      if (completed) await clearTransferReceipts(record);
+      if (completed && metadata.requestId) await keepCompletedTransferReceipt(sourceActor, record);
+      await removeReconciliationRecord(record.requestId);
+      if (completed) await clearTransferReceipts(record, { keepSource: Boolean(metadata.requestId) });
     } else {
-      saveReconciliationRecord({
+      await saveReconciliationRecord({
         ...record,
         status: "pending",
         source: { ...record.source, observed: readWalletSnapshot(sourceActor), updated: sourceUpdated },
@@ -875,7 +936,7 @@ async function executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, 
 
   if (!completed) return { ok: false, error: unchanged ? "update-failed" : "update-incomplete" };
   Hooks.callAll?.("fblQuickAccess.walletTransferred", { sourceActor, targetActor, amounts: plan.amounts });
-  return { ok: true, sourceName: sourceActor.name, targetName: targetActor.name, amounts: plan.amounts };
+  return success(plan.amounts);
 }
 
 async function postTransferReconciliationWhisper(requestId) {

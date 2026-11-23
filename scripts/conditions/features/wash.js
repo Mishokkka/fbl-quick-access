@@ -7,10 +7,9 @@ import { createObjectOperationQueue } from "../../operation-queue.js";
 
 const enqueueWashOperation = createObjectOperationQueue();
 
-function hasActorItem(actor, itemId) {
-  if (!actor?.items || !itemId) return false;
-  if (typeof actor.items.get === "function") return Boolean(actor.items.get(itemId));
-  return Array.from(actor.items).some((item) => item?.id === itemId);
+function getActorItem(actor, itemId) {
+  if (typeof actor?.items?.get === "function") return actor.items.get(itemId);
+  return Array.from(actor?.items ?? []).find(item => item?.id === itemId);
 }
 
 export function getWashDefinition() {
@@ -79,7 +78,8 @@ export async function removeOtherWashStates(actor, activeItem) {
   if (!actor || !activeItem || activeItem.type !== "criticalInjury" || !isWashCondition(activeItem)) return;
 
   return enqueueWashOperation(actor, async () => {
-    if (!hasActorItem(actor, activeItem.id)) return;
+    const liveItem = getActorItem(actor, activeItem.id);
+    if (liveItem?.type !== "criticalInjury" || !isWashCondition(liveItem)) return;
     const idsToDelete = Array.from(actor.items ?? [])
       .filter(item => item.type === "criticalInjury" && item.id !== activeItem.id && isWashCondition(item))
       .map(item => item.id);
@@ -87,9 +87,9 @@ export async function removeOtherWashStates(actor, activeItem) {
     if (!idsToDelete.length) return;
 
     await actor.deleteEmbeddedDocuments("Item", idsToDelete);
-    const removedAny = idsToDelete.some((id) => !hasActorItem(actor, id));
+    const removedAny = idsToDelete.some(id => !getActorItem(actor, id));
     if (removedAny) {
-      ui.notifications?.info?.(localize("Notifications.WashExclusive", "Wash state updated: “{name}” kept and older states removed.", { name: activeItem.name }));
+      ui.notifications?.info?.(localize("Notifications.WashExclusive", "Wash state updated: “{name}” kept and older states removed.", { name: liveItem.name }));
     }
   });
 }
@@ -149,7 +149,7 @@ async function runWashTransition(actor, currentName, documentOptions = {}) {
     }
 
     const persistedCreated = Array.isArray(createdItems)
-      ? createdItems.filter((item) => item?.id && hasActorItem(actor, item.id))
+      ? createdItems.filter(item => item?.id && getActorItem(actor, item.id))
       : [];
     if (!persistedCreated.length) {
       if (!suppressNotifications) ui.notifications?.error?.(localize("Notifications.WashTransitionFailed", "Could not change wash state to “{name}”. The previous state was kept.", { name: nextName }));
@@ -177,7 +177,7 @@ async function runWashTransition(actor, currentName, documentOptions = {}) {
       };
     }
 
-    const remainingStale = staleIds.filter((id) => hasActorItem(actor, id));
+    const remainingStale = staleIds.filter(id => getActorItem(actor, id));
     if (remainingStale.length) {
       if (!suppressNotifications) ui.notifications?.warn?.(localize("Notifications.WashCleanupFailed", "The new wash state was created, but an older wash state could not be removed."));
       return {

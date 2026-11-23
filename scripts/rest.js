@@ -583,11 +583,16 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
 
     const savedRest = pendingCleanup ?? pendingShortRest;
     const actorUpdate = savedRest ? planRestRecoveryRetry(actor, savedRest, result.updates) : { ...result.updates };
+    let expectedUse = result.flagValue;
     if (result.flagValue !== undefined) {
       const currentUse = getShortRestRecoveryFlag(actor);
-      if (!plainValuesEqual(currentUse, result.flagValue)) {
+      if (savedShortRest && currentUse == null
+        && (pendingShortRest.previousUse != null || result.flagValue.quarterKey !== getCurrentQuarterInfo().key)) {
+        expectedUse = null;
+      }
+      if (!plainValuesEqual(currentUse, expectedUse)) {
         if (!plainValuesEqual(currentUse, pendingShortRest.previousUse)) throw restRecoveryConflict();
-        actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = result.flagValue;
+        actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = expectedUse;
       }
     }
     // Reset clears the previous use; a successful recovery records the new use.
@@ -611,7 +616,7 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       if (result.flagValue !== undefined) {
         const source = actor._source?.flags?.[MODULE_ID] ?? actor.flags?.[MODULE_ID];
         const persistedFlag = source ? source[FLAG_SHORT_REST_RECOVERY] : getShortRestRecoveryFlag(actor);
-        if (!plainValuesEqual(persistedFlag, result.flagValue)) {
+        if (!plainValuesEqual(persistedFlag ?? null, expectedUse)) {
           throw createCodedError("write-not-persisted", "Short Rest recovery flag was not persisted.");
         }
       } else if (result.clearShortRestFlag) {

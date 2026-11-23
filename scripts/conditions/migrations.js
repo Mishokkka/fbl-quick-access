@@ -147,6 +147,7 @@ async function persistItemMigration(actor, itemUpdates) {
 
 
 const ORDER_MIGRATION = "conditions.pendingOrderMigration";
+const COUNTER_MIGRATION = "conditions.pendingCounterMigration";
 
 function isArcEntry(name) {
   const value = String(name || "").toUpperCase();
@@ -170,7 +171,17 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
   if (!orders.custom.length && !orders.items.length) return { changed: false, list };
   const options = { render: false };
   if (!pending) await setDocumentFlagVerified(actor, MODULE_ID, ORDER_MIGRATION, orders, options, { replace: true });
+  await applyConditionOrders(actor, list, orders);
+  return { changed: true, list };
+}
 
+export async function finishPendingConditionOrders(actor, list) {
+  const pending = readDocumentFlag(actor, MODULE_ID, ORDER_MIGRATION);
+  if (pending) await applyConditionOrders(actor, list, pending);
+}
+
+async function applyConditionOrders(actor, list, orders) {
+  const options = { render: false };
   const customOrders = new Map(orders.custom);
   let customChanged = false;
   for (const condition of list) {
@@ -195,7 +206,6 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
     }
   }
   await clearDocumentFlagNullVerified(actor, MODULE_ID, ORDER_MIGRATION, options);
-  return { changed: true, list };
 }
 
 function planConditionOrders(list, injuries) {
@@ -260,19 +270,9 @@ export async function migrateActorData(actor) {
       );
     }
     const ordering = await ensureConditionItemOrders(actor, normalized.list);
-    return actorMigrated || itemsMigrated || normalized.changed || ordering.changed;
+    const countersMigrated = await migrateCounterTimers(actor);
+    return actorMigrated || itemsMigrated || normalized.changed || ordering.changed || countersMigrated;
   });
-
-  const counters = Array.from(actor.items ?? [])
-    .filter(item => item.type === "criticalInjury")
-    .map(item => buildSpecialCounterMigrationUpdate(item))
-    .filter(Boolean);
-
-  if (counters.length) {
-    await persistItemMigration(actor, counters.filter(update => Object.keys(update).length > 1));
-    await persistItemMigration(actor, counters.map(({ _id }) => ({ _id, "system.healingTime": "" })));
-    changed = true;
-  }
 
   const addictionItems = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury" && isAddictionCondition(item));
   for (const item of addictionItems) {
@@ -292,6 +292,38 @@ export async function migrateActorData(actor) {
   }
 
   return changed;
+}
+
+async function migrateCounterTimers(actor) {
+  const options = { render: false };
+  const finish = async plan => {
+    const counters = plan.filter(({ id, kind, timer }) => {
+      const item = getActorItemById(actor, id);
+      return item && getConditionKind(item) === kind && item.system?.healingTime === timer;
+    }).map(({ id, fields }) => ({ _id: id, ...Object.fromEntries(fields) }));
+    await persistItemMigration(actor, counters.filter(({ _id, ...fields }) => {
+      const item = getActorItemById(actor, _id);
+      return Object.entries(fields).some(([path, expected]) => !plainValuesEqual(getProperty(item._source ?? item, path), expected));
+    }));
+    await persistItemMigration(actor, counters.map(({ _id }) => ({ _id, "system.healingTime": "" })));
+    await clearDocumentFlagNullVerified(actor, MODULE_ID, COUNTER_MIGRATION, options);
+  };
+
+  const pending = readDocumentFlag(actor, MODULE_ID, COUNTER_MIGRATION);
+  if (pending) await finish(pending);
+  const plan = [];
+  for (const item of Array.from(actor.items ?? [])) {
+    if (item.type !== "criticalInjury") continue;
+    const update = buildSpecialCounterMigrationUpdate(item);
+    if (update) {
+      const { _id: id, ...fields } = update;
+      plan.push({ id, fields: Object.entries(fields), kind: getConditionKind(item), timer: item.system.healingTime });
+    }
+  }
+  if (!plan.length) return Boolean(pending);
+  await setDocumentFlagVerified(actor, MODULE_ID, COUNTER_MIGRATION, plan, options, { replace: true });
+  await finish(plan);
+  return true;
 }
 
 export async function runWorldMigration() {

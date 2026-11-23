@@ -541,4 +541,6 @@ const qa = game.modules.get("fbl-quick-access").api;
 qa.getPendingMoneyTransferReconciliations();
 ```
 
-Compare the saved and current balances before acting. The active GM can call `qa.resolveMoneyTransferReconciliation(requestId, { applyRemaining: true })` for a verified incomplete update; it only writes a missing side whose balance remains unchanged. If a transfer was interrupted or the records disagree, inspect and correct the wallets manually, then call `qa.resolveMoneyTransferReconciliation(requestId)` to close it without moving money. If closing fails after the wallets were updated, a retry checks the saved and current balances before writing again.
+Compare the saved and current balances before acting. The active GM can call `qa.resolveMoneyTransferReconciliation(requestId, { applyRemaining: true })` for a verified incomplete update. It only writes a missing side whose balance remains unchanged. If the records disagree, inspect and correct the wallets manually, then call `qa.resolveMoneyTransferReconciliation(requestId)` to close it without moving money.
+
+When the sender receives an unknown outcome, use `qa.getMoneyTransferStatus(requestId, sourceActorId)` with the ID shown in the notification. A stored completion receipt returns `"completed"`. For `"unknown"`, ask the GM to check the reconciliation record and the two wallets before trying again.

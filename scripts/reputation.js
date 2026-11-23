@@ -55,7 +55,7 @@ export function getReputationEntries(actor) {
   if (legacyTotal < 1) return [];
 
   return [{
-    id: makeEntryId(),
+    id: "legacy-reputation",
     amount: legacyTotal,
     description: "",
     location: ""

@@ -13,7 +13,8 @@ const FA_NON_ICON_CLASSES = new Set([
 const BUILD_OPERATION = "integration.new-day.build-provider";
 const APPLY_OPERATION = "integration.new-day.apply-provider";
 const PRE_DISPATCH_ERRORS = new Set([
-  "unknown-provider", "stale-provider-action", "provider-registration-changed", "provider-preflight-failed", "duplicate-provider-action"
+  "unknown-provider", "stale-provider-action", "provider-registration-changed", "provider-preflight-failed",
+  "duplicate-provider-action", "active-gm-only", "missing-actor"
 ]);
 const providers = new Map();
 const enqueueProviderApply = createObjectOperationQueue();

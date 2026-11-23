@@ -312,7 +312,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
   };
   const pausedForAddiction = () => !dispatched && pendingAtStart;
   const stalePlan = () => !dispatched && results.length > 0
-    && results.every(entry => entry.code === "stale-plan" || wasProviderActionRejected(entry));
+    && results.every(entry => ["stale-plan", "stale-addiction-day"].includes(entry.code) || wasProviderActionRejected(entry));
   const actions = selectedActions.filter(action => {
     try { assertCurrent(action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
@@ -401,7 +401,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
         results.push(successResult(action, providerResult));
         continue;
       }
-      dispatched = true;
+      dispatched ||= action.kind !== "addiction-day";
 
       if (action.kind === "short-rest-reset") {
         await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_SHORT_REST_RECOVERY, documentOptions);
@@ -419,12 +419,19 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
         });
         if (!transition?.changed) throw new Error(transition?.reason ?? "Wash transition failed");
       } else if (action.kind === "addiction-day") {
-        const addictionResult = await processAddictionNewDay(actor, item, {
-          dayKey: action.dayKey,
-          postChat,
-          notify: !suppressNotifications,
-          documentOptions
-        });
+        let addictionResult;
+        try {
+          addictionResult = await processAddictionNewDay(actor, item, {
+            dayKey: action.dayKey, requireDayMatch: true, postChat, notify: !suppressNotifications, documentOptions
+          });
+        } catch (error) {
+          if (error?.code !== "stale-addiction-day") dispatched = true;
+          throw error;
+        }
+        if (addictionResult?.dayKey !== action.dayKey) {
+          throw createCodedError("stale-addiction-day", "The selected addiction day was not processed; refresh the preview.");
+        }
+        dispatched = true;
         results.push(successResult(action, {
           changed: addictionResult?.changed,
           pending: addictionResult?.pending,
@@ -615,17 +622,18 @@ async function applyItemDeletesIndividually(actor, plan, valid, results, documen
       continue;
     }
 
+    let writeError;
     try {
       assertActionCurrent(actor, plan, action);
       await liveItem.delete(documentOptions);
-      if (!isItemDeletedOnActor(actor, action.itemId, liveItem)) {
-        throw createCodedError("write-not-persisted", `New Day deletion for item ${action.itemId} was not persisted.`);
-      }
+    } catch (error) { writeError = error; }
+    if (isItemDeletedOnActor(actor, action.itemId, liveItem)) {
       results.push(successResult(action));
-    } catch (error) {
-      console.error(`${MODULE_ID} | new-day action failed`, action, error);
-      results.push(failureResult(action, error));
+      continue;
     }
+    const error = writeError ?? createCodedError("write-not-persisted", `New Day deletion for item ${action.itemId} was not persisted.`);
+    console.error(`${MODULE_ID} | new-day action failed`, action, error);
+    results.push(failureResult(action, error));
   }
 }
 

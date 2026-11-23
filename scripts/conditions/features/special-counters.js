@@ -6,7 +6,7 @@ import { makeSocketRequestId } from "../../socket-utils.js";
 import { clearDocumentFlagNullVerified, createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
 
 import { isFeatureEnabled } from "../settings.js";
-import { applyActorAttributeDamage, clampNumber, isNamedSpecialCondition, localize, normalizeConditionName, parseCounterPair, parseFirstInteger, planActorAttributeDamage, remainingActorAttributeDamage } from "../utils.js";
+import { applyActorAttributeDamage, clampNumber, localize, parseCounterPair, parseFirstInteger, planActorAttributeDamage, remainingActorAttributeDamage } from "../utils.js";
 
 const enqueueCounterItem = createObjectOperationQueue();
 const HEAT_PENDING_CHANGE = "conditions.heatPendingChange";
@@ -376,11 +376,18 @@ async function applyCounterDamage(actor, item, pendingKey, pending, receiptName,
 
   // Keep the Item record through both the Actor update and its readback.
   // Without a verified readback, a restored attribute is ambiguous on retry.
-  await checkpoint(true, remaining);
+  // A verified omission is still owed, even if another action later brought
+  // the attribute to the old target. An interrupted, unverified write uses the
+  // separate recovery path above.
+  const attempt = pending.remainingDamage
+    ? planActorAttributeDamage(actor, Object.fromEntries(remaining.map(({ attribute, amount }) => [attribute, amount])))
+    : remaining;
+  if (attempt.length !== remaining.length) throw createCodedError("damage-conflict", "An attribute needed for the pending damage is unavailable.");
+  await checkpoint(true, attempt);
   let writeError;
-  try { await applyActorAttributeDamage(actor, remaining, documentOptions); }
+  try { await applyActorAttributeDamage(actor, attempt, documentOptions); }
   catch (error) { writeError = error; }
-  const missing = remainingActorAttributeDamage(actor, remaining);
+  const missing = writeError?.code === "damage-conflict" ? attempt : remainingActorAttributeDamage(actor, attempt);
   await checkpoint(false, missing);
   if (missing.length) throw writeError ?? createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
   return damagePlan;
@@ -453,7 +460,9 @@ function assertPendingMorGainCurrent(item, pending, allowApplied = false) {
 export function clearStaleMorGain(item, pendingGainId, documentOptions = {}) {
   return enqueueCounterChange(item?.parent, item, async () => {
     const pending = readDocumentFlag(item, MODULE_ID, MOR_PENDING_GAIN);
-    if (!pending || pending.id !== pendingGainId || sameMorState(getMorState(item), pending.before)) {
+    const current = getMorState(item);
+    if (!pending || pending.id !== pendingGainId || sameMorState(current, pending.before)
+      || (Array.isArray(pending.damagePlan) && sameMorState(current, morGainTarget(pending)))) {
       throw createCodedError("stale-mor-state", "The pending Mor gain changed while awaiting confirmation.");
     }
     return clearDocumentFlagNullVerified(item, MODULE_ID, MOR_PENDING_GAIN, documentOptions);
@@ -506,14 +515,15 @@ export function buildSpecialCounterMigrationUpdate(item) {
   const healingTime = String(item?.system?.healingTime ?? "").trim();
   if (!healingTime) return null;
 
-  if (isNamedSpecialCondition(item, getHeatDefinition())) {
+  const kind = getConditionKind(item);
+  if (kind === "heat") {
     return {
       _id: item.id,
       ...(item.getFlag(MODULE_ID, FLAGS.HEAT_VALUE) == null && { [flagUpdatePath(FLAGS.HEAT_VALUE)]: parseHeatValue(item) })
     };
   }
 
-  if (["мор", "mor"].includes(normalizeConditionName(item.name))) {
+  if (kind === "mor") {
     return {
       _id: item.id,
       ...(item.getFlag(MODULE_ID, FLAGS.MOR_STATE) == null && { [flagUpdatePath(FLAGS.MOR_STATE)]: getMorState(item) })

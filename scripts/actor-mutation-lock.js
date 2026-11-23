@@ -15,7 +15,7 @@ function readLocks(effects) {
     id: effect.id,
     token: readDocumentFlag(effect, MODULE_ID, LOCK_FLAG) ?? null,
     ownerId: readDocumentFlag(effect, MODULE_ID, LOCK_OWNER) ?? null
-  })).filter(lock => lock.id !== RECOVERY_LOCK_ID && (lock.id === LOCK_ID || lock.token))
+  })).filter(lock => lock.id === LOCK_ID || lock.id === RECOVERY_LOCK_ID || lock.token)
     .sort((left, right) => left.id.localeCompare(right.id));
 }
 
@@ -50,14 +50,26 @@ export async function recoverActorMutationLock(actor) {
 
   // Foundry deletes by ID only. Serialize recovery across clients, then verify
   // the abandoned token through the database before passing that ID to delete.
-  return withLockEffect(actor, RECOVERY_LOCK_ID, "Quick Access — Lock recovery", async () => {
+  const recovery = locks.find(lock => lock.id === RECOVERY_LOCK_ID);
+  const original = locks.filter(lock => lock.id !== RECOVERY_LOCK_ID);
+  const removeAbandoned = async () => {
     const persisted = await persistedActorLocks(actor);
-    if (!plainValuesEqual(persisted, locks) || locks.some(stillInUse)) throw lockUnavailable();
-    await actor.deleteEmbeddedDocuments("ActiveEffect", locks.map(lock => lock.id), { render: false });
+    const expected = recovery ? persisted : persisted.filter(lock => lock.id !== RECOVERY_LOCK_ID);
+    if (!plainValuesEqual(expected, locks) || locks.some(stillInUse)) throw lockUnavailable();
+    if (original.length) {
+      await actor.deleteEmbeddedDocuments("ActiveEffect", original.map(lock => lock.id), { render: false });
+    }
     const remaining = await persistedActorLocks(actor);
-    if (remaining.some(lock => locks.some(removed => plainValuesEqual(lock, removed)))) throw lockUnavailable();
+    if (remaining.some(lock => lock.id !== RECOVERY_LOCK_ID)) throw lockUnavailable();
+    if (recovery) {
+      if (!plainValuesEqual(remaining, [recovery])) throw lockUnavailable();
+      await actor.deleteEmbeddedDocuments("ActiveEffect", [recovery.id], { render: false });
+      if ((await persistedActorLocks(actor)).some(lock => plainValuesEqual(lock, recovery))) throw lockUnavailable();
+    }
     return true;
-  });
+  };
+  return recovery ? removeAbandoned()
+    : withLockEffect(actor, RECOVERY_LOCK_ID, "Quick Access — Lock recovery", removeAbandoned);
 }
 
 function lockUnavailable() {

@@ -13,6 +13,7 @@ let activePopover = null;
 let activeOutsideClickHandler = null;
 let activeKeydownHandler = null;
 const pendingTalentSaves = new Set();
+const pendingStartRules = new Map();
 
 /**
  * Adds two controls to the character header:
@@ -62,23 +63,26 @@ export function setupStartWillpowerButton(app, actor, root) {
   button.title = qaLocalize("Willpower.ApplyStartRule", "Выровнять Willpower по правилу начала партии");
   button.setAttribute("aria-label", qaLocalize("Willpower.ApplyStartRule", "Выровнять Willpower по правилу начала партии"));
   button.innerHTML = `<i class="fas fa-scale-balanced" aria-hidden="true"></i>`;
-  button.disabled = !editable;
+  const key = actorKey(actor);
+  const pending = pendingStartRules.get(key);
+  pending?.add(button);
+  button.disabled = !editable || Boolean(pending);
 
-  let applying = false;
   button.addEventListener("click", async (event) => {
     event.preventDefault();
     event.stopPropagation();
-    if (applying) return;
+    if (pendingStartRules.has(key)) return;
 
     if (!canModifyActor(actor)) {
       warnCannotModifyActor();
       return;
     }
 
-    applying = true;
+    const buttons = new Set([button]);
+    pendingStartRules.set(key, buttons);
     button.disabled = true;
-    const result = calculateStartWillpower(actor);
     try {
+      const result = calculateStartWillpower(actor);
       await actor.update({ [WP_PATH]: result.value });
       ui.notifications?.info?.(
         qaLocalize("Willpower.Result", "Willpower на начало партии: {currentWp} → {value} (EMP {empathyMax}, проф. талант {professionalRank}, талант народа {kinRank}).", result)
@@ -88,8 +92,8 @@ export function setupStartWillpowerButton(app, actor, root) {
       console.error(`${MODULE_ID} | failed to update session Willpower`, error);
       ui.notifications?.error?.(qaLocalize("Willpower.UpdateFailed", "Не удалось обновить Willpower. Проверь права на лист персонажа."));
     } finally {
-      applying = false;
-      button.disabled = !canModifyActor(actor);
+      pendingStartRules.delete(key);
+      for (const control of buttons) control.disabled = !canModifyActor(actor);
     }
   });
 

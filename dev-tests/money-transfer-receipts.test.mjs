@@ -4,6 +4,7 @@ import { setImmediate } from "node:timers/promises";
 import { MODULE_ID } from "../scripts/constants.js";
 import { createSocketProof, verifySocketProof } from "../scripts/socket-auth.js";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
+import { exposeModule } from "./helpers/expose-module.mjs";
 
 let moduleInstance = 0;
 
@@ -58,6 +59,7 @@ async function setup(context, { asSender = false } = {}) {
       this.system = { currency: { gold: { value: gold }, silver: { value: 0 }, copper: { value: 0 } } };
     }
     testUserPermission(user) { return user.isGM || user.character?.id === this.id; }
+    async update(patch) { applyPatch(this, patch); }
     static async updateDocuments(updates) {
       state.updates.push(structuredClone(updates));
       const applied = [];
@@ -161,4 +163,58 @@ test("an unrelated wallet edit to the expected balance cannot close reconciliati
   assert.equal(state.updates.length, 1);
   assert.equal(readGold(source), 3);
   assert.equal(readGold(target), 3);
+});
+
+test("a late transfer result follows an unknown outcome instead of a failure", { timeout: 2_000 }, async context => {
+  const { transfers, source, target, waitForPacket, deliverResult } = await setup(context, { asSender: true });
+  const setTimer = globalThis.setTimeout;
+  let reportMissingResult;
+  context.mock.method(globalThis, "setTimeout", (callback, time, ...args) => {
+    const timer = setTimer(callback, time, ...args);
+    if (time === 95_000) reportMissingResult = () => { clearTimeout(timer); callback(...args); };
+    return timer;
+  });
+  const offered = waitForPacket("wallet-transfer-offer");
+  const late = Promise.withResolvers();
+  const response = transfers.requestMoneyTransfer(source.id, target.id, { gold: 2 }, { onLateResult: late.resolve });
+  const offer = await offered;
+  reportMissingResult();
+  assert.deepEqual(await response, { ok: false, error: "outcome-unknown", requestId: offer.requestId });
+  const result = { ok: true, amounts: offer.amounts };
+  await deliverResult(offer, result);
+  assert.deepEqual(await late.promise, result);
+});
+
+test("reconciliation finishes the missing side when only the applying journal survived", { timeout: 2_000 }, async context => {
+  const { transfers, source, target, state, storage, acceptOffer } = await setup(context);
+  const id = "applying-journal";
+  const write = storage.setItem;
+  storage.setItem = (key, value) => {
+    if (JSON.parse(value)[id]?.status === "pending") return;
+    write(key, value);
+  };
+  state.veto = update => update._id === target.id;
+  assert.equal((await acceptOffer(id, 2)).error, "update-incomplete");
+  assert.equal(transfers.getPendingMoneyTransferReconciliations()[0].status, "applying");
+  storage.setItem = write;
+  state.veto = () => false;
+  assert.equal((await transfers.resolveMoneyTransferReconciliation(id, { applyRemaining: true })).ok, true);
+  assert.deepEqual([readGold(source), readGold(target)], [3, 3]);
+  assert.equal(transfers.getMoneyTransferStatus(id, source.id), "completed");
+});
+
+test("the Actor completion receipt prevents a duplicate transfer after a GM session change", { timeout: 2_000 }, async context => {
+  const { transfers, source, target, sender, state, acceptOffer } = await setup(context);
+  const requestId = "completed-before-reload";
+  assert.equal((await acceptOffer(requestId, 2)).ok, true);
+  assert.equal(transfers.getMoneyTransferStatus(requestId, source.id), "completed");
+  globalThis.localStorage = createMemoryStorage();
+  const fresh = await exposeModule("scripts/money-transfer.js", ["executeMoneyTransfer"], { fresh: true });
+  const offer = {
+    requestId, requesterId: sender.id, recipientUserId: game.users.find(user => user.character === target).id,
+    primaryGmId: game.user.id, sourceActorId: source.id, targetActorId: target.id, createdAt: Date.now()
+  };
+  assert.equal((await fresh.executeMoneyTransfer(source, target, { gold: 2 }, offer)).ok, true);
+  assert.deepEqual([readGold(source), readGold(target)], [3, 3]);
+  assert.equal(state.updates.length, 1);
 });

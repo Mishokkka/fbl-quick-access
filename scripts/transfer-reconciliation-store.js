@@ -36,6 +36,18 @@ export function writeReconciliationRecords(records, { limitHistory = true } = {}
   }
 }
 
+export async function updateReconciliationRecords(edit, options) {
+  const { key } = reconciliationStorage();
+  const update = async () => {
+    const records = readReconciliationRecords();
+    if (edit(records) === false) return false;
+    writeReconciliationRecords(records, options);
+    return true;
+  };
+  const locks = globalThis.navigator?.locks;
+  return locks ? locks.request(key, update) : update();
+}
+
 function reconciliationEntries(records) {
   if (!records || typeof records !== "object" || Array.isArray(records)) {
     throw createCodedError("reconciliation-invalid", "Invalid money transfer reconciliation store");
@@ -73,9 +85,9 @@ export async function migrateLegacyReconciliations() {
     }
   }
   if (imports.size) {
-    const local = readReconciliationRecords();
-    for (const [id, record] of imports) local[id] = mergeLegacyRecord(local[id], record, { local: true });
-    writeReconciliationRecords(local, { limitHistory: false });
+    await updateReconciliationRecords(local => {
+      for (const [id, record] of imports) local[id] = mergeLegacyRecord(local[id], record, { local: true });
+    }, { limitHistory: false });
   }
   let cleanupFailed = false;
   if (settingEntries.length) {

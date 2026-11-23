@@ -172,6 +172,33 @@ test("a committed New Day survives failure of the Actor's day counter", async ()
   assert.equal(rolls.length, 1);
 });
 
+test("New Day never reports a different interrupted Addiction morning as the selected day", async () => {
+  const rolls = setup([4]);
+  const dependency = item("Зависимость", decline());
+  const owner = actor(dependency);
+  const write = dependency.update;
+  const morningPath = `flags.${scope}.conditions.==addictionMorning`;
+  dependency.update = patch => Object.hasOwn(patch, morningPath)
+    ? Promise.reject(new Error("morning write failed")) : write.call(dependency, patch);
+  await assert.rejects(processAddictionNewDay(owner, dependency, { ...quiet, dayKey: "manual:2" }), /morning write failed/);
+  dependency.update = write;
+
+  const plan = buildNewDayPlan(owner);
+  const [action] = plan.actions;
+  assert.equal(action.dayKey, "manual:2");
+  action.dayKey = "manual:3";
+  const wrongDay = await applyNewDayPlan(owner, plan, [action.id], quiet);
+  assert.equal(wrongDay.failed[0].code, "stale-addiction-day");
+  assert.equal(wrongDay.stalePlan, true);
+  assert.equal(getAddictionMorning(dependency), null);
+
+  action.dayKey = "manual:2";
+  const recovered = await applyNewDayPlan(owner, plan, [action.id], quiet);
+  assert.equal(recovered.succeeded.length, 1);
+  assert.equal(getAddictionMorning(dependency).dayKey, "manual:2");
+  assert.deepEqual(rolls, ["1d12"]);
+});
+
 test("the final withdrawal day keeps its severe modifiers until manual success", async () => {
   const rolls = setup(); const state = { phase: "flat", die: 6, daysLeft: 1, severity: 10 };
   const dependency = item("Зависимость", state); const owner = actor(dependency);
@@ -492,6 +519,47 @@ test("migration adds level-4 penalties without damage and is idempotent", async 
   assert.equal(heat.system.rollModifiers.fblecHeatEndurance.value, "-1");
   assert.equal(owner.system.attribute.strength.value, 6);
   assert.equal(await migrateActorData(owner), false);
+});
+
+test("counter migration verifies its original timer copy after a partial write and leaves Wash alone", async () => {
+  setup();
+  const heat = item("Heat");
+  heat.system.healingTime = "4";
+  const wash = item("Heat");
+  wash.system.healingTime = "3 days";
+  set(wash, `flags.${scope}.conditions.kind`, "wash");
+  set(wash, `flags.${scope}.conditions.heatValue`, 2);
+  const owner = actor(heat, wash);
+  owner.items = [heat, wash];
+  owner.items.get = key => owner.items.find(entry => entry.id === key);
+
+  const write = heat.update;
+  const path = `flags.${scope}.conditions.heatValue`;
+  heat.update = patch => write.call(heat, Object.hasOwn(patch, path) ? { ...patch, [path]: 2 } : patch);
+  await assert.rejects(migrateActorData(owner), { code: "migration-write-not-persisted" });
+  assert.equal(parseHeatValue(heat), 2);
+  assert.equal(heat.system.healingTime, "4");
+  heat.update = write;
+  await migrateActorData(owner);
+  assert.equal(parseHeatValue(heat), 4);
+  assert.equal(heat.system.healingTime, "");
+  assert.equal(wash.system.healingTime, "3 days");
+});
+
+test("manual Addiction adjustment repairs a partial first write before advancing again", async () => {
+  setup();
+  const dependency = item("Зависимость", { ...decline(), die: 10 });
+  const owner = actor(dependency);
+  const write = dependency.update;
+  dependency.update = patch => write.call(dependency,
+    Object.fromEntries(Object.entries(patch).filter(([key]) => !key.startsWith("system.rollModifiers."))));
+  await assert.rejects(correctAddictionState(owner, dependency, { delta: 1 }), { code: "write-not-persisted" });
+  assert.equal(getAddictionState(dependency).die, 8);
+  dependency.update = write;
+  await correctAddictionState(owner, dependency, { delta: 1 });
+  assert.equal(getAddictionState(dependency).die, 8);
+  assert.equal(dependency.system.rollModifiers.fblecAddictionStrength.value, "-1");
+  assert.equal(getAddictionMorning(dependency), null);
 });
 
 test("upgrading migration 7 to 8 preserves current world preferences", async () => {

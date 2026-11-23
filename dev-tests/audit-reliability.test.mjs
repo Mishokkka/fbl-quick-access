@@ -191,6 +191,26 @@ test("lock recovery leaves a new lock intact even when the local Actor still sho
   }
 });
 
+test("an interrupted lock recovery keeps mutations blocked until the GM clears it", async () => {
+  reset();
+  const holder = user("recovery-owner", true);
+  game.users.push(holder);
+  const makeLock = id => ({ id, flags: { [scope]: { mutationLock: id, mutationLockOwner: holder.id } } });
+  const ids = ["fblqaActorLock01", "fblqaRecover0001"];
+  const server = new Map(ids.map(id => [id, makeLock(id)]));
+  const character = withEffectStore(actor(), server);
+  await assert.rejects(recoverActorMutationLock(character), { code: "actor-mutation-busy" });
+  holder.active = false;
+  window.confirm = () => true;
+  assert.equal(await recoverActorMutationLock(character), true);
+  assert.equal(server.size, 0);
+
+  const recoveryOnly = withEffectStore(actor(), new Map([[ids[1], makeLock(ids[1])]]));
+  await assert.rejects(enqueueActorMutationOperation(recoveryOnly, () => assert.fail("recovery was bypassed")),
+    { code: "actor-mutation-busy" });
+  assert.equal(await recoverActorMutationLock(recoveryOnly), true);
+});
+
 test("pending Heat and Mor both apply damage through the shared actor queue", async () => {
   reset();
   const heat = item("heat", { rollModifiers: {} }, "Heat");
@@ -418,6 +438,7 @@ test("an approved calendar skip with a backlog stops at the hard limit", async (
   await delay(0);
   const confirmation = dialogs.at(-1);
   assert.match(confirmation.config.window.title, /time skip/i);
+  assert.match(confirmation.config.content, /Audit: up to 365 of 400 pending days/);
   await confirmation.submit("yes");
   await applying;
 
@@ -644,6 +665,26 @@ test("A11: unrelated BIO edits preserve newer native notes and explicit empty pr
   queueProfileSave(a, stale, null, 350, "physical.appearance"); await flushBiographySaves(a);
   assert.equal(a.system.bio.note.value, "External edit"); assert.equal(getBiographyProfile(a).publicNote, "External edit"); assert.equal(getBiographyProfile(a).pride, "");
 });
+test("BIO retains the newest child edit when its parent save has to be retried", async () => {
+  reset();
+  const character = actor();
+  const profile = getBiographyProfile(character);
+  await character.setFlag(scope, "biographyProfile", profile);
+  for (const [path, appearance] of [["physical.appearance", "first"], ["physical", "second"], ["physical.appearance", "third"]]) {
+    profile.physical.appearance = appearance;
+    queueProfileSave(character, profile, null, 350, path);
+  }
+  const write = character.update;
+  character.update = async patch => {
+    if (Object.hasOwn(patch, `flags.${scope}.biographyProfile.physical`)) return;
+    await write(patch);
+  };
+  await flushBiographySaves(character);
+  assert.notEqual(getBiographyProfile(character).physical.appearance, "third");
+  character.update = write;
+  await flushBiographySaves(character);
+  assert.equal(getBiographyProfile(character).physical.appearance, "third");
+});
 test("A10: observer preview fails closed on secret HTML even without a DOM", () => {
   reset(); const secret = '<section class="secret"><p>Hidden</p></section>';
   assert.equal(biographyDisplayHtml(secret, { isOwner: false }), ""); assert.match(biographyDisplayHtml(secret, { isOwner: true }), /Hidden/);
@@ -655,7 +696,7 @@ test("A06: failed Heat damage keeps an intent and can be completed safely", asyn
   a.update = update; await updateHeatItem(a, h, 3, "failure"); assert.equal(parseHeatValue(h), 3); assert.equal(a.system.attribute.strength.value, 4);
 });
 
-test("Heat retries only the part of threshold damage omitted by the first write", async () => {
+test("Heat retries only omitted threshold damage even if another write matches its old target", async () => {
   reset();
   const heat = item("heat", { rollModifiers: {} }, "Heat");
   const character = actor([heat]);
@@ -674,11 +715,12 @@ test("Heat retries only the part of threshold damage omitted by the first write"
   assert.equal(parseHeatValue(heat), 3);
 
   character.update = write;
+  await write({ [wits]: 4 });
   const retryStart = character.updates.length;
   await applyHeatFailure(character, heat);
-  assert.deepEqual(character.updates.slice(retryStart).filter(patch => Object.keys(patch).some(key => key.startsWith("system.attribute."))), [{ [wits]: 4 }]);
+  assert.deepEqual(character.updates.slice(retryStart).filter(patch => Object.keys(patch).some(key => key.startsWith("system.attribute."))), [{ [wits]: 3 }]);
   assert.equal(character.system.attribute.strength.value, 4);
-  assert.equal(character.system.attribute.wits.value, 4);
+  assert.equal(character.system.attribute.wits.value, 3);
   assert.equal(parseHeatValue(heat), 4);
 });
 
@@ -995,6 +1037,11 @@ test("Calendaria rejects incomplete years and fractional rewinds without moving 
   await assert.rejects(calendar.rewindActorCalendarMarker(character, 1.9, { ...context, api: CALENDARIA.api }), RangeError);
   await assert.rejects(calendar.rewindAllCalendarMarkers(365.9, { ...context, api: CALENDARIA.api }), RangeError);
   assert.deepEqual(getActorCalendarMarker(character).date, context.date);
+  await setActorCalendarMarker(character, { ...context, date: start });
+  await assert.rejects(calendar.rewindActorCalendarMarker(character, 1, context, CALENDARIA.api, {
+    targetDate: { ...start, day: 2 }
+  }), { code: "invalid-rewind-date" });
+  assert.deepEqual(getActorCalendarMarker(character).date, start);
 });
 
 for (const interactive of [false, true]) {
@@ -1641,6 +1688,33 @@ test("Short Rest leaves the attribute untouched when its recovery plan cannot be
   assert.equal(result.error?.code, "write-not-persisted");
   assert.equal(character.system.attribute.strength.value, 1);
   assert.equal(character.getFlag(scope, "shortRestRecovery"), undefined);
+});
+
+test("New Day can clear the use marker without stranding an interrupted Short Rest", async () => {
+  reset();
+  const character = actor();
+  await character.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0", attribute: "agility" });
+  const write = character.update;
+  const strength = "system.attribute.strength.value";
+  character.update = async patch => {
+    const { [strength]: ignored, ...remaining } = patch;
+    return write(remaining);
+  };
+  const first = await rest.applyRest(null, character, {
+    type: "short", useShortRecovery: true, shortAttribute: "strength", resetShortQuarter: true
+  });
+  assert.equal(first.error?.code, "write-not-persisted");
+  assert.equal(character.system.attribute.strength.value, 1);
+
+  character.update = write;
+  const plan = buildNewDayPlan(character);
+  const day = await applyNewDayPlan(character, plan, ["system:short-rest-reset"], { postChat: false });
+  assert.equal(day.failed.length, 0);
+  const retry = await rest.applyRest(null, character, { type: "short" });
+  assert.equal(retry.failed, undefined);
+  assert.equal(character.system.attribute.strength.value, 2);
+  assert.equal(character.getFlag(scope, "shortRestRecovery"), null);
+  assert.equal(character.getFlag(scope, "pendingShortRest"), null);
 });
 
 test("Long Rest records its recovery before changing any attribute", async () => {

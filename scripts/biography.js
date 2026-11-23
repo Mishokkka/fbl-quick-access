@@ -1391,18 +1391,25 @@ function setupFloatingBiographyActions(bioTab) {
   FLOATING_ACTIONS.set(bioTab, cleanup);
 }
 
+function pathContains(ancestor, path) {
+  return ancestor === "*" || path === ancestor || path.startsWith(`${ancestor}.`);
+}
+
+function queueBiographyPatch(patches, path, value) {
+  for (const existing of patches.keys()) {
+    if (pathContains(path, existing)) patches.delete(existing);
+  }
+  patches.set(path, value);
+}
+
 export function queueProfileSave(actor, state, status, delay = 350, path = null) {
   if (DELETED_ACTORS.has(actor)) return;
   const key = drawerKey(actor);
   const persistedPath = normalizeBiographySavePath(path);
   const pending = SAVE_PENDING.get(key) ?? { actor, patches: new Map(), status };
   pending.status = status;
-  if (persistedPath === "*") {
-    pending.patches.clear();
-    pending.patches.set(persistedPath, normalizeBiographyProfile(state));
-  } else {
-    pending.patches.set(persistedPath, cloneProfileValue(getPathValue(state, persistedPath)));
-  }
+  queueBiographyPatch(pending.patches, persistedPath, persistedPath === "*"
+    ? normalizeBiographyProfile(state) : cloneProfileValue(getPathValue(state, persistedPath)));
   SAVE_PENDING.set(key, pending);
 
   const existing = SAVE_TIMERS.get(key);
@@ -1441,8 +1448,10 @@ function flushProfileSave(key) {
     SAVE_RUNNING.set(key, pending);
     try {
       let firstError;
+      const failedPaths = [];
       for (const [path, value] of pending.patches) {
         if (DELETED_ACTORS.has(pending.actor)) return false;
+        if (failedPaths.some(failed => pathContains(failed, path) || pathContains(path, failed))) continue;
         try {
           const profile = path === "*" ? value : getBiographyProfile(pending.actor);
           if (path !== "*") setPath(profile, path, value);
@@ -1451,7 +1460,7 @@ function flushProfileSave(key) {
           pending.patches.delete(path);
         } catch (error) {
           firstError ??= error;
-          if (path === "*") break;
+          failedPaths.push(path);
         }
       }
       if (firstError) throw firstError;
@@ -1461,7 +1470,11 @@ function flushProfileSave(key) {
       if (DELETED_ACTORS.has(pending.actor)) return false;
       const newer = SAVE_PENDING.get(key);
       if (!newer) SAVE_PENDING.set(key, pending);
-      else if (!newer.patches.has("*")) newer.patches = new Map([...pending.patches, ...newer.patches]);
+      else {
+        const patches = new Map(pending.patches);
+        for (const [path, value] of newer.patches) queueBiographyPatch(patches, path, value);
+        newer.patches = patches;
+      }
       console.error(`${MODULE_ID} | biography save failed`, error);
       if (!newer) {
         const errorMessage = t("Bio.Save.Error", "Ошибка сохранения");

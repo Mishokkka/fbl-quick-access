@@ -60,7 +60,8 @@ export function initializeWalletOperations() {
       if (payload.mode === "delta" && !Number.isSafeInteger(payload.value)) throw new TypeError("Invalid wallet delta");
       if (payload.mode === "input" && (typeof payload.value !== "string" || payload.value.length > 200)) throw new TypeError("Invalid wallet expression");
       return withWalletLocks([actor], async () => {
-        if (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER")) {
+        if (context.requestUser?.active === false
+          || (!context.requestUser?.isGM && !actor.testUserPermission?.(context.requestUser, "OWNER"))) {
           throw new Error("Wallet change requires ownership of a character");
         }
         const parsed = payload.mode === "input" ? parseCurrencyExpression(String(payload.value)) : null;
@@ -416,7 +417,10 @@ async function setCurrencyValue(app, actor, key, value) {
 async function applyCurrencyInput(app, actor, key, rawValue, input) {
   const parsed = parseCurrencyExpression(String(rawValue ?? "").trim());
   if (!parsed.ok) { showWalletMessage(input, qaLocalize("Wallet.InvalidInput", "Можно использовать только числа, + и -.")); resetCurrencyInput(actor, key, input); return; }
-  return dispatchWalletChange(actor, { mode: "input", key, value: String(rawValue) }, () => applyCurrencyInputUnlocked(app, actor, key, rawValue, input));
+  const result = await dispatchWalletChange(actor, { mode: "input", key, value: String(rawValue) },
+    () => applyCurrencyInputUnlocked(app, actor, key, rawValue, input));
+  if (input?.value === rawValue && result?.values?.[key] !== undefined) input.value = String(result.values[key]);
+  return result;
 }
 
 async function applyCurrencyInputUnlocked(app, actor, key, rawValue, input) {

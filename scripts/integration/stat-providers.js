@@ -25,6 +25,10 @@ export function getStatProviders() {
   return Array.from(providers.values()).sort(compareProviders);
 }
 
+export function hasStatProviders() {
+  return providers.size > 0;
+}
+
 export async function renderStatProviderSections(context) {
   const rendered = [];
   const activeProviders = [];

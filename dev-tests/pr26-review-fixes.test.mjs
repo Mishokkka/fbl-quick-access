@@ -967,7 +967,7 @@ test("PR26: static guards confirm tooltip ownership and STAT live merge", () => 
   const tooltipsSrc = readFileSync(join(root, "scripts", "tooltips.js"), "utf8");
   const condMainSrc = readFileSync(join(root, "scripts", "conditions", "main.js"), "utf8");
 
-  assert.match(tooltipsSrc, /if\s*\(itemTooltipPinned\)\s*return;\s*\r?\n\s*itemTooltipPointer\s*=/);
+  assert.match(tooltipsSrc, /if\s*\(itemTooltipPinned \|\| itemTooltipHovered\)\s*return;\s*\r?\n\s*itemTooltipPointer\s*=/);
   assert.match(tooltipsSrc, /if\s*\(request === itemTooltipRequest && itemTooltipAnchor === anchor\)\s*hideItemTooltip\(\);/);
   assert.match(condMainSrc, /enqueueActorMutationOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
   assert.match(condMainSrc, /if \(!entry\) return false;\s*value = edit\(entry\[field\]\)/);

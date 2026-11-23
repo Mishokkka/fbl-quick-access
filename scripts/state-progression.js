@@ -397,14 +397,23 @@ async function handleCalendariaMultiDayJump(previousDate, context, delta) {
   }
 
   const approvedMarkers = new Map(entries.map(({ actor }) => [actor.id, getActorCalendarMarker(actor)]));
+  const message = qaLocalize(
+    "StateProgression.TimeSkipMessage",
+    "Calendaria moved from {from} to {to}. Quick Access can process the missing days sequentially for all assigned player characters.",
+    { from: formatCalendariaDate(previousDate), to: formatCalendariaDate(context.date) }
+  );
+  const backlog = entries.map(({ actor }) => {
+    const pending = pendingDaysForActor(actor, context);
+    return qaLocalize("StateProgression.TimeSkipBacklog", "{actor}: up to {process} of {pending} pending days", {
+      actor: actor.name ?? actor.id, process: Math.min(pending, MAX_AUTOMATIC_CALENDAR_DAYS), pending
+    });
+  });
+  const confirmationLines = [message, ...backlog];
   const confirmed = await confirmDangerAction({
     title: qaLocalize("StateProgression.TimeSkipTitle", "Calendaria time skip"),
-    heading: qaLocalize("StateProgression.TimeSkipHeading", "Advance player states by {days} days?", { days: delta }),
-    message: qaLocalize(
-      "StateProgression.TimeSkipMessage",
-      "Calendaria moved from {from} to {to}. Quick Access can process the missing days sequentially for all assigned player characters.",
-      { from: formatCalendariaDate(previousDate), to: formatCalendariaDate(context.date) }
-    ),
+    heading: qaLocalize("StateProgression.TimeSkipHeading", "Process pending days after the calendar jump?"),
+    message: confirmationLines.join("\n"),
+    messageHtml: confirmationLines.map(escapeHtml).join("<br>"),
     warning: qaLocalize(
       "StateProgression.TimeSkipWarning",
       "This can resolve injuries, wash states, addictions and other daily conditions. Moving the calendar backwards will not undo these changes."),
@@ -961,24 +970,22 @@ async function prepareGMSummary(context, { skipBaselineMutation = false } = {}) 
       }
     }
 
-    const status = calculateActorCalendarStatus(marker, context);
-    if (status.status === "ahead") {
-      updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForAheadMarker(marker, status.days));
-    } else if (status.status === "current") {
-      updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForCurrentMarker(marker, context));
-    } else if (status.status === "baseline") {
-      updateGMSummaryStatus(summary, entry.actor.id, { state: "baseline", days: 0, detail: "" });
-    } else {
-      updateGMSummaryStatus(summary, entry.actor.id, {
-        state: entry.primaryUser?.active ? "pending" : "offline",
-        days: Math.max(0, Number(status.days) || 0),
-        detail: status.status === "pending-multiple"
-          ? qaLocalize("StateProgression.MultiplePendingGM", "Multiple calendar days are pending; GM resolution is required.")
-          : ""
-      });
-    }
+    updateGMSummaryStatus(summary, entry.actor.id, summaryStatusForMarker(marker, entry, context));
   }
   return summary;
+}
+
+function summaryStatusForMarker(marker, entry, context) {
+  const status = calculateActorCalendarStatus(marker, context);
+  if (status.status === "ahead") return summaryStatusForAheadMarker(marker, status.days);
+  if (status.status === "current") return summaryStatusForCurrentMarker(marker, context);
+  if (status.status === "baseline") return { state: "baseline", days: 0, detail: "" };
+  return {
+    state: entry.primaryUser?.active ? "pending" : "offline",
+    days: Math.max(0, Number(status.days) || 0),
+    detail: status.status === "pending-multiple"
+      ? qaLocalize("StateProgression.MultiplePendingGM", "Multiple calendar days are pending; GM resolution is required.") : ""
+  };
 }
 
 function openOrRefreshGMSummary(context, entries) {
@@ -1771,12 +1778,15 @@ function attemptCalendarRewind(actor, { context, api, days, requireCurrentDay },
       const operation = getCalendarOperation(actor);
       if (operation) throw calendarRecoveryError(operation);
       if (retryTarget === undefined) {
+        const status = calculateActorCalendarStatus(previousMarker, context, api);
+        const usePrevious = previousMarker?.calendarId === context.calendarId && !["ahead", "unavailable"].includes(status.status);
+        const baseDate = usePrevious ? previousMarker.date : context.date;
         if (explicitTargetDate != null) {
           targetDate = normalizeCalendariaDate(explicitTargetDate);
+          if (targetDate && !(api.daysBetween(targetDate, baseDate) > 0)) {
+            throw progressionError("invalid-rewind-date", "The rewound marker must be earlier than the starting date.");
+          }
         } else {
-          const status = calculateActorCalendarStatus(previousMarker, context, api);
-          const usePrevious = previousMarker?.calendarId === context.calendarId && !["ahead", "unavailable"].includes(status.status);
-          const baseDate = usePrevious ? previousMarker.date : context.date;
           targetDate = normalizeCalendariaDate(api.addDays(baseDate, -days));
         }
       }
@@ -2081,6 +2091,18 @@ async function resolveCalendarOperationFromSummary(state, actor, context) {
 async function finishCalendarOperation(actor, context, operation, documentOptions = {}) {
   if (!canFinishCalendarOperation(operation, getActorCalendarMarker(actor), context)) throw calendarRecoveryError(operation);
   await writeActorCalendarMarker(actor, { ...context, date: operation.through }, {}, documentOptions, { finish: operation });
+  refreshNewerCalendarSummary(actor, context);
+}
+
+function refreshNewerCalendarSummary(actor, context) {
+  const state = gmSummary;
+  const entry = state?.entries.get(actor.id);
+  if (entry && state.key !== summaryKey(context) && state.context.calendarId === context.calendarId) {
+    updateGMSummaryStatus(state, actor.id, {
+      result: null, canAcknowledge: false, skippedDays: 0, undoAvailable: false,
+      ...summaryStatusForMarker(getActorCalendarMarker(actor), entry, state.context)
+    });
+  }
 }
 
 async function applyCalendarDay(actor, context, previousDate, date, through, plan, selectedIds, documentOptions = {}, assertAssignment) {
@@ -2100,6 +2122,7 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
     const current = getCalendarOperation(actor);
     if (!plainValuesEqual(current, operation)) throw calendarRecoveryError(current);
     await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION, { render: false });
+    refreshNewerCalendarSummary(actor, context);
   };
   const rejectUnstarted = async error => {
     try { await discardUnstarted(); }

@@ -152,7 +152,7 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
     notes: condition.notes || "",
     desc: condition.desc || "",
     permanentClass: isPermanentTime(time) ? "is-permanent" : "",
-    showTimeButtons: !isPermanentTime(time),
+    showTimeButtons: canStepDurationText(time),
     editable
   });
 }
