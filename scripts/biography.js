@@ -1615,7 +1615,7 @@ async function enrichSingleBiographyPreview(actor, preview) {
       rollData: actor.getRollData?.() ?? {}
     });
     if (!preview.isConnected || control?.querySelector("prose-mirror") || (control && control.dataset.bioValue !== source)) return;
-    preview.innerHTML = stripUnrevealedSecrets(html, actor);
+    preview.innerHTML = biographyDisplayHtml(html, actor);
   } catch (error) {
     console.warn(`${MODULE_ID} | biography enrichment failed`, error);
   }
