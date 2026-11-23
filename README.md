@@ -53,7 +53,9 @@ Examples:
 
 So: direct edits and ordinary +/- changes preserve the visible denomination. Spending makes change only when it has to.
 
-With an active GM, wallet changes and transfers share a single authority queue. Owner-only play without a GM remains available, with per-client serialization. Direct writes by other modules are outside this queue.
+With an active GM, wallet changes and accepted transfers share a single currency queue. A character owner can still edit their own wallet when there is no active GM. Direct writes by other modules are outside this queue.
+
+Transfers require an active GM and acceptance by the recipient within 90 seconds. The GM checks both current wallets, then debits the sender and credits the recipient in that order. If the debit succeeds and the credit fails, the GM gets an on-screen notice with the characters, amount and completed step, plus a private chat message if the GM is connected. The GM checks and corrects the balances manually. If the connection drops or the result times out, the outcome is unknown. Wait for the offer to expire (90 seconds), then check both wallets manually before retrying.
 
 Reputation pools are limited to 1,000 points as a technical safeguard. Finite legacy/imported amounts above the limit remain visible at their original values. A warning blocks rolls and saves until the amounts are explicitly corrected; unrelated edits cannot silently remove those rows. Invalid values are rejected on save; existing malformed flags are not rewritten during rendering.
 

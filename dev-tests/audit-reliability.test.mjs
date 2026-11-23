@@ -100,7 +100,7 @@ async function expose(path, names) {
 reset();
 const calendar = await expose("scripts/state-progression.js", ["processActorAutomaticDays", "recordCalendarFailures"]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
-const money = await expose("scripts/money-transfer.js", ["executeMoneyTransfer", "processTransferDecision"]);
+const money = await expose("scripts/money-transfer.js", ["gmOffers", "processTransferDecision"]);
 const start = { year: 1, month: 1, day: 1 };
 const context = { calendarId: "audit", date: { ...start, day: 3 } };
 
@@ -218,31 +218,133 @@ test("A14: invalid reputation never reaches an unbounded selection loop", async 
   await assert.rejects(saveReputationEntries(a, invalid), RangeError); assert.equal(a.updates.length, 0);
   assert.throws(() => selectRandomReputation([{ amount: 1000 }, { amount: 1000 }], 2), RangeError);
 });
-test("A08: wallet edits and transfers share one authoritative queue", async () => {
-  reset(); initializeWalletOperations(); const source = actor(); const target = actor(); source.system.currency.copper.value = 100;
-  await Promise.all([executeAsActiveGM("wallet.apply-change", { actorUuid: source.uuid, mode: "delta", key: "copper", value: -10 }),
-    enqueueCurrencyOperation(() => money.executeMoneyTransfer(source, target, { copper: 20 }))]);
-  assert.equal(source.system.currency.copper.value, 70); assert.equal(target.system.currency.copper.value, 20);
-});
+function acceptTransfer(source, target, copper) {
+  const sender = user("sender");
+  const recipient = user("recipient");
+  game.users.push(sender, recipient);
+  const offer = { requestId: `audit-transfer-${++nextId}`, requesterId: sender.id, recipientUserId: recipient.id,
+    primaryGmId: game.user.id, sourceActorId: source.id, targetActorId: target.id, amounts: { copper }, createdAt: Date.now() };
+  const results = [];
+  game.socket.emit = (_channel, message) => results.push(message.result);
+  money.gmOffers.set(offer.requestId, { offer });
+  return { completion: money.processTransferDecision(offer, { ...offer, accepted: true }), results };
+}
+
+for (const [side, delta, before, amount, error] of [
+  ["sender", -10, 100, 95, "insufficient-denomination"],
+  ["recipient", 1, Number.MAX_SAFE_INTEGER - 1, 1, "amount-overflow"]
+]) {
+  test(`wallet and transfer share the authority queue and recheck the ${side}'s balance`, async () => {
+    reset(); initializeWalletOperations();
+    const source = actor(), target = actor();
+    source.system.currency.copper.value = 100;
+    const wallet = side === "sender" ? source : target;
+    wallet.system.currency.copper.value = before;
+    let start, release;
+    const started = new Promise(resolve => { start = resolve; });
+    const blocked = new Promise(resolve => { release = resolve; });
+    const update = wallet.update;
+    wallet.update = async patch => { start(); await blocked; return update(patch); };
+    const edit = executeAsActiveGM("wallet.apply-change", { actorUuid: wallet.uuid, mode: "delta", key: "copper", value: delta });
+    await started;
+    const { completion, results } = acceptTransfer(source, target, amount);
+    await delay(0);
+    release();
+    await Promise.all([edit, completion]);
+    assert.equal(wallet.system.currency.copper.value, before + delta);
+    assert.equal(results[0]?.error, error);
+    assert.equal(source.updates.length + target.updates.length, 1);
+  });
+}
 test("A08: wallet input bounds and insufficient funds reject before a write", async () => {
   reset(); initializeWalletOperations(); const a = actor();
   await assert.rejects(executeAsActiveGM("wallet.apply-change", { actorUuid: a.uuid, mode: "delta", key: "copper", value: -1 }));
   await assert.rejects(executeAsActiveGM("wallet.apply-change", { actorUuid: a.uuid, mode: "delta", key: "copper", value: Infinity }));
   assert.equal(a.updates.length, 0);
 });
-test("A09: revoking sender ownership while acceptance waits cancels the transfer", async () => {
-  reset(); const source = actor(); const target = actor(); source.system.currency.copper.value = 100;
-  const sender = user("sender"); const recipient = user("recipient"); game.users.push(sender, recipient);
-  let owns = true; source.testUserPermission = () => owns;
-  let unblock;
-  const blocker = enqueueCurrencyOperation(() => new Promise(resolve => { unblock = resolve; }));
-  await delay(0);
-  const offer = { requestId: "audit-transfer", requesterId: sender.id, recipientUserId: recipient.id, primaryGmId: game.user.id,
-    sourceActorId: source.id, targetActorId: target.id, amounts: { copper: 20 }, createdAt: Date.now() };
-  const acceptance = money.processTransferDecision(offer, { ...offer, accepted: true });
-  owns = false; unblock(); await blocker; await acceptance;
-  assert.equal(source.system.currency.copper.value, 100); assert.equal(target.system.currency.copper.value, 0);
-  assert.equal(source.updates.length + target.updates.length, 0);
+for (const [change, expected] of [["sender", "source-permission"], ["recipient", "invalid-recipient"],
+  ["deadline", "recipient-timeout"], ["active GM", "no-gm"]]) {
+  test(`transfer rechecks ${change} after waiting on the currency queue`, async () => {
+    reset(); const source = actor(); const target = actor(); source.system.currency.copper.value = 100;
+    let release;
+    const blocked = new Promise(resolve => { release = resolve; });
+    const blocker = enqueueCurrencyOperation(() => blocked);
+    const { completion, results } = acceptTransfer(source, target, 20);
+    if (change === "sender") source.testUserPermission = () => false;
+    if (change === "recipient") target.testUserPermission = () => false;
+    if (change === "deadline") game.time.serverTime = Date.now() + 90_000;
+    if (change === "active GM") game.users.push(user("another-gm", true));
+    release();
+    await Promise.all([blocker, completion]);
+    assert.equal(results[0]?.error, expected);
+    assert.equal(source.updates.length + target.updates.length, 0);
+  });
+}
+
+for (const [failure, expected] of [["debit veto", "update-failed"], ["credit failure", "partial-failure"], ["credit timeout", "outcome-unknown"]]) {
+  test(`transfer stops on ${failure} and reports completed steps to the GM`, async () => {
+    reset();
+    const source = actor(), target = actor();
+    source.name = "Sender <one>";
+    target.name = "Recipient <two>";
+    source.system.currency.copper.value = 100;
+    const whispers = [], events = [], notices = [];
+    ui.notifications.warn = ui.notifications.error = message => notices.push(message);
+    let noticeBeforeWhisper;
+    ChatMessage.create = async message => {
+      noticeBeforeWhisper = notices[0];
+      whispers.push(message);
+      if (failure === "credit timeout") throw new Error("Chat unavailable");
+    };
+    Hooks.callAll = event => events.push(event);
+    if (failure === "debit veto") source.update = async () => undefined;
+    let credits = 0;
+    target.update = async () => {
+      credits += 1;
+      throw Object.assign(new Error("Credit failed"), { code: failure === "credit timeout" ? "ETIMEDOUT" : "validation" });
+    };
+    const { completion, results } = acceptTransfer(source, target, 20);
+    await completion;
+    assert.equal(results[0]?.error, expected);
+    assert.equal(target.system.currency.copper.value, 0);
+    assert.deepEqual(events, []);
+    if (failure === "debit veto") {
+      assert.equal(credits, 0);
+      assert.equal(source.system.currency.copper.value, 100);
+    } else {
+      assert.equal(credits, 1);
+      assert.equal(source.system.currency.copper.value, 80);
+      assert.equal(source.updates.length, 1);
+      assert.deepEqual(whispers.map(message => message.whisper), [[game.user.id]]);
+      assert.match(whispers[0].content, /Sender &lt;one&gt;.*Recipient &lt;two&gt;.*20 CP.*Списание.*подтверждено/s);
+      assert.match(noticeBeforeWhisper, /Sender &lt;one&gt;.*Recipient &lt;two&gt;.*20 CP.*Списание.*подтверждено/i);
+    }
+  });
+}
+test("losing the socket during credit stops the transfer and releases the queue with a warning", async () => {
+  reset();
+  const source = actor(), target = actor();
+  source.name = "Sender";
+  target.name = "Recipient";
+  source.system.currency.copper.value = 100;
+  const disconnect = new Set(), warnings = [];
+  game.socket.connected = true;
+  game.socket.on = (event, handler) => { if (event === "disconnect") disconnect.add(handler); };
+  game.socket.off = (_event, handler) => disconnect.delete(handler);
+  ui.notifications.warn = message => warnings.push(message);
+  let start;
+  const started = new Promise(resolve => { start = resolve; });
+  target.update = () => { start(); return new Promise(() => {}); };
+  const { completion, results } = acceptTransfer(source, target, 20);
+  await started;
+  game.socket.connected = false;
+  for (const handle of disconnect) handle();
+  await completion;
+  assert.deepEqual(results, []);
+  assert.equal(disconnect.size, 0);
+  assert.equal(source.system.currency.copper.value, 80);
+  assert.match(warnings[0], /Sender.*Recipient.*20 CP.*исход зачисления неизвестен.*90 секунд.*сверьте оба кошелька/i);
+  assert.equal(await enqueueCurrencyOperation(() => "ready"), "ready");
 });
 test("BIO failed save keeps its captured draft for an explicit retry", async () => {
   reset(); const a = actor(); const state = getBiographyProfile(a); state.concept = "Keep this draft";

@@ -1,10 +1,11 @@
 import { CURRENCIES, MODULE_ID } from "./constants.js";
 import { buildActorCurrencyUpdate } from "./actor-data.js";
-import { getCurrencyAbbreviation, getCurrencyValue } from "./currency.js";
+import { getCurrencyAbbreviation, getCurrencyValue, readCurrencyBalances, writeCurrencyUpdate } from "./currency.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback } from "./utils.js";
-import { createFoundryDialog, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, hasFoundryDialogApi } from "./dialogs.js";
+import { getActiveGM } from "./integration/socket-api.js";
 import {
   clearSocketProof,
   consumeSocketProof,
@@ -38,13 +39,14 @@ const seenPacketOrder = [];
 export function registerMoneyTransferSocket() {
   if (socketRegistered || !game.socket?.on) return;
   game.socket.on(SOCKET_CHANNEL, (message) => {
-    void handleSocketMessage(message);
+    void handleSocketMessage(message).catch(error => console.error(`${MODULE_ID} | money transfer packet failed`, error));
   });
+  game.socket.on("disconnect", handleTransferDisconnect);
   socketRegistered = true;
 }
 
 export async function openMoneyTransferDialog(app, sourceActor) {
-  if (!canModifyActor(sourceActor)) {
+  if (!canModifyActor(sourceActor) || sourceActor.isToken || sourceActor.pack || sourceActor.type !== "character") {
     warnCannotModifyActor(qaLocalize("Wallet.Transfer.NoSourcePermission", "Нет прав на передачу денег этого персонажа."));
     return null;
   }
@@ -78,19 +80,21 @@ export async function openMoneyTransferDialog(app, sourceActor) {
         send: {
           icon: '<i class="fas fa-paper-plane"></i>',
           label: qaLocalize("Wallet.Transfer.Send", "Передать"),
-          callback: async (html) => {
+          callback: async (html, event) => {
             if (submitted) return;
             submitted = true;
-            const form = extractDialogElement(html)?.querySelector("form.fblqa-money-transfer-form");
+            const element = extractDialogElement(html);
+            const form = event?.submitter?.form ?? findTransferForm(element);
+            disableTransferControls(element);
             const targetActorId = String(form?.querySelector('[name="targetActor"]')?.value ?? "");
             const amounts = Object.fromEntries(CURRENCIES.map((currency) => [
               currency.key,
-              Math.max(0, Math.floor(Number(form?.querySelector(`[name="amount-${currency.key}"]`)?.value) || 0))
+              form?.querySelector(`[name="amount-${currency.key}"]`)?.value ?? 0
             ]));
 
-            const resultPromise = requestMoneyTransfer(sourceActor.id, targetActorId, amounts);
-            ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."));
-            const result = await resultPromise;
+            const result = await requestMoneyTransfer(sourceActor.id, targetActorId, amounts, {
+              onSent: () => ui.notifications?.info?.(qaLocalize("Wallet.Transfer.OfferSent", "Предложение отправлено получателю."))
+            });
 
             if (result.ok) {
               ui.notifications?.info?.(qaLocalize("Wallet.Transfer.Completed", "Передано персонажу {target}: {amount}.", {
@@ -100,7 +104,7 @@ export async function openMoneyTransferDialog(app, sourceActor) {
             } else if (result.error === "declined") {
               ui.notifications?.warn?.(qaLocalize("Wallet.Transfer.Declined", "Получатель отклонил перевод."));
             } else {
-              ui.notifications?.error?.(localizeTransferError(result.error));
+              notifyTransferError(result.error);
             }
             finish(result);
           }
@@ -130,38 +134,54 @@ export async function openMoneyTransferDialog(app, sourceActor) {
 }
 
 export function normalizeTransferAmounts(rawAmounts = {}) {
-  return Object.fromEntries(CURRENCIES.map((currency) => [
-    currency.key,
-    Math.max(0, Math.floor(Number(rawAmounts?.[currency.key]) || 0))
-  ]));
+  return Object.fromEntries(CURRENCIES.map(({ key }) => {
+    const amount = Math.floor(Number(rawAmounts?.[key]));
+    return [key, Number.isSafeInteger(amount) && amount > 0 ? amount : 0];
+  }));
+}
+
+function readTransferAmounts(rawAmounts) {
+  const amounts = {};
+  for (const { key } of CURRENCIES) {
+    const raw = rawAmounts?.[key] ?? 0;
+    const amount = typeof raw === "number" || typeof raw === "string" ? Number(raw) : NaN;
+    if (!Number.isSafeInteger(amount) || amount < 0) return { ok: false, error: "invalid-amount" };
+    amounts[key] = amount;
+  }
+  if (!Object.values(amounts).some(Boolean)) return { ok: false, error: "empty-amount" };
+  return { ok: true, amounts };
 }
 
 export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}) {
   if (!sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
   if (sourceActor.id === targetActor.id) return { ok: false, error: "same-actor" };
+  const parsed = readTransferAmounts(rawAmounts);
+  if (!parsed.ok) return parsed;
+  const { amounts } = parsed;
 
-  const amounts = normalizeTransferAmounts(rawAmounts);
-  const totalCoins = Object.values(amounts).reduce((sum, value) => sum + value, 0);
-  if (totalCoins <= 0) return { ok: false, error: "empty-amount" };
-
-  const sourceBefore = {};
-  const targetBefore = {};
+  let sourceBefore, targetBefore;
+  try {
+    sourceBefore = readCurrencyBalances(sourceActor);
+    targetBefore = readCurrencyBalances(targetActor);
+  } catch (_error) {
+    return { ok: false, error: "invalid-balance" };
+  }
   const sourceAfter = {};
   const targetAfter = {};
+  let targetTotal = 0n;
 
-  for (const currency of CURRENCIES) {
-    const sourceValue = getCurrencyValue(sourceActor, currency.key);
-    const targetValue = getCurrencyValue(targetActor, currency.key);
-    const amount = amounts[currency.key];
+  for (const { key, unit } of CURRENCIES) {
+    const amount = amounts[key];
 
-    if (amount > sourceValue) {
-      return { ok: false, error: "insufficient-denomination", currency: currency.key };
+    if (amount > sourceBefore[key]) {
+      return { ok: false, error: "insufficient-denomination", currency: key };
     }
 
-    sourceBefore[currency.key] = sourceValue;
-    targetBefore[currency.key] = targetValue;
-    sourceAfter[currency.key] = sourceValue - amount;
-    targetAfter[currency.key] = targetValue + amount;
+    sourceAfter[key] = sourceBefore[key] - amount;
+    const nextTarget = BigInt(targetBefore[key]) + BigInt(amount);
+    targetTotal += nextTarget * BigInt(unit);
+    if (targetTotal > BigInt(Number.MAX_SAFE_INTEGER)) return { ok: false, error: "amount-overflow", currency: key };
+    targetAfter[key] = Number(nextTarget);
   }
 
   return {
@@ -173,9 +193,13 @@ export function buildMoneyTransferPlan(sourceActor, targetActor, rawAmounts = {}
     targetBefore,
     sourceAfter,
     targetAfter,
-    sourceUpdate: buildActorCurrencyUpdate(sourceActor, sourceAfter),
-    targetUpdate: buildActorCurrencyUpdate(targetActor, targetAfter)
+    sourceUpdate: buildActorCurrencyUpdate(sourceActor, changedDenominations(sourceAfter, amounts)),
+    targetUpdate: buildActorCurrencyUpdate(targetActor, changedDenominations(targetAfter, amounts))
   };
+}
+
+function changedDenominations(values, amounts) {
+  return Object.fromEntries(Object.entries(values).filter(([key]) => amounts[key] > 0));
 }
 
 export function selectMoneyTransferRecipient(users, targetActor, requesterId = null) {
@@ -191,13 +215,12 @@ export function selectMoneyTransferRecipient(users, targetActor, requesterId = n
 }
 
 export function buildTransferWhisperModel(offer, result) {
-  const status = result?.ok
-    ? "completed"
-    : result?.error === "declined"
-      ? "declined"
-      : result?.error === "recipient-timeout"
-        ? "expired"
-        : "failed";
+  const status = result?.ok ? "completed" : ({
+    declined: "declined",
+    "recipient-timeout": "expired",
+    "partial-failure": "partial",
+    "outcome-unknown": "unknown"
+  }[result?.error] ?? "failed");
 
   return {
     status,
@@ -209,65 +232,85 @@ export function buildTransferWhisperModel(offer, result) {
   };
 }
 
-export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts) {
+export async function requestMoneyTransfer(sourceActorId, targetActorId, rawAmounts, { onSent } = {}) {
   const sourceActor = game.actors?.get?.(sourceActorId);
   const targetActor = game.actors?.get?.(targetActorId);
-  const amounts = normalizeTransferAmounts(rawAmounts);
 
   if (!sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
+  if (sourceActor.id === targetActor.id) return { ok: false, error: "same-actor" };
   if (!canModifyActor(sourceActor)) return { ok: false, error: "source-permission" };
-
-  const preliminaryPlan = buildMoneyTransferPlan(sourceActor, targetActor, amounts);
-  if (!preliminaryPlan.ok) return preliminaryPlan;
+  if (sourceActor.type !== "character" || sourceActor.pack) return { ok: false, error: "source-permission" };
+  if (targetActor.type !== "character" || targetActor.pack) return { ok: false, error: "invalid-recipient" };
+  const parsed = readTransferAmounts(rawAmounts);
+  if (!parsed.ok) return parsed;
 
   const recipient = selectMoneyTransferRecipient(game.users, targetActor, game.user?.id);
   if (!recipient) return { ok: false, error: "recipient-offline" };
 
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!primaryGm) return { ok: false, error: "no-gm" };
-  if (!game.socket?.emit) return { ok: false, error: "socket-unavailable" };
+  if (!game.socket?.emit || game.socket.connected === false) return { ok: false, error: "socket-unavailable" };
+  registerMoneyTransferSocket();
 
   const requestId = makeSocketRequestId();
+  const requester = game.user;
   const offer = {
     type: OFFER_TYPE,
     requestId,
-    requesterId: game.user.id,
+    requesterId: requester.id,
     recipientUserId: recipient.id,
     primaryGmId: primaryGm.id,
     sourceActorId,
     targetActorId,
-    amounts,
-    createdAt: Date.now()
+    amounts: parsed.amounts,
+    createdAt: getTransferTime()
   };
-
-  try {
-    await createSocketProof(OFFER_PROOF_KIND, requestId, offer, game.user);
-  } catch (error) {
-    console.error(`${MODULE_ID} | money transfer offer could not be authorized`, error);
-    return { ok: false, error: "identity-proof-failed" };
-  }
 
   const response = new Promise((resolve) => {
     const timeout = globalThis.setTimeout(() => {
-      pendingRequests.delete(requestId);
-      void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
-      resolve({ ok: false, error: "timeout" });
-    }, REQUEST_TIMEOUT_MS + RESULT_GRACE_MS);
-    pendingRequests.set(requestId, { resolve, timeout, primaryGmId: primaryGm.id });
+      settlePendingRequest(requestId, { ok: false, error: "outcome-unknown" });
+    }, getOfferTimeLeft(offer) + RESULT_GRACE_MS);
+    pendingRequests.set(requestId, { resolve, timeout, requester, offer });
   });
+  void publishTransferOffer(offer, requester, onSent);
+  return response;
+}
 
+async function publishTransferOffer(offer, requester, onSent) {
+  try {
+    await createSocketProof(OFFER_PROOF_KIND, offer.requestId, offer, requester);
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer offer could not be authorized`, error);
+    settlePendingRequest(offer.requestId, { ok: false, error: "identity-proof-failed" });
+    return;
+  }
+
+  if (!pendingRequests.has(offer.requestId)) return;
   try {
     await sendSocketMessage(offer);
   } catch (error) {
-    const pending = pendingRequests.get(requestId);
-    pendingRequests.delete(requestId);
-    void clearSocketProof(game.user, OFFER_PROOF_KIND, requestId);
-    if (pending) globalThis.clearTimeout(pending.timeout);
     console.error(`${MODULE_ID} | money transfer offer could not be sent`, error);
-    return { ok: false, error: "socket-unavailable" };
+    settlePendingRequest(offer.requestId, { ok: false, error: "socket-unavailable" });
+    return;
   }
+  onSent?.();
+}
 
-  return response;
+function settlePendingRequest(requestId, result) {
+  const pending = pendingRequests.get(requestId);
+  if (!pending) return;
+  pendingRequests.delete(requestId);
+  globalThis.clearTimeout(pending.timeout);
+  pending.resolve(result);
+  if (game.socket?.connected !== false) void clearSocketProof(pending.requester, OFFER_PROOF_KIND, requestId);
+}
+
+function handleTransferDisconnect() {
+  for (const requestId of pendingRequests.keys()) settlePendingRequest(requestId, { ok: false, error: "outcome-unknown" });
+  for (const [requestId, state] of incomingOffers) {
+    closeIncomingOffer(requestId);
+    notifyTransferError(state.accepted ? "outcome-unknown" : "socket-unavailable");
+  }
 }
 
 async function handleSocketMessage(message) {
@@ -291,7 +334,7 @@ async function handleSocketMessage(message) {
 
 async function handleTransferOffer(message) {
   if (!isValidOfferMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   const isPrimaryGm = Boolean(game.user?.isGM && primaryGm?.id === game.user.id && message.primaryGmId === game.user.id);
   const isRecipient = message.recipientUserId === game.user?.id;
   if (!isPrimaryGm && !isRecipient) return;
@@ -314,7 +357,7 @@ async function handleTransferOffer(message) {
       const stored = gmOffers.get(message.requestId);
       if (!stored) return;
       void finalizeTransferOffer(stored.offer, { ok: false, error: "recipient-timeout" });
-    }, REQUEST_TIMEOUT_MS);
+    }, getOfferTimeLeft(message));
 
     gmOffers.set(message.requestId, { offer: { ...message }, timeout });
 
@@ -322,7 +365,7 @@ async function handleTransferOffer(message) {
     if (earlyDecision) {
       globalThis.clearTimeout(earlyDecision.timeout);
       earlyDecisions.delete(message.requestId);
-      await processTransferDecision(message, earlyDecision.message);
+      await processTransferDecision(gmOffers.get(message.requestId).offer, earlyDecision.message);
     }
   }
 
@@ -344,7 +387,7 @@ async function handleTransferOffer(message) {
 
 async function handleTransferDecision(message) {
   if (!isValidDecisionMessage(message)) return;
-  const primaryGm = getPrimaryActiveGm();
+  const primaryGm = getActiveGM();
   if (!game.user?.isGM || primaryGm?.id !== game.user.id || message.primaryGmId !== game.user.id) return;
 
   const recipientUser = findGameUser(message.recipientUserId);
@@ -357,7 +400,7 @@ async function handleTransferDecision(message) {
   if (!stored) {
     if (!earlyDecisions.has(message.requestId)) {
       const timeout = globalThis.setTimeout(() => earlyDecisions.delete(message.requestId), RESULT_GRACE_MS);
-      earlyDecisions.set(message.requestId, { message: { ...message }, timeout, authenticated: true });
+      earlyDecisions.set(message.requestId, { message: { ...message }, timeout });
     }
     return;
   }
@@ -368,8 +411,16 @@ async function handleTransferDecision(message) {
 async function processTransferDecision(offer, message) {
   if (message.recipientUserId !== offer.recipientUserId
     || message.requesterId !== offer.requesterId
-    || message.primaryGmId !== offer.primaryGmId) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-request" });
+    || message.primaryGmId !== offer.primaryGmId) return;
+
+  // Once a decision claims the offer, its waiting timer must not publish a result.
+  const stored = gmOffers.get(offer.requestId);
+  if (!stored) return;
+  globalThis.clearTimeout(stored.timeout);
+  gmOffers.delete(offer.requestId);
+
+  if (!getOfferTimeLeft(offer)) {
+    await finalizeTransferOffer(offer, { ok: false, error: "recipient-timeout" });
     return;
   }
 
@@ -381,24 +432,12 @@ async function processTransferDecision(offer, message) {
     return;
   }
 
-  const recipientUser = findGameUser(offer.recipientUserId);
-  const targetActor = game.actors?.get?.(offer.targetActorId);
-  if (!recipientUser || !recipientUser.active || !userOwnsActor(recipientUser, targetActor)) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-recipient" });
-    return;
-  }
-
-  const result = await enqueueTransfer(() => {
-    const sourceActor = game.actors?.get?.(offer.sourceActorId);
-    const currentTargetActor = game.actors?.get?.(offer.targetActorId);
-    const requester = findGameUser(offer.requesterId);
-    const currentRecipient = findGameUser(offer.recipientUserId);
-    const activeGM = getPrimaryActiveGm();
-    if (!requester?.active || !userOwnsActor(requester, sourceActor)) return { ok: false, error: "invalid-request" };
-    if (!currentRecipient?.active || !userOwnsActor(currentRecipient, currentTargetActor)) return { ok: false, error: "invalid-recipient" };
-    if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id) return { ok: false, error: "invalid-request" };
-    if (Date.now() - offer.createdAt > REQUEST_TIMEOUT_MS) return { ok: false, error: "recipient-timeout" };
-    return executeMoneyTransfer(sourceActor, currentTargetActor, offer.amounts);
+  const result = await enqueueCurrencyOperation(() => {
+    if (getActiveGM()?.id !== offer.primaryGmId || game.user?.id !== offer.primaryGmId) return { ok: false, error: "no-gm" };
+    if (!getOfferTimeLeft(offer)) return { ok: false, error: "recipient-timeout" };
+    const parties = validateTransferParties(offer);
+    if (!parties.ok) return parties;
+    return executeMoneyTransfer(parties.sourceActor, parties.targetActor, offer.amounts);
   });
   await finalizeTransferOffer(offer, result);
 }
@@ -411,27 +450,19 @@ async function handleTransferResult(message) {
 
   const primaryGm = findGameUser(message.primaryGmId);
   if (!primaryGm?.isGM) return;
-  const currentPrimaryGm = getPrimaryActiveGm();
-  if (currentPrimaryGm?.id !== primaryGm.id) return;
+  const offer = pendingRequests.get(message.requestId)?.offer ?? incomingOffers.get(message.requestId)?.offer;
+  if ((offer?.primaryGmId ?? getActiveGM()?.id) !== primaryGm.id) return;
 
   const proof = await verifyTransferProof(primaryGm, RESULT_PROOF_KIND, message.requestId, withoutPacketId(message));
   if (!proof.ok) return;
   if (!consumeSocketProof(primaryGm.id, RESULT_PROOF_KIND, message.requestId)) return;
 
-  const incoming = incomingOffers.get(message.requestId);
-  if (incoming) {
-    incoming.decided = true;
-    incoming.dialog?.close?.();
-    incomingOffers.delete(message.requestId);
-  }
+  closeIncomingOffer(message.requestId);
 
   if (isRequester) {
     const pending = pendingRequests.get(message.requestId);
-    if (pending && pending.primaryGmId === message.primaryGmId) {
-      globalThis.clearTimeout(pending.timeout);
-      pendingRequests.delete(message.requestId);
-      void clearSocketProof(game.user, OFFER_PROOF_KIND, message.requestId);
-      pending.resolve(message.result ?? { ok: false, error: "unknown" });
+    if (pending?.offer.primaryGmId === message.primaryGmId) {
+      settlePendingRequest(message.requestId, message.result ?? { ok: false, error: "outcome-unknown" });
     }
   }
 
@@ -446,7 +477,7 @@ async function handleTransferResult(message) {
   } else if (result.error === "declined") {
     ui.notifications?.info?.(qaLocalize("Wallet.Transfer.RecipientDeclined", "Перевод отклонён."));
   } else {
-    ui.notifications?.error?.(localizeTransferError(result.error));
+    notifyTransferError(result.error);
   }
 
   const targetActor = game.actors?.get?.(message.targetActorId);
@@ -462,7 +493,7 @@ async function sendTransferDecision(offer, accepted, reason = null) {
     primaryGmId: offer.primaryGmId,
     accepted: Boolean(accepted),
     reason: reason ? String(reason) : null,
-    createdAt: Date.now()
+    createdAt: getTransferTime()
   };
 
   try {
@@ -481,18 +512,35 @@ function openIncomingMoneyTransferDialog(offer) {
   if (incomingOffers.has(offer.requestId)) return;
 
   const content = buildIncomingMoneyTransferDialogContent(offer);
-  const state = { decided: false, dialog: null };
+  const state = { offer, decided: false, accepted: false, dialog: null, timeout: null };
+
+  const expire = () => {
+    closeIncomingOffer(offer.requestId);
+    notifyTransferError(state.accepted ? "outcome-unknown" : "recipient-timeout");
+  };
 
   const decide = async (accepted, reason = null) => {
     if (state.decided) return;
-    state.decided = true;
-    const sent = await sendTransferDecision(offer, accepted, reason);
-    if (!sent) {
-      state.decided = false;
-      ui.notifications?.error?.(localizeTransferError("identity-proof-failed"));
+    const timeLeft = getOfferTimeLeft(offer);
+    if (!timeLeft) {
+      expire();
       return;
     }
-    incomingOffers.delete(offer.requestId);
+    state.decided = true;
+    state.accepted = accepted;
+    globalThis.clearTimeout(state.timeout);
+    if (accepted) {
+      state.timeout = globalThis.setTimeout(expire, timeLeft + RESULT_GRACE_MS);
+      state.timeout?.unref?.();
+    }
+    const sent = await sendTransferDecision(offer, accepted, reason);
+    if (!incomingOffers.has(offer.requestId)) return;
+    if (!sent) {
+      closeIncomingOffer(offer.requestId);
+      ui.notifications?.error?.(localizeTransferError("identity-proof-failed"));
+    } else if (!accepted) {
+      closeIncomingOffer(offer.requestId);
+    }
   };
 
   const dialog = createFoundryDialog({
@@ -502,12 +550,18 @@ function openIncomingMoneyTransferDialog(offer) {
       accept: {
         icon: '<i class="fas fa-check"></i>',
         label: qaLocalize("Wallet.Transfer.Accept", "Принять"),
-        callback: () => decide(true)
+        callback: (html) => {
+          disableTransferControls(extractDialogElement(html));
+          return decide(true);
+        }
       },
       decline: {
         icon: '<i class="fas fa-times"></i>',
         label: qaLocalize("Wallet.Transfer.Decline", "Отклонить"),
-        callback: () => decide(false, "declined")
+        callback: (html) => {
+          disableTransferControls(extractDialogElement(html));
+          return decide(false, "declined");
+        }
       }
     },
     default: "accept",
@@ -527,7 +581,18 @@ function openIncomingMoneyTransferDialog(offer) {
 
   state.dialog = dialog;
   incomingOffers.set(offer.requestId, state);
+  state.timeout = globalThis.setTimeout(expire, getOfferTimeLeft(offer));
+  state.timeout?.unref?.();
   dialog.render(true);
+}
+
+function closeIncomingOffer(requestId) {
+  const state = incomingOffers.get(requestId);
+  if (!state) return;
+  incomingOffers.delete(requestId);
+  globalThis.clearTimeout(state.timeout);
+  state.decided = true;
+  void state.dialog?.close?.();
 }
 
 function buildIncomingMoneyTransferDialogContent(offer) {
@@ -548,24 +613,34 @@ function buildIncomingMoneyTransferDialogContent(offer) {
 }
 
 function validateIncomingOffer(message) {
+  if (!getOfferTimeLeft(message)) return { ok: false, error: "recipient-timeout" };
+  const parties = validateTransferParties(message);
+  if (!parties.ok) return parties;
+  return readTransferAmounts(message.amounts);
+}
+
+function validateTransferParties(message) {
   const requester = findGameUser(message.requesterId);
   const recipient = findGameUser(message.recipientUserId);
   const sourceActor = game.actors?.get?.(message.sourceActorId);
   const targetActor = game.actors?.get?.(message.targetActorId);
 
   if (!requester || !recipient || !sourceActor || !targetActor) return { ok: false, error: "missing-actor" };
-  if (!requester.active) return { ok: false, error: "source-permission" };
-  if (!requester.isGM && !userOwnsActor(requester, sourceActor)) return { ok: false, error: "source-permission" };
-  if (!recipient.active || recipient.isGM || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
-  if (sourceActor.type !== "character" || targetActor.type !== "character") return { ok: false, error: "invalid-recipient" };
-  return buildMoneyTransferPlan(sourceActor, targetActor, message.amounts);
+  if (sourceActor.id === targetActor.id) return { ok: false, error: "same-actor" };
+  if (!requester.active || sourceActor.type !== "character" || sourceActor.pack
+    || (!requester.isGM && !userOwnsActor(requester, sourceActor))) return { ok: false, error: "source-permission" };
+  if (!recipient.active || recipient.isGM || recipient.id === requester.id || targetActor.type !== "character"
+    || targetActor.pack || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
+  return { ok: true, sourceActor, targetActor };
 }
 
 function validateRecipientOffer(message) {
-  const recipient = findGameUser(message.recipientUserId);
+  if (!getOfferTimeLeft(message)) return { ok: false, error: "recipient-timeout" };
+  if (message.primaryGmId !== getActiveGM()?.id || message.requesterId === message.recipientUserId
+    || message.sourceActorId === message.targetActorId) return { ok: false, error: "invalid-request" };
+  const recipient = game.user;
   const targetActor = game.actors?.get?.(message.targetActorId);
-  if (!recipient || recipient.id !== game.user?.id || !targetActor) return { ok: false, error: "invalid-recipient" };
-  if (!recipient.active || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
+  if (!recipient?.active || recipient.isGM || !userOwnsActor(recipient, targetActor)) return { ok: false, error: "invalid-recipient" };
   return { ok: true };
 }
 
@@ -592,9 +667,20 @@ async function finalizeTransferOffer(offer, result) {
     sourceActorId: offer.sourceActorId,
     targetActorId: offer.targetActorId,
     result: completeResult,
-    createdAt: Date.now()
+    createdAt: getTransferTime()
   };
 
+  const { error, debitConfirmed, sourceActorId, targetActorId, amounts } = completeResult;
+  if (debitConfirmed) {
+    const source = game.actors?.get?.(sourceActorId)?.name ?? sourceActorId;
+    const target = game.actors?.get?.(targetActorId)?.name ?? targetActorId;
+    const status = localizeWhisperStatus(error === "partial-failure" ? "partial" : "unknown", completeResult);
+    notifyTransferError(error, `${source} → ${target} · ${formatTransferAmounts(amounts)}. ${status}`);
+  } else if (error === "outcome-unknown") {
+    notifyTransferError(error);
+  }
+  if (game.socket?.connected === false) return;
+  const whisper = postTransferWhisper(offer, completeResult);
   try {
     await sendAuthenticatedTransferResultWithRetry(resultMessage, game.user);
     scheduleSocketProofCleanup(game.user, RESULT_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
@@ -606,7 +692,7 @@ async function finalizeTransferOffer(offer, result) {
   const recipient = findGameUser(offer.recipientUserId);
   scheduleSocketProofCleanup(requester, OFFER_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
   scheduleSocketProofCleanup(recipient, DECISION_PROOF_KIND, offer.requestId, PROOF_GRACE_MS);
-  await postTransferWhisper(offer, completeResult);
+  await whisper;
 }
 
 async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
@@ -614,34 +700,21 @@ async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts) {
   if (!plan.ok) return plan;
 
   try {
-    const ActorClass = sourceActor?.constructor?.implementation ?? sourceActor?.constructor;
-    if (typeof ActorClass?.updateDocuments !== "function") {
-      throw new Error("Actor.updateDocuments is unavailable");
-    }
-
-    await ActorClass.updateDocuments([
-      { _id: sourceActor.id, ...plan.sourceUpdate },
-      { _id: targetActor.id, ...plan.targetUpdate }
-    ]);
-
-    Hooks.callAll?.("fblQuickAccess.walletTransferred", {
-      sourceActor,
-      targetActor,
-      amounts: plan.amounts
-    });
-
-    return {
-      ok: true,
-      sourceActorId: sourceActor.id,
-      targetActorId: targetActor.id,
-      sourceName: sourceActor.name,
-      targetName: targetActor.name,
-      amounts: plan.amounts
-    };
+    await writeCurrencyUpdate(sourceActor, plan.sourceUpdate);
   } catch (error) {
-    console.error(`${MODULE_ID} | money transfer failed`, error);
-    return { ok: false, error: "update-failed" };
+    console.error(`${MODULE_ID} | money transfer debit failed`, sourceActor.id, error);
+    return { ok: false, error: error?.code === "outcome-unknown" ? "outcome-unknown" : "update-failed" };
   }
+  try {
+    await writeCurrencyUpdate(targetActor, plan.targetUpdate);
+  } catch (error) {
+    console.error(`${MODULE_ID} | money transfer credit failed`, sourceActor.id, targetActor.id, plan.amounts, error);
+    return { ok: false, error: error?.code === "outcome-unknown" ? "outcome-unknown" : "partial-failure", debitConfirmed: true };
+  }
+
+  globalThis.Hooks?.callAll?.("fblQuickAccess.walletTransferred", { sourceActor, targetActor, amounts: plan.amounts });
+  return { ok: true, sourceActorId: sourceActor.id, targetActorId: targetActor.id,
+    sourceName: sourceActor.name, targetName: targetActor.name, amounts: plan.amounts };
 }
 
 async function postTransferWhisper(offer, result) {
@@ -652,15 +725,16 @@ async function postTransferWhisper(offer, result) {
   const recipient = game.users?.get?.(offer.recipientUserId);
   const sourceActor = game.actors?.get?.(offer.sourceActorId);
   const targetActor = game.actors?.get?.(offer.targetActorId);
-  const status = localizeWhisperStatus(model.status, result?.error);
-  const primaryGm = getPrimaryActiveGm();
-  const recipients = [...new Set([offer.requesterId, offer.recipientUserId, primaryGm?.id].filter(Boolean))];
+  const status = localizeWhisperStatus(model.status, result);
+  const recipients = model.status === "partial" || model.status === "unknown"
+    ? [offer.primaryGmId]
+    : [...new Set([offer.requesterId, offer.recipientUserId, offer.primaryGmId].filter(Boolean))];
 
   const content = `
     <div class="fblqa-money-transfer-chat-card">
       <h3>${escapeHtml(qaLocalize("Wallet.Transfer.WhisperTitle", "Передача денег"))}</h3>
-      <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.From", "Отправитель"))}:</strong> ${escapeHtml(requester?.name ?? "?")} — ${escapeHtml(sourceActor?.name ?? "?")}</p>
-      <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.To", "Получатель"))}:</strong> ${escapeHtml(recipient?.name ?? "?")} — ${escapeHtml(targetActor?.name ?? "?")}</p>
+      <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.From", "Отправитель"))}:</strong> ${escapeHtml(requester?.name ?? offer.requesterId)} — ${escapeHtml(sourceActor?.name ?? offer.sourceActorId)}</p>
+      <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.To", "Получатель"))}:</strong> ${escapeHtml(recipient?.name ?? offer.recipientUserId)} — ${escapeHtml(targetActor?.name ?? offer.targetActorId)}</p>
       <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.Amount", "Сумма"))}:</strong> ${escapeHtml(formatTransferAmounts(model.amounts))}</p>
       <p><strong>${escapeHtml(qaLocalize("Wallet.Transfer.Status", "Статус"))}:</strong> ${escapeHtml(status)}</p>
     </div>`;
@@ -675,10 +749,6 @@ async function postTransferWhisper(offer, result) {
     console.error(`${MODULE_ID} | money transfer whisper failed`, error);
     return null;
   }
-}
-
-function enqueueTransfer(operation) {
-  return enqueueCurrencyOperation(operation);
 }
 
 function buildMoneyTransferDialogContent(sourceActor, targets) {
@@ -715,7 +785,7 @@ function buildMoneyTransferDialogContent(sourceActor, targets) {
 }
 
 function setupMoneyTransferDialog(element, sourceActor) {
-  const form = element?.querySelector?.("form.fblqa-money-transfer-form");
+  const form = findTransferForm(element);
   if (!form) return;
 
   const updatePreview = () => {
@@ -740,6 +810,16 @@ function setupMoneyTransferDialog(element, sourceActor) {
     });
   }
   updatePreview();
+}
+
+function findTransferForm(element) {
+  const selector = "form.fblqa-money-transfer-form";
+  return element?.matches?.(selector) ? element : element?.querySelector?.(selector);
+}
+
+function disableTransferControls(element) {
+  const controls = element?.querySelectorAll?.("form button, form input, form select, .dialog-buttons button");
+  for (const control of controls ?? []) control.disabled = true;
 }
 
 function getMoneyTransferTargets(sourceActor) {
@@ -793,7 +873,7 @@ function isValidOfferMessage(message) {
     && typeof message.sourceActorId === "string"
     && typeof message.targetActorId === "string"
     && message.amounts && typeof message.amounts === "object"
-    && Number.isFinite(Number(message.createdAt));
+    && Number.isSafeInteger(message.createdAt);
 }
 
 function isValidDecisionMessage(message) {
@@ -803,7 +883,7 @@ function isValidDecisionMessage(message) {
     && typeof message.recipientUserId === "string"
     && typeof message.primaryGmId === "string"
     && typeof message.accepted === "boolean"
-    && Number.isFinite(Number(message.createdAt));
+    && Number.isSafeInteger(message.createdAt);
 }
 
 function isValidResultMessage(message) {
@@ -815,13 +895,16 @@ function isValidResultMessage(message) {
     && typeof message.sourceActorId === "string"
     && typeof message.targetActorId === "string"
     && message.result && typeof message.result === "object"
-    && Number.isFinite(Number(message.createdAt));
+    && Number.isSafeInteger(message.createdAt);
 }
 
-function getPrimaryActiveGm() {
-  return Array.from(game.users ?? [])
-    .filter((user) => user.isGM && user.active)
-    .sort((a, b) => String(a.id).localeCompare(String(b.id)))[0] ?? null;
+function getOfferTimeLeft(offer) {
+  return Math.max(0, offer.createdAt + REQUEST_TIMEOUT_MS - getTransferTime());
+}
+
+function getTransferTime() {
+  const serverTime = globalThis.game?.time?.serverTime;
+  return Math.round(Number.isFinite(serverTime) && serverTime > 0 ? serverTime : Date.now());
 }
 
 function formatTransferAmounts(amounts) {
@@ -837,6 +920,9 @@ function localizeTransferError(code) {
     "missing-actor": "MissingActor",
     "same-actor": "SameActor",
     "empty-amount": "EmptyAmount",
+    "invalid-amount": "InvalidAmount",
+    "invalid-balance": "InvalidBalance",
+    "amount-overflow": "AmountOverflow",
     "insufficient-denomination": "InsufficientDenomination",
     "source-permission": "NoSourcePermission",
     "invalid-recipient": "InvalidRecipient",
@@ -848,19 +934,36 @@ function localizeTransferError(code) {
     "no-gm": "NoGm",
     "socket-unavailable": "SocketUnavailable",
     "identity-proof-failed": "IdentityProofFailed",
-    "timeout": "Timeout",
-    "rollback-failed": "RollbackFailed",
+    "outcome-unknown": "UnknownOutcome",
+    "partial-failure": "PartialFailure",
     "update-failed": "UpdateFailed"
   }[code] ?? "UnknownError";
-  return qaLocalize(`Wallet.Transfer.${key}`, "Не удалось передать деньги.");
+  const fallback = code === "outcome-unknown"
+    ? "Исход перевода неизвестен. Дождитесь истечения срока предложения (90 секунд), затем сверьте оба кошелька перед повтором."
+    : code === "partial-failure"
+      ? "Списание подтверждено, но зачисление не завершилось. Проверьте оба кошелька вручную."
+      : "Не удалось передать деньги.";
+  return qaLocalize(`Wallet.Transfer.${key}`, fallback);
 }
 
-function localizeWhisperStatus(status, error) {
+function notifyTransferError(code, text = localizeTransferError(code)) {
+  const message = escapeHtml(text);
+  if (code === "outcome-unknown") globalThis.ui?.notifications?.warn?.(message);
+  else globalThis.ui?.notifications?.error?.(message);
+}
+
+function localizeWhisperStatus(status, result) {
   if (status === "completed") return qaLocalize("Wallet.Transfer.StatusCompleted", "Принято и выполнено");
   if (status === "declined") return qaLocalize("Wallet.Transfer.StatusDeclined", "Отклонено получателем");
   if (status === "expired") return qaLocalize("Wallet.Transfer.StatusExpired", "Истекло время ожидания");
+  if (status === "partial") return localizeTransferError("partial-failure");
+  if (status === "unknown") {
+    return result.debitConfirmed
+      ? qaLocalize("Wallet.Transfer.CreditUnknown", "Списание подтверждено. Исход зачисления неизвестен. Дождитесь истечения срока предложения (90 секунд), затем сверьте оба кошелька перед повтором.")
+      : localizeTransferError("outcome-unknown");
+  }
   return qaLocalize("Wallet.Transfer.StatusFailed", "Не выполнено: {reason}", {
-    reason: localizeTransferError(error)
+    reason: localizeTransferError(result?.error)
   });
 }
 
@@ -894,8 +997,10 @@ async function sendAuthenticatedTransferResultWithRetry(payload, user, attempts 
 
 async function sendSocketMessage(payload) {
   const message = { ...payload, packetId: payload.packetId ?? makeSocketRequestId() };
+  if (game.socket?.connected === false || !game.socket?.emit) throw new Error("Foundry socket is unavailable");
   await handleSocketMessage(message);
-  game.socket?.emit?.(SOCKET_CHANNEL, message);
+  if (game.socket.connected === false) throw new Error("Foundry socket disconnected");
+  game.socket.emit(SOCKET_CHANNEL, message);
 }
 
 function rememberPacket(packetId) {
@@ -908,10 +1013,4 @@ function rememberPacket(packetId) {
     seenPackets.delete(oldest);
   }
   return true;
-}
-
-function extractDialogElement(html) {
-  if (html instanceof HTMLElement) return html;
-  if (html?.[0] instanceof HTMLElement) return html[0];
-  return null;
 }
