@@ -120,6 +120,23 @@ test("start Willpower calculation uses selected talent ranks", () => {
   assert.equal(result.kinRank, 2);
 });
 
+test("start Willpower uses a default Kin rank and ignores an unset maximum", () => {
+  const actor = {
+    system: { attribute: { empathy: { max: 4 } }, bio: { willpower: { value: 2 } } },
+    items: new Map([
+      ["kin", { id: "kin", type: "talent", system: { rank: { value: "" } } }],
+      ["prof", { id: "prof", type: "talent", system: { rank: { value: 3 } } }]
+    ]),
+    getFlag: () => ({ kinTalentId: "kin", professionalTalentId: "prof" })
+  };
+  for (const [max, expected] of [[null, 3], ["", 3], [0, 0]]) {
+    actor.system.bio.willpower.max = max;
+    const result = willpower.calculateStartWillpower(actor);
+    assert.equal(result.kinRank, 1);
+    assert.equal(result.value, expected);
+  }
+});
+
 test("drop data normalization supports item aliases and fblqa marker", () => {
   assert.deepEqual(
     dragData.normalizeDropData({ id: "abc", fblqaGearOrder: true }),

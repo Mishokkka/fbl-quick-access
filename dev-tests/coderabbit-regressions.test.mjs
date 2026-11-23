@@ -247,7 +247,7 @@ test("PR11: BIO save queues survive release until the active write settles", () 
 
   assert.doesNotMatch(release, /SAVE_CHAINS\.delete\(key\)/);
   assert.doesNotMatch(release, /PILGRIM_SAVE_CHAINS\.delete\(key\)/);
-  assert.match(source, /chain\.finally\(\(\) => \{\s*if \(SAVE_CHAINS\.get\(key\) === chain\) SAVE_CHAINS\.delete\(key\);/);
+  assert.match(source, /\.finally\(\(\) => \{\s*if \(SAVE_CHAINS\.get\(key\) === chain\) SAVE_CHAINS\.delete\(key\);/);
   assert.match(source, /chain\.finally\(\(\) => \{\s*if \(PILGRIM_SAVE_CHAINS\.get\(key\) === chain\) PILGRIM_SAVE_CHAINS\.delete\(key\);/);
 });
 

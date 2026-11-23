@@ -21,10 +21,11 @@ export function readDropData(event, { warn = true } = {}) {
 }
 
 export function readFoundryDropData(event) {
-  if (!globalThis.TextEditor?.getDragEventData) return null;
+  const textEditor = globalThis.foundry?.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
+  if (!textEditor?.getDragEventData) return null;
 
   try {
-    const data = TextEditor.getDragEventData(event);
+    const data = textEditor.getDragEventData(event);
     return data && typeof data === "object" ? data : null;
   } catch (_error) {
     return null;
@@ -34,13 +35,17 @@ export function readFoundryDropData(event) {
 export function normalizeDropData(data) {
   if (!data || typeof data !== "object") return null;
 
+  const id = data.id || data.itemId || "";
+  const itemId = data.itemId || data.id || "";
+  const uuid = data.uuid || data.itemUuid || "";
+  const itemUuid = data.itemUuid || data.uuid || "";
   const normalized = {
     ...data,
-    type: data.type ?? (data.uuid || data.itemId || data.id ? "Item" : ""),
-    id: data.id ?? data.itemId ?? "",
-    itemId: data.itemId ?? data.id ?? "",
-    itemUuid: data.itemUuid ?? data.uuid ?? "",
-    uuid: data.uuid ?? data.itemUuid ?? "",
+    type: data.type || (uuid || itemId || id ? "Item" : ""),
+    id,
+    itemId,
+    itemUuid,
+    uuid,
     actorId: data.actorId ?? "",
     actorUuid: data.actorUuid ?? "",
     slotIndex: data.slotIndex,
@@ -56,11 +61,16 @@ export function isItemDropData(data) {
 
 export function getDroppedItemId(data) {
   if (!data) return "";
-  return data.itemId ?? data.id ?? "";
+  return data.itemId || data.id || "";
 }
 
 export async function resolveDroppedItem(actor, data, { sameActorOnly = true, warn = true } = {}) {
   if (!isItemDropData(data)) return null;
+
+  if (sameActorOnly && data.actorUuid && actor?.uuid && data.actorUuid !== actor.uuid) {
+    if (warn) ui.notifications?.warn(qaLocalize("Drag.SameActorOnly", "Перетащи предмет из инвентаря этого же персонажа."));
+    return null;
+  }
 
   if (data.uuid) {
     try {
@@ -70,8 +80,10 @@ export async function resolveDroppedItem(actor, data, { sameActorOnly = true, wa
         if (warn) ui.notifications?.warn(qaLocalize("Drag.SameActorOnly", "Перетащи предмет из инвентаря этого же персонажа."));
         return null;
       }
+      if (sameActorOnly) return null;
     } catch (error) {
       if (warn) console.warn(`${MODULE_ID} | could not resolve dropped item UUID`, data.uuid, error);
+      if (sameActorOnly) return null;
     }
   }
 

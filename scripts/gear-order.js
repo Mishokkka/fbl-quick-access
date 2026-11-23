@@ -43,40 +43,53 @@ export function applySavedGearOrder(actor, gears) {
   }
 }
 
+const GEAR_DRAG_STATES = new WeakMap();
+
+function getGearDragState(gears) {
+  let state = GEAR_DRAG_STATES.get(gears);
+  if (!state) {
+    state = {
+      dragSession: null,
+      markerFrame: 0,
+      pendingMarker: null,
+      activeMarker: null
+    };
+    GEAR_DRAG_STATES.set(gears, state);
+  }
+  return state;
+}
+
 function attachGearOrderDnD(app, actor, gears) {
   const rows = collectOrderingTargets(actor, gears);
-  let dragSession = null;
-  let markerFrame = 0;
-  let pendingMarker = null;
-  let activeMarker = null;
+  const state = getGearDragState(gears);
 
   const clearActiveMarker = () => {
-    activeMarker?.row?.classList.remove("fblqa-drop-before", "fblqa-drop-after");
-    activeMarker = null;
+    state.activeMarker?.row?.classList.remove("fblqa-drop-before", "fblqa-drop-after");
+    state.activeMarker = null;
   };
 
   const cancelMarkerFrame = () => {
-    if (!markerFrame) return;
-    cancelAnimationFrame(markerFrame);
-    markerFrame = 0;
-    pendingMarker = null;
+    if (!state.markerFrame) return;
+    cancelAnimationFrame(state.markerFrame);
+    state.markerFrame = 0;
+    state.pendingMarker = null;
   };
 
   const scheduleMarker = (row, event) => {
-    pendingMarker = { row, clientX: event.clientX, clientY: event.clientY };
-    if (markerFrame) return;
-    markerFrame = requestAnimationFrame(() => {
-      markerFrame = 0;
-      const pending = pendingMarker;
-      pendingMarker = null;
+    state.pendingMarker = { row, clientX: event.clientX, clientY: event.clientY };
+    if (state.markerFrame) return;
+    state.markerFrame = requestAnimationFrame(() => {
+      state.markerFrame = 0;
+      const pending = state.pendingMarker;
+      state.pendingMarker = null;
       if (!pending) return;
 
       const insertAfter = shouldInsertAfterPoint(pending.row, pending.clientX, pending.clientY);
-      if (activeMarker?.row === pending.row && activeMarker.insertAfter === insertAfter) return;
+      if (state.activeMarker?.row === pending.row && state.activeMarker.insertAfter === insertAfter) return;
 
       clearActiveMarker();
       pending.row.classList.add(insertAfter ? "fblqa-drop-after" : "fblqa-drop-before");
-      activeMarker = { row: pending.row, insertAfter };
+      state.activeMarker = { row: pending.row, insertAfter };
     });
   };
 
@@ -104,46 +117,52 @@ function attachGearOrderDnD(app, actor, gears) {
       }));
       if (event.dataTransfer) event.dataTransfer.effectAllowed = "copyMove";
 
-      dragSession = buildGearDragSession(actor, gears, item.id);
+      state.dragSession = buildGearDragSession(actor, gears, item.id);
       row.classList.add("fblqa-gear-order-dragging");
     });
 
     row.addEventListener("dragend", () => {
       row.classList.remove("fblqa-gear-order-dragging");
-      dragSession = null;
+      state.dragSession = null;
       cancelMarkerFrame();
       clearActiveMarker();
     });
 
     row.addEventListener("dragover", (event) => {
-      const draggedItemId = dragSession?.draggedItemId || getDraggedItemId(event);
+      const draggedItemId = getDraggedItemId(event, actor, state.dragSession?.draggedItemId);
       const targetItemId = getItemIdFromRow(row);
       if (!draggedItemId || !targetItemId || draggedItemId === targetItemId) return;
-      if (!areRowsInSameOrderGroupCached(actor, gears, dragSession, draggedItemId, targetItemId)) return;
+      if (!areRowsInSameOrderGroupCached(actor, gears, state.dragSession, draggedItemId, targetItemId)) return;
 
       event.preventDefault();
       if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
       scheduleMarker(row, event);
     });
 
-    row.addEventListener("dragleave", () => {
-      if (activeMarker?.row === row) clearActiveMarker();
-      if (pendingMarker?.row === row) pendingMarker = null;
+    row.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget && row.contains?.(event.relatedTarget)) return;
+      if (state.activeMarker?.row === row) clearActiveMarker();
+      if (state.pendingMarker?.row === row) state.pendingMarker = null;
     });
 
     row.addEventListener("drop", async (event) => {
-      const draggedItemId = dragSession?.draggedItemId || getDraggedItemId(event);
+      const draggedItemId = getDraggedItemId(event, actor, state.dragSession?.draggedItemId);
       const targetItemId = getItemIdFromRow(row);
       if (!draggedItemId || !targetItemId || draggedItemId === targetItemId) return;
-      if (!areRowsInSameOrderGroupCached(actor, gears, dragSession, draggedItemId, targetItemId)) return;
+      if (!areRowsInSameOrderGroupCached(actor, gears, state.dragSession, draggedItemId, targetItemId)) return;
 
       event.preventDefault();
       event.stopPropagation();
 
       const insertAfter = shouldInsertAfterPoint(row, event.clientX, event.clientY);
+      state.dragSession = null;
       cancelMarkerFrame();
       clearActiveMarker();
-      await saveReorderedGroup(app, actor, gears, draggedItemId, targetItemId, insertAfter);
+      try {
+        await saveReorderedGroup(app, actor, gears, draggedItemId, targetItemId, insertAfter);
+      } catch (error) {
+        console.error(`${MODULE_ID} | could not save gear order`, error);
+      }
     });
   }
 }
@@ -352,11 +371,14 @@ function getStoredGearOrder(actor) {
   return Array.isArray(order) ? order.filter((id) => typeof id === "string" && id) : [];
 }
 
-function getDraggedItemId(event) {
+function getDraggedItemId(event, actor, fallbackId = "") {
   const data = readDropData(event, { warn: false });
-  if (!data) return "";
-  if (data.type === "FBLQAGearOrder") return getDroppedItemId(data);
+  if (!data) return fallbackId;
   if (data.type !== "Item" || data.fblqaGearOrder !== true) return "";
+  if (actor) {
+    if (data.actorUuid && actor.uuid && data.actorUuid !== actor.uuid) return "";
+    if (!data.actorUuid && data.actorId && actor.id && data.actorId !== actor.id) return "";
+  }
   return getDroppedItemId(data);
 }
 

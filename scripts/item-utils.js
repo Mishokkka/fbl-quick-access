@@ -10,6 +10,7 @@ import {
   humanizeKey,
   localizeOrFallback,
   normalizeText,
+  readNumericValue,
   stripHtml
 } from "./utils.js";
 
@@ -44,9 +45,10 @@ export function getItemWeightValue(item) {
   if (typeof rawWeight === "number" && Number.isFinite(rawWeight)) return rawWeight;
 
   const normalized = String(rawWeight ?? "regular").trim().toLowerCase();
+  if (!normalized) return 1;
   const systemMap = CONFIG.fbl?.encumbrance ?? {};
-  const mapped = systemMap[normalized];
-  if (Number.isFinite(Number(mapped))) return Number(mapped);
+  const mapped = readNumericValue(systemMap[normalized]);
+  if (Number.isFinite(mapped)) return mapped;
 
   const aliases = {
     none: 0,
@@ -64,7 +66,7 @@ export function getItemWeightValue(item) {
 
   if (Object.hasOwn(aliases, normalized)) return aliases[normalized];
 
-  const numeric = Number(normalized);
+  const numeric = readNumericValue(normalized);
   if (Number.isFinite(numeric)) return numeric;
 
   return 1;
@@ -83,14 +85,14 @@ export function getItemCarryState(item) {
     { value: readPath(system, "carryState.value") },
     { value: readPath(system, "state") },
     { value: readPath(system, "state.value") },
+    { value: readPath(system, "dropped"), booleanState: "dropped" },
+    { value: readPath(system, "dropped.value"), booleanState: "dropped" },
+    { value: readPath(system, "equipped"), booleanState: "equipped" },
+    { value: readPath(system, "equipped.value"), booleanState: "equipped" },
     { value: readPath(system, "carried"), booleanState: "backpack" },
     { value: readPath(system, "carried.value"), booleanState: "backpack" },
     { value: readPath(system, "stored"), booleanState: "backpack" },
-    { value: readPath(system, "stored.value"), booleanState: "backpack" },
-    { value: readPath(system, "equipped"), booleanState: "equipped" },
-    { value: readPath(system, "equipped.value"), booleanState: "equipped" },
-    { value: readPath(system, "dropped"), booleanState: "dropped" },
-    { value: readPath(system, "dropped.value"), booleanState: "dropped" }
+    { value: readPath(system, "stored.value"), booleanState: "backpack" }
   ];
 
   for (const candidate of candidates) {
@@ -132,6 +134,7 @@ export function normalizeItemCarryValue(value, booleanState = "") {
     экипировано: "equipped",
     надето: "equipped",
     вруках: "equipped",
+    "в руках": "equipped",
     рюкзак: "backpack",
     снаряжение: "backpack",
     переносится: "backpack",
@@ -239,11 +242,11 @@ async function buildSpellTooltipHtml(item) {
   const system = item.system ?? {};
   const stats = [];
 
-  addTooltipStat(stats, "Rank", system.rank);
-  addTooltipStat(stats, "Type", formatSpellType(system.spellType ?? system.type));
-  addTooltipStat(stats, "Range", formatPlainValue(system.range));
-  addTooltipStat(stats, "Duration", formatPlainValue(system.duration));
-  addTooltipStat(stats, "Ingredients", formatPlainValue(system.ingredient ?? system.ingredients));
+  addTooltipStat(stats, qaLocalize("Tooltip.Rank", "Ранг"), system.rank);
+  addTooltipStat(stats, qaLocalize("Tooltip.Type", "Тип"), formatSpellType(system.spellType ?? system.type));
+  addTooltipStat(stats, qaLocalize("Tooltip.Range", "Дальность"), formatPlainValue(system.range));
+  addTooltipStat(stats, qaLocalize("Tooltip.Duration", "Длительность"), formatPlainValue(system.duration));
+  addTooltipStat(stats, qaLocalize("Tooltip.Ingredients", "Ингредиенты"), formatPlainValue(system.ingredient ?? system.ingredients));
 
   const description = getDescriptionOnlyText(item);
   const descriptionHtml = description
@@ -259,8 +262,7 @@ async function buildSpellTooltipHtml(item) {
 function formatSpellType(value) {
   if (!value) return "";
   const text = String(value).trim();
-  const localized = game.i18n.localize(text);
-  return localized && localized !== text ? localized : humanizeKey(text);
+  return localizeOrFallback(text, humanizeKey(text));
 }
 
 function buildMainTabTooltipStats(item) {
@@ -446,14 +448,14 @@ function isForbiddenLandsRichFieldVisible(item, flag) {
   return !hidden;
 }
 
-async function enrichTooltipText(text, item, {secrets = item.isOwner, relativeTo = item} = {}) {
-  const raw = decodeHtmlEntities(String(text ?? "").trim());
+async function enrichTooltipText(text, item, { secrets = item.isOwner, relativeTo = item } = {}) {
+  const raw = String(text ?? "").trim();
   if (!raw) return "";
 
-  if (globalThis.TextEditor?.enrichHTML) {
+  const textEditor = globalThis.foundry?.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
+  if (textEditor?.enrichHTML) {
     try {
-      const enriched = await TextEditor.enrichHTML(raw, {
-        async: true,
+      const enriched = await textEditor.enrichHTML(raw, {
         secrets,
         relativeTo
       });
@@ -469,7 +471,5 @@ async function enrichTooltipText(text, item, {secrets = item.isOwner, relativeTo
 }
 
 function localizeItemType(type) {
-  const localized = game.i18n.localize(type);
-  if (localized && localized !== type) return localized;
-  return humanizeKey(type);
+  return localizeOrFallback(type, humanizeKey(type));
 }

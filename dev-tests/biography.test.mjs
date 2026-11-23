@@ -3,9 +3,107 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, normalizePilgrimCardProfile, resolveBiographyEditorValue, savePilgrimCardProfile } from "../scripts/biography.js";
+import { flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, normalizePilgrimCardProfile, queueProfileSave, resolveBiographyEditorValue, savePilgrimCardProfile } from "../scripts/biography.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+function biographyActor(id, profile) {
+  const flag = "biographyProfile";
+  const prefix = `flags.fbl-quick-access.${flag}.`;
+  const stored = normalizeBiographyProfile(profile);
+  return {
+    id,
+    isOwner: true,
+    system: { bio: {} },
+    getFlag: (_scope, key) => key === flag ? stored : undefined,
+    async update(patch) {
+      for (const [path, value] of Object.entries(patch)) {
+        assert.ok(path.startsWith(prefix));
+        const parts = path.slice(prefix.length).split(".");
+        const field = parts.pop();
+        const target = parts.reduce((value, part) => value[part], stored);
+        target[field] = structuredClone(value);
+        delete patch[path];
+      }
+    }
+  };
+}
+
+test("editing individual language and rumor rows preserves both arrays", async () => {
+  const actor = biographyActor("bio-collections", {
+    languages: [{ id: "a", name: "First" }, { id: "b", name: "Second" }],
+    rumors: [{ id: "c", text: "First rumor" }, { id: "d", text: "Second rumor" }]
+  });
+  const profile = getBiographyProfile(actor);
+  profile.languages[0].name = "Edited language";
+  queueProfileSave(actor, profile, null, 350, "languages.0.name");
+  profile.rumors[1].text = "Edited rumor";
+  queueProfileSave(actor, profile, null, 350, "rumors.1.text");
+
+  assert.deepEqual(await flushBiographySaves(actor), [true, true]);
+  const saved = getBiographyProfile(actor);
+  assert.deepEqual(saved.languages.map(entry => entry.name), ["Edited language", "Second"]);
+  assert.deepEqual(saved.rumors.map(entry => entry.text), ["First rumor", "Edited rumor"]);
+});
+
+test("only the newest overlapping BIO edit wins", async () => {
+  const actor = biographyActor("bio-overlap", { physical: { appearance: "Original", hair: "Black" } });
+  const profile = getBiographyProfile(actor);
+  for (const [path, value] of [["physical.appearance", "First"], ["physical", "Parent edit"], ["physical.appearance", "Latest"]]) {
+    profile.physical.appearance = value;
+    queueProfileSave(actor, profile, null, 350, path);
+  }
+
+  assert.deepEqual(await flushBiographySaves(actor), [true, true]);
+  const { appearance, hair } = getBiographyProfile(actor).physical;
+  assert.deepEqual({ appearance, hair }, { appearance: "Latest", hair: "Black" });
+});
+
+for (const continuation of ["queued flush", "pending debounce"]) {
+  test(`a failed BIO batch stops a ${continuation} and retains the latest draft`, async t => {
+    t.mock.method(console, "error", () => {});
+    const actor = biographyActor(`bio-failure-${continuation}`, {});
+    let start, fail;
+    const started = new Promise(resolve => { start = resolve; });
+    const blocked = new Promise((_resolve, reject) => { fail = reject; });
+    const update = actor.update;
+    let attempts = 0;
+    actor.update = async patch => {
+      attempts += 1;
+      if (attempts === 2) {
+        start();
+        await blocked;
+      }
+      return update(patch);
+    };
+    const profile = getBiographyProfile(actor);
+    Object.assign(profile.physical, { height: "180", eyes: "green", hair: "red" });
+    for (const path of ["physical.height", "physical.eyes", "physical.hair"]) {
+      queueProfileSave(actor, profile, null, 10_000, path);
+    }
+    const first = flushBiographySaves(actor);
+    await started;
+
+    const status = {};
+    profile.physical.eyes = "blue";
+    queueProfileSave(actor, profile, status, 0, "physical.eyes");
+    const queued = continuation === "queued flush" ? flushBiographySaves(actor) : null;
+    fail(new Error("Second write failed"));
+
+    assert.deepEqual(await first, [false, true]);
+    if (queued) assert.deepEqual(await queued, [false, true]);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    assert.equal(attempts, 2);
+    assert.match(status.className, /\bis-error\b/);
+    assert.ok(status.textContent);
+    const { height, eyes, hair } = getBiographyProfile(actor).physical;
+    assert.deepEqual({ height, eyes, hair }, { height: "180", eyes: "", hair: "" });
+
+    assert.deepEqual(await flushBiographySaves(actor), [true, true]);
+    const saved = getBiographyProfile(actor).physical;
+    assert.deepEqual([saved.height, saved.eyes, saved.hair], ["180", "blue", "red"]);
+  });
+}
 
 test("normalizes imported biography rows while keeping rumor truth out of the visible row model", () => {
   const profile = normalizeBiographyProfile({
@@ -328,6 +426,7 @@ test("Pilgrim Card is stored independently from Actor name and Forbidden Lands B
   const actor = {
     id: "pilgrim-independent",
     name: "Имя на листе",
+    isOwner: true,
     system: { bio: { kin: { value: "Elf" }, profession: { value: "Hunter" } } },
     getFlag(moduleId, key) {
       if (moduleId === "fbl-quick-access" && key === "pilgrimCardProfile") return storedCard;

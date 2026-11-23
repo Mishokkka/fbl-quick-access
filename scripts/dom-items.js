@@ -61,23 +61,38 @@ export function collectItemRows(root, {
   if (!root) return [];
 
   const selector = includeCards ? ITEM_ROW_SELECTOR : SOURCE_ITEM_ROW_SELECTOR;
-  return [...root.querySelectorAll(selector)]
+  const candidates = [...root.querySelectorAll(selector)]
     .filter((row) => row instanceof HTMLElement)
     .filter((row) => !ignoredRoot?.contains?.(row))
-    .filter((row) => !row.closest(".fblqa-panel"))
-    .filter((row) => includeCards || !row.closest(".fblqa-gear-card-grid"))
+    .filter((row) => !row.closest?.(".fblqa-panel"))
+    .filter((row) => includeCards || !row.closest?.(".fblqa-gear-card-grid"))
     .filter((row) => !excludeGeneratedGearCardGrid || !isGeneratedGearCardGridElement(row))
     .filter((row) => allowHiddenExternalRows || !isExternalOrHiddenSourceRow(row));
+
+  // Skip nested controls/anchors that happen to carry data-item-id inside an
+  // already-matched item row or card.
+  const matchedSet = new Set(candidates);
+  return candidates.filter((row) => {
+    let parent = row.parentElement;
+    while (parent && parent !== root) {
+      if (matchedSet.has(parent)) return false;
+      parent = parent.parentElement;
+    }
+    return true;
+  });
 }
 
 export function collectGearRowGroups(actor, gears, { includeCards = true, allowNameFallback = true } = {}) {
   const rows = collectItemRows(gears, { includeCards })
     .filter((row) => resolveItemFromRow(actor, row, { allowNameFallback }));
 
+  const hasVisibleCards = includeCards && rows.some((row) => isGearCard(row));
   const grouped = new Map();
   for (const row of rows) {
+    if (hasVisibleCards && row.classList?.contains("fblqa-card-source-hidden")) continue;
     const container = getRowGroupContainer(row, gears);
-    if (!container || container.classList?.contains("fblqa-gear-card-grid")) continue;
+    if (!container) continue;
+    if (!includeCards && container.classList?.contains("fblqa-gear-card-grid")) continue;
 
     if (!grouped.has(container)) grouped.set(container, []);
     grouped.get(container).push(row);
@@ -87,19 +102,15 @@ export function collectGearRowGroups(actor, gears, { includeCards = true, allowN
 }
 
 export function getRowGroupContainer(row, gears) {
-  if (isGearCard(row)) return row.closest(".fblqa-gear-card-grid") ?? gears;
+  if (isGearCard(row)) return row.closest?.(".fblqa-gear-card-grid") ?? gears;
 
-  return row.closest(".items-list, .inventory-list, ol, ul, tbody")
+  return row.closest?.(".items-list, .inventory-list, ol, ul, tbody")
     ?? row.parentElement
     ?? gears;
 }
 
 export function isGearCard(row) {
   return Boolean(row?.classList?.contains("fblqa-gear-card"));
-}
-
-export function isGearSourceRow(row) {
-  return Boolean(row?.matches?.(SOURCE_ITEM_ROW_SELECTOR)) && !isGearCard(row);
 }
 
 export function isExternalOrHiddenSourceRow(row) {

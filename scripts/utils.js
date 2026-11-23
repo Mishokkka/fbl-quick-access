@@ -12,6 +12,18 @@ export function getActorFromApp(app) {
   return candidate?.documentName === "Actor" ? candidate : null;
 }
 
+export function actorKey(actor) {
+  const key = String(actor?.uuid ?? actor?.id ?? actor ?? "unknown");
+  return /^Actor\.[^.]+$/.test(key) ? key.slice(6) : key;
+}
+
+export function makeEntryId(prefix = "entry") {
+  const random = globalThis.crypto?.randomUUID?.()
+    ?? globalThis.foundry?.utils?.randomID?.()
+    ?? `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+  return `${prefix}-${random}`;
+}
+
 export function getRootElement(htmlOrElement) {
   return findActorSheetRoot(htmlOrElement);
 }
@@ -37,6 +49,12 @@ export function isForbiddenLandsCharacter(actor) {
   return game.system?.id === SYSTEM_ID && actor?.type === "character";
 }
 
+export function readNumericValue(value) {
+  if (value == null || typeof value === "boolean" || (typeof value === "string" && !value.trim())) return NaN;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : NaN;
+}
+
 export function firstFiniteNumber(...values) {
   for (const value of values) {
     const number = Number(value);
@@ -57,7 +75,7 @@ export function normalizeText(text) {
 }
 
 export function localizeOrFallback(key, fallback) {
-  const localized = game.i18n.localize(key);
+  const localized = globalThis.game?.i18n?.localize?.(key);
   return localized && localized !== key ? localized : fallback;
 }
 
@@ -80,19 +98,36 @@ export function escapeHtml(value) {
     .replace(/'/g, "&#039;");
 }
 
+const BASIC_HTML_ENTITIES = Object.freeze({ amp: "&", lt: "<", gt: ">", quot: '"', apos: "'", nbsp: "\u00a0" });
+
 export function decodeHtmlEntities(value) {
   const text = String(value ?? "");
-  if (!/[&][a-zA-Z#0-9]+;/.test(text)) return text;
+  if (!/&(?:[a-z][a-z0-9]*|#\d+|#x[0-9a-f]+);/i.test(text)) return text;
 
-  const element = document.createElement("textarea");
-  element.innerHTML = text;
-  return element.value;
+  const textarea = globalThis.document?.createElement?.("textarea");
+  if (typeof textarea?.value === "string") {
+    textarea.innerHTML = text;
+    return textarea.value;
+  }
+
+  return text.replace(/&(?:#(\d+)|#x([0-9a-f]+)|([a-z]+));/gi, (match, decimal, hex, named) => {
+    if (named) return Object.hasOwn(BASIC_HTML_ENTITIES, named.toLowerCase()) ? BASIC_HTML_ENTITIES[named.toLowerCase()] : match;
+    const code = decimal ? Number.parseInt(decimal, 10) : Number.parseInt(hex, 16);
+    return code >= 0 && code <= 0x10ffff ? String.fromCodePoint(code) : match;
+  });
 }
 
 export function stripHtml(text) {
-  const element = document.createElement("div");
-  element.innerHTML = String(text ?? "");
-  return element.textContent ?? element.innerText ?? "";
+  const raw = String(text ?? "");
+  if (!raw) return "";
+
+  const template = globalThis.document?.createElement?.("template");
+  if (template?.content) {
+    template.innerHTML = raw;
+    for (const node of template.content.querySelectorAll?.("script, style, noscript") ?? []) node.remove();
+    return template.content.textContent ?? "";
+  }
+  return decodeHtmlEntities(raw.replace(/<(script|style|noscript)\b[^>]*>[\s\S]*?<\/\1>/gi, "").replace(/<[^>]+>/g, ""));
 }
 
 export function compactPlainText(value) {

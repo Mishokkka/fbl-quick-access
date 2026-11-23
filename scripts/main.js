@@ -1,16 +1,16 @@
-import { MODULE_ID } from "./constants.js";
+import { MODULE_ID, SYSTEM_ID } from "./constants.js";
 import { refreshPilgrimFontChoices, registerCoreSettings } from "./settings.js";
 import { buildPanel, compactOriginalGearSpacing, hideOriginalGearTopControls } from "./panel.js";
 import { setupGearCardView, setupGearViewConsumableToggle } from "./gear-cards.js";
-import { setupGearContextMenu } from "./gear-context-menu.js";
+import { closeGearContextMenu, setupGearContextMenu } from "./gear-context-menu.js";
 import { applySavedGearOrder, setupGearOrdering } from "./gear-order.js";
-import { registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips, setupEquipmentItemTooltips } from "./tooltips.js";
-import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { hideItemTooltip, registerTooltipListeners, setupCombatItemTooltips, setupGearItemTooltips, setupTalentItemTooltips, setupEquipmentItemTooltips } from "./tooltips.js";
+import { findActorSheetRoot, findBiographyTab, findCombatTab, findGearTab, findMainTab, findPrimaryGearContainer, findPrimaryTabNavigation, findTalentTab } from "./sheet-adapter/forbidden-lands-v1.js";
 import { getActorFromApp, isForbiddenLandsCharacter } from "./utils.js";
 import { cleanupWalletSummaries, registerWalletListeners } from "./wallet.js";
 import { openMoneyTransferDialog, registerMoneyTransferSocket } from "./money-transfer.js";
 import { applyDecorativeBorderMode, applyItemSheetNoBorders, compactMainTab, compactSheetHeader, isDecorativeBordersCompact, setupDecorativeBorderToggle } from "./main-tab.js";
-import { getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
+import { closeWillpowerTalentPopover, getWillpowerTalents, saveWillpowerTalents, setupStartWillpowerButton } from "./willpower.js";
 import { openRestDialog, setupRestButton } from "./rest.js";
 import { buildNewDayPlan, buildNewDayPlanWithProviders, openNewDayDialog } from "./new-day.js";
 import { removeChargenButton } from "./header-controls.js";
@@ -21,7 +21,7 @@ import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences
 import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
-import { getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
+import { closeReputationDialog, getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
 import { cleanupBiographyTab, closeBiographyDrawer, flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, releaseBiographyState, saveBiographyProfile, savePilgrimCardProfile, setupBiographyTab } from "./biography.js";
 import { cleanupStatSync, scheduleStatSync } from "./conditions/stat-sync.js";
 import { pruneOwnSocketProofs } from "./socket-auth.js";
@@ -165,7 +165,10 @@ function renderQuickAccess(app, htmlOrElement) {
     applyDecorativeBorderMode(root, compactBorders);
     compactSheetHeader(root, compactBorders);
     removeChargenButton(root);
-    window.setTimeout(() => removeChargenButton(root), 0);
+    globalThis.setTimeout?.(() => {
+      if (!root.isConnected || app?.rendered === false) return;
+      removeChargenButton(root);
+    }, 0);
     setupStartWillpowerButton(app, actor, root);
     setupRestButton(app, actor, root);
     setupReputationManager(app, actor, root);
@@ -218,16 +221,19 @@ function renderBiographySafely(app, htmlOrElement) {
 function isBiographyTabActive(root, bioTab) {
   if (!(bioTab instanceof HTMLElement)) return false;
   if (bioTab.classList.contains("active")) return true;
-  const navigation = root.querySelector?.('.sheet-tabs.tabs, .sheet-tabs, nav.tabs[data-group="primary"], .tabs[data-group="primary"]');
+  const navigation = findPrimaryTabNavigation(root);
   const button = navigation?.querySelector?.('[data-tab="bio"]');
   return Boolean(button?.classList?.contains("active") || button?.getAttribute?.("aria-selected") === "true");
 }
 
 function setupBiographyActivationGuard(app, actor, root) {
-  const navigation = root.querySelector?.('.sheet-tabs.tabs, .sheet-tabs, nav.tabs[data-group="primary"], .tabs[data-group="primary"]');
+  const navigation = findPrimaryTabNavigation(root);
   const bioButton = navigation?.querySelector?.('[data-tab="bio"]');
   const bioTab = findBiographyTab(root);
-  if (!(bioButton instanceof HTMLElement) || !(bioTab instanceof HTMLElement)) return;
+  if (!(bioButton instanceof HTMLElement) || !(bioTab instanceof HTMLElement)) {
+    cleanupBiographyActivationGuard(app);
+    return;
+  }
 
   const previous = BIO_ACTIVATION_GUARDS.get(app);
   if (previous?.root === root && previous?.button === bioButton && previous?.tab === bioTab) return;
@@ -236,11 +242,12 @@ function setupBiographyActivationGuard(app, actor, root) {
   let queued = false;
   const ensureMounted = () => {
     queued = false;
+    if (BIO_ACTIVATION_GUARDS.get(app)?.tab !== bioTab || app?.rendered === false) return;
     try {
       const currentRoot = findActorSheetRoot(app?.element) ?? root;
       const currentBioTab = findBiographyTab(currentRoot);
-      if (!(currentBioTab instanceof HTMLElement) || !isBiographyTabActive(currentRoot, currentBioTab)) return;
-      if (currentBioTab.dataset.fblqaBiographyMounted === "true" || currentBioTab.querySelector?.('.fblqa-bio-shell')) return;
+      if (currentBioTab !== bioTab || !isBiographyTabActive(currentRoot, currentBioTab)) return;
+      if (currentBioTab.dataset.fblqaBiographyMounted === "true" && currentBioTab.querySelector?.(".fblqa-bio-shell")) return;
       setupBiographyTab(app, actor, currentRoot);
     } catch (error) {
       console.error(`${MODULE_ID} | BIO remount failed`, error);
@@ -336,12 +343,16 @@ function handleProstheticsGearInjected(data) {
   if (!isForbiddenLandsCharacter(actor)) return;
 
   const gearTab = data?.gearTab instanceof HTMLElement ? data.gearTab : null;
-  window.setTimeout(() => refreshGearPresentation(app, actor, gearTab), 0);
+  globalThis.setTimeout?.(() => {
+    if (app?.rendered === false) return;
+    if (gearTab && !gearTab.isConnected) return;
+    refreshGearPresentation(app, actor, gearTab);
+  }, 0);
 }
 
 function renderItemSheetVisuals(app, htmlOrElement) {
   try {
-    if (game.system?.id !== "forbidden-lands") return;
+    if (game.system?.id !== SYSTEM_ID) return;
 
     const item = app?.item ?? app?.document ?? app?.object;
     if (item?.documentName !== "Item") return;
@@ -361,17 +372,26 @@ function renderItemSheetVisuals(app, htmlOrElement) {
 function closeQuickAccessActorSheet(app, htmlOrElement) {
   invalidateExpandedConditionsRender(app);
   cleanupStatSync(app);
+  closeGearContextMenu();
+  hideItemTooltip();
   const actor = getActorFromApp(app);
   const root = findActorSheetRoot(htmlOrElement ?? app?.element);
   cleanupBiographyActivationGuard(app);
   cleanupStatProviderListeners(app);
   if (root) cleanupWalletSummaries(root);
   if (root) cleanupBiographyTab(root);
-  if (actor) void flushBiographySaves(actor);
-  if (actor) closeBiographyDrawer(actor);
+  if (actor) {
+    closeWillpowerTalentPopover(actor);
+    void flushBiographySaves(actor);
+    closeBiographyDrawer(actor);
+  }
 }
 
 function handleDeletedActor(actor) {
+  closeGearContextMenu();
+  hideItemTooltip();
+  closeWillpowerTalentPopover(actor);
+  closeReputationDialog(actor);
   handleStatProviderActorDeleted(actor);
   releaseBiographyState(actor);
 }

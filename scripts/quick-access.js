@@ -6,6 +6,7 @@ import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { getActorAttributeMaximum } from "./actor-data.js";
 import { firstFiniteNumber } from "./utils.js";
 import { getEquipmentGrip } from "./equipment-hands.js";
+import { enqueueEquipmentOperation } from "./equipment-operation-queue.js";
 
 export function getQuickCapacity(actor) {
   const system = actor.system ?? {};
@@ -49,10 +50,12 @@ export async function saveSlots(actor, slots) {
   await actor.setFlag(MODULE_ID, FLAG_SLOTS, slots.map((entry) => entry ?? null));
 }
 
-async function removeSlot(actor, index) {
-  const slots = getStoredSlots(actor);
-  slots[index] = null;
-  await saveSlots(actor, slots);
+function removeSlot(actor, index) {
+  return enqueueEquipmentOperation(actor, async () => {
+    const slots = getStoredSlots(actor);
+    slots[index] = null;
+    await saveSlots(actor, slots);
+  });
 }
 
 export function buildSlots(app, actor, capacity, storedSlots) {
@@ -102,14 +105,20 @@ function buildSlot(app, actor, index, itemId, item) {
       slot.classList.add("fblqa-drop-target");
     });
 
-    slot.addEventListener("dragleave", () => {
+    slot.addEventListener("dragleave", (event) => {
+      if (event.relatedTarget && slot.contains?.(event.relatedTarget)) return;
       slot.classList.remove("fblqa-drop-target");
     });
 
     slot.addEventListener("drop", async (event) => {
       event.preventDefault();
+      event.stopPropagation();
       slot.classList.remove("fblqa-drop-target");
-      await handleDrop(app, actor, event, index);
+      try {
+        await handleDrop(app, actor, event, index);
+      } catch (error) {
+        console.error(`${MODULE_ID} | quick-access drop failed`, error);
+      }
     });
   }
 
@@ -165,7 +174,7 @@ function buildSlot(app, actor, index, itemId, item) {
   openButton.title = slot.title;
   openButton.addEventListener("click", openItem);
   slot.addEventListener("dblclick", (event) => {
-    if (event.target?.closest?.(".fblqa-remove")) return;
+    if (event.target?.closest?.(".fblqa-remove, .fblqa-slot-open")) return;
     openItem(event);
   });
 
@@ -213,7 +222,11 @@ function makeRemoveButton(app, actor, index) {
       warnCannotModifyActor();
       return;
     }
-    await removeSlot(actor, index);
+    try {
+      await removeSlot(actor, index);
+    } catch (error) {
+      console.error(`${MODULE_ID} | quick-access slot removal failed`, error);
+    }
   });
 
   return button;
@@ -228,38 +241,59 @@ async function handleDrop(app, actor, event, targetIndex) {
   const data = readDropData(event);
   if (!data) return;
 
-  const capacity = getQuickCapacity(actor).capacity;
-  if (targetIndex < 0 || targetIndex >= capacity) return;
+  const initialCapacity = getQuickCapacity(actor).capacity;
+  if (targetIndex < 0 || targetIndex >= initialCapacity) return;
 
-  const slots = normalizeSlots(actor, capacity);
+  const isSlotMove = data.type === "FBLQuickAccess";
+  // Compare against the target as it was before UUID resolution and queueing.
+  const expectedTarget = isSlotMove ? null : normalizeSlots(actor, initialCapacity)[targetIndex];
+  const item = isSlotMove ? null : await resolveDroppedItem(actor, data);
+  if (!isSlotMove && !item) return;
 
-  if (data.type === "FBLQuickAccess") {
-    await moveQuickSlot(app, actor, slots, data, targetIndex);
-    return;
-  }
+  await enqueueEquipmentOperation(actor, async () => {
+    if (!canModifyActor(actor)) {
+      warnCannotModifyActor();
+      return;
+    }
+    const liveCapacity = getQuickCapacity(actor).capacity;
+    if (targetIndex >= liveCapacity) return;
 
-  const item = await resolveDroppedItem(actor, data);
-  if (!item) return;
+    const slots = normalizeSlots(actor, liveCapacity);
+    if (isSlotMove) {
+      await moveQuickSlot(app, actor, slots, data, targetIndex);
+      return;
+    }
+    if (slots[targetIndex] !== expectedTarget) return;
 
-  if (!isAllowedQuickItem(item)) {
-    const reason = isQuickAccessItemType(item)
-      ? qaLocalize("QuickAccess.WeightReject", "в быстрый доступ можно класть только предметы весом Normal или меньше")
-      : qaLocalize("QuickAccess.TypeReject", "в быстрый доступ можно класть только Weapon, Armor, Gear и Raw Material");
-    ui.notifications?.warn(`${item.name}: ${reason}.`);
-    return;
-  }
+    const liveItem = actor.items?.get?.(item.id);
+    if (!liveItem) return;
 
-  // A single item can only occupy one Quick Access slot.
-  for (let i = 0; i < slots.length; i += 1) {
-    if (slots[i] === item.id && i !== targetIndex) slots[i] = null;
-  }
+    if (!isAllowedQuickItem(liveItem)) {
+      const reason = isQuickAccessItemType(liveItem)
+        ? qaLocalize("QuickAccess.WeightReject", "в быстрый доступ можно класть только предметы весом Normal или меньше")
+        : qaLocalize("QuickAccess.TypeReject", "в быстрый доступ можно класть только Weapon, Armor, Gear и Raw Material");
+      ui.notifications?.warn(`${liveItem.name}: ${reason}.`);
+      return;
+    }
 
-  slots[targetIndex] = item.id;
-  await saveSlots(actor, slots);
+    // A single item can only occupy one Quick Access slot.
+    for (let i = 0; i < slots.length; i += 1) {
+      if (slots[i] === liveItem.id && i !== targetIndex) slots[i] = null;
+    }
+
+    slots[targetIndex] = liveItem.id;
+    await saveSlots(actor, slots);
+  });
+}
+
+function isSameQuickSlotActor(actor, data) {
+  if (data?.actorUuid && actor?.uuid) return data.actorUuid === actor.uuid;
+  if (data?.actorId && actor?.id) return data.actorId === actor.id;
+  return false;
 }
 
 async function moveQuickSlot(app, actor, slots, data, targetIndex) {
-  if (data.actorId !== actor.id && data.actorUuid !== actor.uuid) {
+  if (!isSameQuickSlotActor(actor, data)) {
     ui.notifications?.warn(qaLocalize("QuickAccess.ForeignSlot", "Этот слот принадлежит другому персонажу."));
     return;
   }
@@ -267,11 +301,14 @@ async function moveQuickSlot(app, actor, slots, data, targetIndex) {
   const sourceIndex = Number(data.slotIndex);
   if (!Number.isInteger(sourceIndex) || sourceIndex < 0 || sourceIndex >= slots.length) return;
 
-  const movingItemId = slots[sourceIndex] ?? data.itemId;
-  if (!movingItemId || !actor.items.get(movingItemId)) return;
+  const expectedItemId = data.itemId || data.id || "";
+  const currentSourceItemId = slots[sourceIndex] ?? null;
+  if (!currentSourceItemId) return;
+  if (expectedItemId && currentSourceItemId !== expectedItemId) return;
+  if (!actor.items.get(currentSourceItemId)) return;
 
   const oldTarget = slots[targetIndex] ?? null;
-  slots[targetIndex] = movingItemId;
+  slots[targetIndex] = currentSourceItemId;
 
   if (sourceIndex !== targetIndex) {
     slots[sourceIndex] = oldTarget;

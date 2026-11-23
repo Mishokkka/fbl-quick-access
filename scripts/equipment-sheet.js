@@ -1,4 +1,4 @@
-import { MODULE_ID } from "./constants.js";
+import { FLAG_SLOTS, MODULE_ID } from "./constants.js";
 import { buildSlots, getQuickCapacity, getStoredSlots } from "./quick-access.js";
 import { qaLocalize } from "./i18n.js";
 import { isForbiddenLandsCharacter } from "./utils.js";
@@ -7,10 +7,12 @@ import { findActorSheetRoot, findGearTab } from "./sheet-adapter/forbidden-lands
 /** Refresh equipment without rebuilding the sheet or disturbing wallet controls. */
 export function refreshEquipmentSheets(actor, changes) {
   const flags = changes?.flags?.[MODULE_ID];
-  const relevant = ["slots", "equipmentHands"].some(key =>
+  const relevant = [FLAG_SLOTS, "equipmentHands"].some(key =>
     Object.hasOwn(changes ?? {}, `flags.${MODULE_ID}.${key}`) || Object.hasOwn(flags ?? {}, key));
   if (!relevant || !isForbiddenLandsCharacter(actor)) return;
-  for (const app of Object.values(actor.apps ?? {})) {
+  const apps = actor.apps instanceof Map ? actor.apps.values() : Object.values(actor.apps ?? {});
+  for (const app of apps) {
+    if (app?.rendered === false) continue;
     const root = findActorSheetRoot(app?.element);
     const gearTab = root ? findGearTab(root) : null;
     const panel = gearTab?.querySelector(".fblqa-panel");
