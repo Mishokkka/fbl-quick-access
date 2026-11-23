@@ -14,8 +14,7 @@ import {
 } from "./socket-auth.js";
 import { findGameUser, isValidSocketRequestId, makeSocketRequestId } from "./socket-utils.js";
 import { getActiveGM } from "./integration/socket-api.js";
-import { enqueueCurrencyOperation } from "./operation-queue.js";
-import { withWalletLocks } from "./actor-mutation-lock.js";
+import { enqueueCurrencyOperation, withWalletLocks } from "./operation-queue.js";
 import { migrateLegacyReconciliations, readReconciliationRecords, writeReconciliationRecords } from "./transfer-reconciliation-store.js";
 import { readDocumentFlag } from "./document-writes.js";
 

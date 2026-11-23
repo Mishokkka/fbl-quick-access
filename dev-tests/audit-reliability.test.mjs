@@ -6,14 +6,13 @@ import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scri
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { applyMorGain, changePermanentMor, clearStaleMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { canonicalJson } from "../scripts/document-writes.js";
-import { withWalletLocks } from "../scripts/actor-mutation-lock.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
 import { initializeWalletOperations } from "../scripts/wallet.js";
 import { executeAsActiveGM } from "../scripts/integration/socket-api.js";
 import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scripts/integration/new-day-providers.js";
-import { enqueueCurrencyOperation, enqueueCustomConditionOperation } from "../scripts/operation-queue.js";
+import { enqueueActorMutationOperation, enqueueCurrencyOperation, withWalletLocks } from "../scripts/operation-queue.js";
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
 import { createMemoryStorage } from "./helpers/browser-storage.mjs";
@@ -176,6 +175,30 @@ test("two wallet operations cannot share a character across client caches", asyn
   assert.equal(await withWalletLocks([otherClient], () => "completed"), "completed");
 });
 
+test("wallet and STAT writes share the local queue and the same lock across clients", async () => {
+  reset();
+  const server = new Map();
+  const character = withEffectStore({ id: "shared" }, server);
+  const otherClient = withEffectStore({ id: character.id }, server);
+  const started = Promise.withResolvers();
+  const release = Promise.withResolvers();
+  const calls = [];
+  const wallet = withWalletLocks([character], async () => {
+    started.resolve();
+    await release.promise;
+    calls.push("wallet");
+  });
+  await started.promise;
+  const localEdit = enqueueActorMutationOperation(character, () => calls.push("STAT"));
+  try {
+    await assert.rejects(enqueueActorMutationOperation(otherClient, () => assert.fail("overlapping write")), { code: "actor-mutation-busy" });
+    assert.deepEqual(calls, []);
+  } finally { release.resolve(); }
+  await Promise.all([wallet, localEdit]);
+  assert.deepEqual(calls, ["wallet", "STAT"]);
+  assert.equal(server.size, 0);
+});
+
 test("a separate client cannot replace a pending Mor gain", async () => {
   reset();
   const server = new Map();
@@ -220,7 +243,7 @@ test("New Day leaves custom conditions intact while another client is editing th
   await dayClient.setFlag(scope, key, conditions);
   const entered = Promise.withResolvers();
   const release = Promise.withResolvers();
-  const editing = enqueueCustomConditionOperation(editor, async () => {
+  const editing = enqueueActorMutationOperation(editor, async () => {
     entered.resolve();
     await release.promise;
   });
@@ -885,7 +908,7 @@ test("New Day rejects a changed legacy timer after waiting behind a STAT operati
   const action = plan.actions.find(candidate => candidate.kind === "custom-condition");
   assert.ok(action);
   const release = Promise.withResolvers();
-  const edit = enqueueCustomConditionOperation(character, async () => {
+  const edit = enqueueActorMutationOperation(character, async () => {
     await release.promise;
     await character.setFlag(scope, key, [{ ...entry, time: "8 days" }]);
   });
@@ -1028,6 +1051,7 @@ test("bulk reset reports a refused marker and continues resetting the next Actor
   const { resetAllCalendarMarkersToCurrent } = await import("../scripts/state-progression.js");
   const characters = [actor(), actor(), actor()];
   for (const [index, character] of characters.entries()) {
+    character.name = `Character ${index + 1}`;
     const player = user(`player${index}`);
     player.character = character;
     game.users.push(player);

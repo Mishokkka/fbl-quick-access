@@ -22,10 +22,20 @@ export function createObjectOperationQueue() {
   };
 }
 
-const enqueueCustomCondition = createObjectOperationQueue();
+const enqueueActorMutation = createObjectOperationQueue();
 
-export function enqueueCustomConditionOperation(actor, operation) {
-  return enqueueCustomCondition(actor, () => withActorMutationLock(actor, "conditions", operation));
+export function enqueueActorMutationOperation(actor, operation) {
+  return enqueueActorMutation(actor, () => withActorMutationLock(actor, operation));
+}
+
+export function withWalletLocks(actors, operation) {
+  const byId = new Map(actors.filter(Boolean).map(actor => [actor.uuid ?? actor.id, actor]));
+  const ordered = [...byId.keys()].sort();
+  const acquire = index => {
+    if (index === ordered.length) return operation();
+    return enqueueActorMutationOperation(byId.get(ordered[index]), () => acquire(index + 1));
+  };
+  return acquire(0);
 }
 
 // Wallet edits and accepted transfers share the same authority-side queue.

@@ -1,8 +1,7 @@
 import { FLAGS, MODULE_ID, SETTINGS, DEFAULT_ADDICTION_STATE, flagUpdatePath } from "../constants.js";
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
 import { getConditionKind } from "../condition-kind.js";
-import { createObjectOperationQueue } from "../../operation-queue.js";
-import { withActorMutationLock } from "../../actor-mutation-lock.js";
+import { createObjectOperationQueue, enqueueActorMutationOperation } from "../../operation-queue.js";
 import { makeSocketRequestId } from "../../socket-utils.js";
 import { clearDocumentFlagNullVerified, createCodedError, readDocumentFlag, setDocumentFlagVerified } from "../../document-writes.js";
 
@@ -14,7 +13,7 @@ const enqueueMorOperation = createObjectOperationQueue();
 const MOR_PENDING_GAIN = "conditions.morPendingGain";
 
 function enqueueMorChange(actor, item, operation) {
-  return enqueueMorOperation(item, () => withActorMutationLock(actor, "mor", operation));
+  return actor ? enqueueActorMutationOperation(actor, operation) : enqueueMorOperation(item, operation);
 }
 
 export function getHeatDefinition() {

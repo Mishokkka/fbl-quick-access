@@ -2122,9 +2122,11 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
   const writeOperation = value => setDocumentFlagVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION,
     value, { render: false }, { replace: true });
   const discardUnstarted = async () => {
-    if (!plainValuesEqual(getCalendarOperation(actor), operation)) throw calendarRecoveryError(getCalendarOperation(actor));
+    const current = getCalendarOperation(actor);
+    if (!plainValuesEqual(current, operation)) throw calendarRecoveryError(current);
     await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_STATE_PROGRESSION_OPERATION, { render: false });
   };
+  let approvalFailed = false;
   const beforeApply = () => {
     try {
       assertCalendarApplyContext(context);
@@ -2132,12 +2134,14 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
         throw progressionError("stale-calendar-day", pendingChangedDetail());
       }
     } catch (error) {
-      return discardUnstarted().then(() => { throw error; });
+      approvalFailed = true;
+      throw error;
     }
   };
   await writeOperation(operation);
   const applied = await applyNewDayPlan(actor, plan, selectedIds, { ...calendarApplyOptions(), beforeApply }).catch(async error => {
-    if (error?.beforeNewDayWrites) await discardUnstarted();
+    // The custom-condition lock is acquired before any daily action is sent.
+    if (approvalFailed || error?.code === "actor-mutation-busy") await discardUnstarted();
     throw error;
   });
   if (applied.stalePlan) {

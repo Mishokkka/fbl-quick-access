@@ -1052,6 +1052,6 @@ test("PR26: static guards confirm tooltip ownership and STAT live merge", () => 
 
   assert.match(tooltipsSrc, /if\s*\(itemTooltipPinned\)\s*return;\s*\r?\n\s*itemTooltipPointer\s*=/);
   assert.match(tooltipsSrc, /if\s*\(request === itemTooltipRequest && itemTooltipAnchor === anchor\)\s*hideItemTooltip\(\);/);
-  assert.match(condMainSrc, /enqueueCustomConditionOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
+  assert.match(condMainSrc, /enqueueActorMutationOperation\(app\.actor, async \(\) => \{[\s\S]*?const list = getLiveCustomConditions\(\)/);
   assert.match(condMainSrc, /if \(!entry\) return false;\s*value = edit\(entry\[field\]\)/);
 });

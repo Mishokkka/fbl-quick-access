@@ -46,7 +46,7 @@ import { activateStatProviderListeners, renderStatProviderSections } from "../in
 import { conditionKindUpdate, getConditionKind, getWashStage } from "./condition-kind.js";
 import { setDocumentFlagVerified } from "../document-writes.js";
 import { decrementFirstInteger } from "../new-day.js";
-import { enqueueCustomConditionOperation } from "../operation-queue.js";
+import { enqueueActorMutationOperation } from "../operation-queue.js";
 
 const STAT_SCROLL_POSITIONS = new Map();
 const STAT_RENDER_GENERATIONS = new WeakMap();
@@ -269,7 +269,7 @@ export async function renderExpandedConditions(app, html) {
   async function mutateCustomConditions(mutate, afterSave) {
     if (!editable) return false;
     try {
-      return await enqueueCustomConditionOperation(app.actor, async () => {
+      return await enqueueActorMutationOperation(app.actor, async () => {
         if (!canUserEditActor(app.actor)) return false;
         const list = getLiveCustomConditions();
         const changed = mutate(list);

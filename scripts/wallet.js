@@ -13,9 +13,8 @@ import {
 import { qaLocalize } from "./i18n.js";
 import { buildActorCurrencyUpdate } from "./actor-data.js";
 import { createCodedError } from "./document-writes.js";
-import { createObjectOperationQueue, enqueueCurrencyOperation } from "./operation-queue.js";
+import { createObjectOperationQueue, enqueueCurrencyOperation, withWalletLocks } from "./operation-queue.js";
 import { executeAsActiveGM, getActiveGM, hasSocketHandler, registerSocketHandler } from "./integration/socket-api.js";
-import { withWalletLocks } from "./actor-mutation-lock.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { escapeHtml, localizeOrFallback, rerenderSheet } from "./utils.js";
 import { openMoneyTransferDialog } from "./money-transfer.js";

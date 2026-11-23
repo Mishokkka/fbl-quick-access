@@ -12,7 +12,7 @@ import { localize, normalizeCustomConditionList } from "./utils.js";
 import { getActiveGM } from "../integration/socket-api.js";
 import { conditionKindUpdate, getConditionKind } from "./condition-kind.js";
 import { createCodedError, plainValuesEqual } from "../document-writes.js";
-import { enqueueCustomConditionOperation } from "../operation-queue.js";
+import { enqueueActorMutationOperation } from "../operation-queue.js";
 import {
   buildSpecialCounterMigrationUpdate,
   buildHeatModifierUpdate,
@@ -220,7 +220,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 export async function migrateActorData(actor) {
   if (!actor || actor.documentName !== "Actor" || actor.type !== "character") return false;
 
-  let changed = await enqueueCustomConditionOperation(actor, async () => {
+  let changed = await enqueueActorMutationOperation(actor, async () => {
     const actorMigrated = await migrateLegacyActorFlags(actor);
     const itemsMigrated = await migrateLegacyItemFlags(actor);
     const normalized = normalizeCustomConditionList(foundry.utils.deepClone(actor.getFlag(MODULE_ID, FLAGS.LIST) || []));

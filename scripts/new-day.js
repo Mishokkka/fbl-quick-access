@@ -20,7 +20,7 @@ import {
   getNewDayProviderIcon,
   getNewDayProviders
 } from "./integration/new-day-providers.js";
-import { createObjectOperationQueue, enqueueCustomConditionOperation } from "./operation-queue.js";
+import { createObjectOperationQueue, enqueueActorMutationOperation } from "./operation-queue.js";
 import {
   clearDocumentFlagNullVerified,
   createCodedError,
@@ -293,8 +293,7 @@ export async function applyNewDayPlan(actor, plan, selectedActionIds, options = 
 }
 
 async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options = {}) {
-  const preflight = options.beforeApply?.();
-  if (preflight) await preflight;
+  options.beforeApply?.();
   const selected = new Set(selectedActionIds ?? []);
   const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
@@ -312,9 +311,8 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
 
   const customActions = actions.filter(isCustomConditionAction);
   if (customActions.length) {
-    await enqueueCustomConditionOperation(actor, async () => {
-      const validation = options.beforeApply?.();
-      if (validation) await validation;
+    await enqueueActorMutationOperation(actor, async () => {
+      options.beforeApply?.();
       const conditions = getCustomConditions(actor);
       const current = customActions.filter(action => {
         try { assertActionCurrent(actor, plan, action, { customConditions: conditions }); return true; }
@@ -336,9 +334,6 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
         console.error(`${MODULE_ID} | could not advance custom condition timers`, error);
         for (const action of current) results.push(failureResult(action, error));
       }
-    }).catch(error => {
-      if (error?.code === "actor-mutation-busy" && !dispatched) error.beforeNewDayWrites = true;
-      throw error;
     });
   }
 
