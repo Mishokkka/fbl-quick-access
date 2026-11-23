@@ -1,74 +1,48 @@
-# yaml-language-server: \$schema=https://coderabbit.ai/integrations/schema.v2.json
-
-# Язык комментариев CodeRabbit (при желании можно сменить на en-US)
-
-language: ru-RU
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+language: "ru-RU"
+early_access: false
 
 reviews:
-profile: chill
-auto_approvals:
-enabled: false
-high_level_summary: true
-collapse_walkthrough: false
-poem: false
-auto_review:
-enabled: true
-auto_incremental_review: true
-drafts: false
-path_instructions:
-\- path: "scripts//\*.js"
-instructions: |
-Project context: client-side Foundry VTT v13 (13.351) module for Forbidden Lands (13.0.5),
-used at a trusted friendly tabletop RPG table with a single active GM browser tab.
-Follow ARCHITECTURE.md strictly.
+  profile: "chill"
+  auto_approvals:
+    enabled: false
+  high_level_summary: true
+  poem: false
+  review_status: true
+  collapse_walkthrough: false
+  auto_review:
+    enabled: true
+    auto_incremental_review: true
+    drafts: false
+  path_instructions:
+    - path: "scripts/**"
+      instructions: |
+        Контекст проекта:
+        - Клиентский модуль для Foundry VTT v13 (проверено на 13.351) и системы Forbidden Lands (13.0.5).
+        - Модуль используется за доверительным дружеским столом; серверного бэкенда и многодокументных транзакций в Foundry VTT нет.
+        - Активный GM ведёт игру в одной вкладке браузера.
+        - Главный источник архитектурных правил — файл ARCHITECTURE.md в корне репозитория.
 
-```
-    ALWAYS flag real reproducible defects:
-    - Reproducible duplicate damage, duplicate currency deduction, skipped or double-applied
-      days, silent data loss, or player-vs-GM race conditions across overlapping operations.
-    - Real Foundry VTT v13 / Forbidden Lands 13.0.5 API incompatibilities, broken hook usage,
-      or DialogV2 (e.g. button.form) / ApplicationV1 / ApplicationV2 integration bugs.
-    - Game-mechanic calculation bugs (Rest, New Day, Calendaria dates, Addiction, Heat/Mor,
-      Willpower, Reputation, normal wallet currency conversion).
-    - Missing state re-validation after entering a shared queue, or missing pre-delete
-      verification before deleting source records in Wash stage swaps and migrations.
-    - Unsafe fallbacks (e.g. falling back to current date on invalid addDays arithmetic
-      instead of failing fast), missing fail-fast stop, or failure to distinguish confirmed
-      partial failure (persisted via private GM ChatMessage whisper) from unknown network
-      outcome on critical operations (money transfers, Calendaria progression).
-    - DOM/event listener duplication on repeated sheet renders, stale drag/drop references,
-      and unescaped HTML injection for user-authored fields.
+        На чём ФОКУСИРОВАТЬ ревью (отмечай как реальные баги / Major):
+        - Воспроизводимые повторный урон, повторное списание валюты, пропуск дня или потерю/порчу пользовательских данных (в том числе если они вызваны текущими очередями, обработчиками или старыми механизмами).
+        - Краши в рантайме и несовместимость с Foundry VTT v13 (ApplicationV1/V2, DialogV2, чтение формы через button.form, хуки рендера).
+        - Удаление исходных данных в Wash или миграциях без простой проверки того, что новая запись/стадия действительно сохранилась.
+        - Нарушение правила fail-fast: тихая подстановка текущей даты или неверных значений при ошибке расчёта (например, в Calendaria / addDays).
+        - Гонки пересекающихся операций (например, Rest игрока и обработка дня у GM), обход общей очереди активного GM, отсутствие перепроверки актуального состояния уже после входа в очередь, отсутствие защиты от двойного клика в UI или накопление слушателей DOM при перерисовке листа.
+        - Реальные проблемы безопасности: вставка неэкранированного пользовательского ввода через innerHTML (XSS) и отсутствие проверок прав доступа (GM / isOwner).
 
-    EXCLUDE from proposed fixes and DO NOT require as solutions:
-    - Database/ActiveEffect-based locks or cross-tab locking for the same GM account.
-    - Multi-document atomic transactions, browser reconciliation stores, or automatic
-      recovery journals for partial writes (Foundry VTT has no multi-document transactions).
-    - Persistent "needs manual reconciliation" flags stored on Actor/Item/World documents
-      to block retries across reloads (use private GM ChatMessage whispers instead).
-    - Adversarial/malicious player threat models or extreme unrealistic currency overflow
-      scenarios that do not affect normal tabletop play.
-    When flagging a valid bug, suggest simple in-scope fixes aligned with ARCHITECTURE.md
-    (active-GM routing, shared in-memory queue with post-queue re-check, pre-delete check,
-    fail-fast + GM whisper).
-- path: "templates/**/*.hbs"
-  instructions: |
-    Check for valid Handlebars syntax, XSS safety (avoid unescaped triple-stache for
-    user-authored text without explicit sanitization), and alignment with selectors used
-    by scripts/sheet-adapter/.
-- path: "dev-tests/**/*.test.mjs"
-  instructions: |
-    Verify that tests meaningfully cover game mechanics, UI/DialogV2 contracts, post-queue
-    state checks, pre-delete verification, and fail-fast/GM-whisper error handling.
-    Do NOT propose tests requiring database locks, multi-tab GM races, persistent
-    reconciliation flags, or automated partial-write recovery journals.
-
-```
-
-knowledge_base:
-code_guidelines:
-enabled: true
-filePatterns:
-\- "ARCHITECTURE.md"
+        Ограничения на ПРЕДЛАГАЕМЫЕ РЕШЕНИЯ и вне-скоупные допущения:
+        - НЕ предлагай и НЕ требуй распределённые/межвкладочные блокировки в базе данных (например, через ActiveEffect) и протоколы восстановления «брошенных» блокировок.
+        - НЕ предлагай и НЕ требуй журналы автоматического восстановления (автодоигрывания), браузерные хранилища сверки (reconciliation stores) и сохраняемые в БД флаги/отметки «нужна ручная сверка» для многошаговых операций (переводы валюты, Rest, New Day, Calendaria).
+        - Ожидаемая политика при частичном сбое многошаговой записи или обрыве связи: немедленная остановка (fail-fast) и явное уведомление GM (шёпот в чат ChatMessage при подтверждённом сбое, предупреждение в UI при обрыве связи) с чётким различением «подтверждённого сбоя» и «неизвестного исхода». Дальнейшую сверку и правку GM делает вручную.
+        - Для защиты от гонок между игроком и GM предлагай простые решения: маршрутизация пересекающихся операций через единую очередь активного GM, перепроверка состояния после входа в очередь и блокировка кнопки в UI.
+        - Не помечай как Major нереалистичные крайние случаи (тысячи одновременных пользователей, злонамеренные игроки, искусственное переполнение чисел сверх разумных игровых значений, если обычная игра работает корректно).
+    - path: "templates/**"
+      instructions: |
+        Handlebars-шаблоны для Foundry VTT v13. Проверяй корректность путей данных, отсутствие неэкранированного пользовательского ввода через тройные скобки {{{...}}} без явной санитизации и совместимость структуры с DOM-адаптером листа Forbidden Lands.
+    - path: "dev-tests/**"
+      instructions: |
+        Тесты на Node.js с моками глобальных объектов Foundry VTT. Не придирайся к упрощениям в тестовых заглушках и стабах, если сам тест честно проверяет игровую логику, очередь операций или политику остановки при сбое.
 
 chat:
-auto_reply: true
+  auto_reply: true
