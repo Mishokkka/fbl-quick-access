@@ -62,7 +62,11 @@ export function registerWalletListeners() {
 }
 
 export function isWalletExpanded(actor) {
-  return localStorage.getItem(getExpandedStorageKey(actor)) === "expanded";
+  try {
+    return localStorage.getItem(getExpandedStorageKey(actor)) === "expanded";
+  } catch {
+    return false;
+  }
 }
 
 export function buildWalletControl(app, actor) {
@@ -159,7 +163,11 @@ function getExpandedStorageKey(actor) {
 }
 
 function setWalletExpanded(actor, expanded) {
-  localStorage.setItem(getExpandedStorageKey(actor), expanded ? "expanded" : "popover");
+  try {
+    localStorage.setItem(getExpandedStorageKey(actor), expanded ? "expanded" : "popover");
+  } catch {
+    // The wallet can run without a stored layout preference.
+  }
   if (expanded) markWalletClosed(actor);
 }
 

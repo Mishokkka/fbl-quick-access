@@ -288,8 +288,14 @@ for (const [failure, expected] of [["debit veto", "update-failed"], ["credit fai
     source.name = "Sender <one>";
     target.name = "Recipient <two>";
     source.system.currency.copper.value = 100;
-    const whispers = [], events = [];
-    ChatMessage.create = async message => { whispers.push(message); };
+    const whispers = [], events = [], notices = [];
+    ui.notifications.warn = ui.notifications.error = message => notices.push(message);
+    let noticeBeforeWhisper;
+    ChatMessage.create = async message => {
+      noticeBeforeWhisper = notices[0];
+      whispers.push(message);
+      if (failure === "credit timeout") throw new Error("Chat unavailable");
+    };
     Hooks.callAll = event => events.push(event);
     if (failure === "debit veto") source.update = async () => undefined;
     let credits = 0;
@@ -311,12 +317,15 @@ for (const [failure, expected] of [["debit veto", "update-failed"], ["credit fai
       assert.equal(source.updates.length, 1);
       assert.deepEqual(whispers.map(message => message.whisper), [[game.user.id]]);
       assert.match(whispers[0].content, /Sender &lt;one&gt;.*Recipient &lt;two&gt;.*20 CP.*Списание.*подтверждено/s);
+      assert.match(noticeBeforeWhisper, /Sender &lt;one&gt;.*Recipient &lt;two&gt;.*20 CP.*Списание.*подтверждено/i);
     }
   });
 }
 test("losing the socket during credit stops the transfer and releases the queue with a warning", async () => {
   reset();
   const source = actor(), target = actor();
+  source.name = "Sender";
+  target.name = "Recipient";
   source.system.currency.copper.value = 100;
   const disconnect = new Set(), warnings = [];
   game.socket.connected = true;
@@ -334,7 +343,7 @@ test("losing the socket during credit stops the transfer and releases the queue 
   assert.deepEqual(results, []);
   assert.equal(disconnect.size, 0);
   assert.equal(source.system.currency.copper.value, 80);
-  assert.match(warnings[0], /исход перевода неизвестен.*проверьте оба кошелька вручную/i);
+  assert.match(warnings[0], /Sender.*Recipient.*20 CP.*исход зачисления неизвестен.*90 секунд.*сверьте оба кошелька/i);
   assert.equal(await enqueueCurrencyOperation(() => "ready"), "ready");
 });
 test("BIO failed save keeps its captured draft for an explicit retry", async () => {

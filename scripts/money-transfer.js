@@ -670,8 +670,15 @@ async function finalizeTransferOffer(offer, result) {
     createdAt: getTransferTime()
   };
 
-  const needsReview = ["partial-failure", "outcome-unknown"].includes(completeResult.error);
-  if (needsReview) notifyTransferError(completeResult.error);
+  const { error, debitConfirmed, sourceActorId, targetActorId, amounts } = completeResult;
+  if (debitConfirmed) {
+    const source = game.actors?.get?.(sourceActorId)?.name ?? sourceActorId;
+    const target = game.actors?.get?.(targetActorId)?.name ?? targetActorId;
+    const status = localizeWhisperStatus(error === "partial-failure" ? "partial" : "unknown", completeResult);
+    notifyTransferError(error, `${source} → ${target} · ${formatTransferAmounts(amounts)}. ${status}`);
+  } else if (error === "outcome-unknown") {
+    notifyTransferError(error);
+  }
   if (game.socket?.connected === false) return;
   const whisper = postTransferWhisper(offer, completeResult);
   try {
@@ -932,15 +939,15 @@ function localizeTransferError(code) {
     "update-failed": "UpdateFailed"
   }[code] ?? "UnknownError";
   const fallback = code === "outcome-unknown"
-    ? "Исход перевода неизвестен. Перед повтором проверьте оба кошелька вручную."
+    ? "Исход перевода неизвестен. Дождитесь истечения срока предложения (90 секунд), затем сверьте оба кошелька перед повтором."
     : code === "partial-failure"
       ? "Списание подтверждено, но зачисление не завершилось. Проверьте оба кошелька вручную."
       : "Не удалось передать деньги.";
   return qaLocalize(`Wallet.Transfer.${key}`, fallback);
 }
 
-function notifyTransferError(code) {
-  const message = localizeTransferError(code);
+function notifyTransferError(code, text = localizeTransferError(code)) {
+  const message = escapeHtml(text);
   if (code === "outcome-unknown") globalThis.ui?.notifications?.warn?.(message);
   else globalThis.ui?.notifications?.error?.(message);
 }
@@ -952,7 +959,7 @@ function localizeWhisperStatus(status, result) {
   if (status === "partial") return localizeTransferError("partial-failure");
   if (status === "unknown") {
     return result.debitConfirmed
-      ? qaLocalize("Wallet.Transfer.CreditUnknown", "Списание подтверждено. Исход зачисления неизвестен. Перед повтором проверьте оба кошелька вручную.")
+      ? qaLocalize("Wallet.Transfer.CreditUnknown", "Списание подтверждено. Исход зачисления неизвестен. Дождитесь истечения срока предложения (90 секунд), затем сверьте оба кошелька перед повтором.")
       : localizeTransferError("outcome-unknown");
   }
   return qaLocalize("Wallet.Transfer.StatusFailed", "Не выполнено: {reason}", {

@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildWalletControl, initializeWalletOperations } from "../scripts/wallet.js";
+import { buildWalletControl, initializeWalletOperations, isWalletExpanded } from "../scripts/wallet.js";
 import { executeAsActiveGM } from "../scripts/integration/socket-api.js";
 import { createSocketProof } from "../scripts/socket-auth.js";
 
@@ -122,8 +122,24 @@ function mountWallet(t, actor) {
   const popover = buildWalletControl(null, actor).children[1];
   const minus = popover.children[0].children[0];
   const click = () => minus.listeners.click({ currentTarget: minus, preventDefault() {}, stopPropagation() {} });
-  return { minus, click };
+  return { popover, minus, click };
 }
+
+test("the wallet uses the standard layout when localStorage is unavailable", t => {
+  const actor = makeWallet({ gold: 1, silver: 0, copper: 0 });
+  const storage = globalThis.localStorage;
+  const blocked = () => { throw new DOMException("Storage access denied", "SecurityError"); };
+  globalThis.localStorage = { getItem: blocked, setItem: blocked };
+  t.after(() => { globalThis.localStorage = storage; });
+
+  assert.equal(isWalletExpanded(actor), false);
+  const { popover } = mountWallet(t, actor);
+  const [expandControl] = popover.children.at(-1).children;
+  const checkbox = expandControl.children[0].children[0];
+  checkbox.checked = true;
+  assert.doesNotThrow(() => checkbox.listeners.change({ currentTarget: checkbox }));
+  assert.equal(isWalletExpanded(actor), false);
+});
 
 test("the owner can edit offline and a busy wallet row ignores another click", async t => {
   const actor = makeWallet({ gold: 0, silver: 10, copper: 1 });

@@ -139,6 +139,6 @@ for (const failure of ["timeout", "disconnect"]) {
     assert.deepEqual(await result, { ok: false, error: "outcome-unknown" });
     await submitted;
     assert.equal(warnings.length, 1);
-    assert.match(warnings[0], /исход перевода неизвестен.*проверьте оба кошелька вручную/i);
+    assert.match(warnings[0], /исход перевода неизвестен.*90 секунд.*сверьте оба кошелька перед повтором/i);
   });
 }
