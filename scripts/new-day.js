@@ -255,9 +255,6 @@ function actionPrecondition(actor, action, customConditions, appliedHealing) {
 }
 
 function assertActionCurrent(actor, plan, action, { customConditions, appliedHealing } = {}) {
-  if ((action.providerId || action.kind !== "addiction-day") && getPendingAddictions(actor).length) {
-    throw createCodedError("awaiting-endurance", qaLocalize("NewDay.PendingBlocked", "Resolve pending Addiction checks in STAT before advancing other timers."));
-  }
   const expected = plan?.preconditions?.[action.id];
   const current = expected !== undefined || isCustomConditionAction(action)
     ? actionPrecondition(actor, action, customConditions, appliedHealing)
@@ -298,16 +295,29 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
   const selectedActions = (plan?.actions ?? []).filter((action) => selected.has(action.id));
   const results = [];
   let dispatched = false;
+  let pendingAtStart = getPendingAddictions(actor).length > 0;
+  const assertCurrent = (action, preconditions) => {
+    // A morning started by this day pauses subsequent days.
+    if (!dispatched) pendingAtStart ||= getPendingAddictions(actor).length > 0;
+    if (pendingAtStart && (options.pauseForPendingAddiction || action.providerId || action.kind !== "addiction-day")) {
+      throw createCodedError("awaiting-endurance", qaLocalize("NewDay.PendingBlocked", "Resolve pending Addiction checks in STAT before advancing other timers."));
+    }
+    assertActionCurrent(actor, plan, action, preconditions);
+  };
+  const pausedForAddiction = () => !dispatched && pendingAtStart;
   const stalePlan = () => !dispatched && results.length > 0 && results.every(entry => entry.code === "stale-plan");
   const actions = selectedActions.filter(action => {
-    try { assertActionCurrent(actor, plan, action); return true; }
+    try { assertCurrent(action); return true; }
     catch (error) { results.push(failureResult(action, error)); return false; }
   });
   const postChat = options.postChat !== false;
   const suppressNotifications = Boolean(options.suppressNotifications);
   const documentOptions = options.documentOptions ?? {};
 
-  if (!actions.length) return { changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [], stalePlan: stalePlan() };
+  if (!actions.length) return {
+    changed: false, selected: selectedActions.length, succeeded: [], failed: results, pending: [],
+    stalePlan: stalePlan(), pausedForAddiction: pausedForAddiction()
+  };
 
   const customActions = actions.filter(isCustomConditionAction);
   if (customActions.length) {
@@ -315,7 +325,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
       options.beforeApply?.();
       const conditions = getCustomConditions(actor);
       const current = customActions.filter(action => {
-        try { assertActionCurrent(actor, plan, action, { customConditions: conditions }); return true; }
+        try { assertCurrent(action, { customConditions: conditions }); return true; }
         catch (error) { results.push(failureResult(action, error)); return false; }
       });
       if (!current.length) return;
@@ -348,7 +358,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     pendingKind = "";
 
     const current = batch.filter(action => {
-      try { assertActionCurrent(actor, plan, action); return true; }
+      try { assertCurrent(action); return true; }
       catch (error) { results.push(failureResult(action, error)); return false; }
     });
     dispatched ||= current.length > 0;
@@ -370,7 +380,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     await flushPending();
 
     try {
-      assertActionCurrent(actor, plan, action);
+      assertCurrent(action);
       dispatched = true;
       if (action.providerId) {
         const providerResult = await applyNewDayProviderAction(actor, action, { suppressChat: !postChat });
@@ -432,6 +442,7 @@ async function applyNewDayPlanUnlocked(actor, plan, selectedActionIds, options =
     failed,
     pending: succeeded.filter(entry => entry.pending),
     stalePlan: stalePlan(),
+    pausedForAddiction: pausedForAddiction(),
     notificationError
   };
 }

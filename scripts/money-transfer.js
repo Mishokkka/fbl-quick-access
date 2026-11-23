@@ -231,7 +231,7 @@ export function buildTransferWhisperModel(offer, result) {
     ? "completed"
     : result?.error === "declined"
       ? "declined"
-      : result?.error === "recipient-timeout"
+      : ["recipient-timeout", "execution-timeout"].includes(result?.error)
         ? "expired"
         : "failed";
 
@@ -431,29 +431,9 @@ async function processTransferDecision(offer, message) {
     return;
   }
 
-  const recipientUser = findGameUser(offer.recipientUserId);
-  const targetActor = game.actors?.get?.(offer.targetActorId);
-  if (!recipientUser || !recipientUser.active || !userOwnsActor(recipientUser, targetActor)) {
-    await finalizeTransferOffer(offer, { ok: false, error: "invalid-recipient" });
-    return;
-  }
-
-  const result = await enqueueTransfer(() => {
-    const sourceActor = game.actors?.get?.(offer.sourceActorId);
-    const currentTargetActor = game.actors?.get?.(offer.targetActorId);
-    const requester = findGameUser(offer.requesterId);
-    const currentRecipient = findGameUser(offer.recipientUserId);
-    const activeGM = getActiveGM();
-    if (!requester?.active || !userOwnsActor(requester, sourceActor)) return { ok: false, error: "invalid-request" };
-    if (!currentRecipient?.active || !userOwnsActor(currentRecipient, currentTargetActor)) return { ok: false, error: "invalid-recipient" };
-    if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id) return { ok: false, error: "invalid-request" };
-    if (Date.now() - offer.createdAt > REQUEST_TIMEOUT_MS) return { ok: false, error: "recipient-timeout" };
-    return executeMoneyTransfer(sourceActor, currentTargetActor, offer.amounts, {
-      requestId: offer.requestId,
-      requesterId: offer.requesterId,
-      recipientUserId: offer.recipientUserId
-    });
-  });
+  const result = await enqueueTransfer(() => executeMoneyTransfer(
+    game.actors?.get?.(offer.sourceActorId), game.actors?.get?.(offer.targetActorId), offer.amounts, offer
+  ));
   await finalizeTransferOffer(offer, result);
 }
 
@@ -821,9 +801,24 @@ function notifyReconciliationWriteFailure(error) {
     "Could not save the transfer journal in this GM browser. Check browser storage and review pending transfers."));
 }
 
-async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata = {}) {
+async function executeMoneyTransfer(sourceActor, targetActor, rawAmounts, offer = null) {
   try {
-    return await withWalletLocks([sourceActor, targetActor], () => executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, metadata));
+    return await withWalletLocks([sourceActor, targetActor], () => {
+      if (offer) {
+        const activeGM = getActiveGM();
+        const requester = findGameUser(offer.requesterId);
+        const recipient = findGameUser(offer.recipientUserId);
+        if (Date.now() - offer.createdAt >= REQUEST_TIMEOUT_MS) return { ok: false, error: "execution-timeout" };
+        if (activeGM?.id !== offer.primaryGmId || activeGM?.id !== game.user?.id
+          || !requester?.active || game.actors?.get?.(offer.sourceActorId) !== sourceActor || !userOwnsActor(requester, sourceActor)) {
+          return { ok: false, error: "invalid-request" };
+        }
+        if (!recipient?.active || game.actors?.get?.(offer.targetActorId) !== targetActor || !userOwnsActor(recipient, targetActor)) {
+          return { ok: false, error: "invalid-recipient" };
+        }
+      }
+      return executeLockedMoneyTransfer(sourceActor, targetActor, rawAmounts, offer ?? {});
+    });
   } catch (error) {
     if (error?.code === "actor-mutation-busy") return { ok: false, error: error.code };
     throw error;
@@ -1101,6 +1096,7 @@ function localizeTransferError(code) {
     "recipient-offline": "RecipientOffline",
     "recipient-dialog-unavailable": "RecipientDialogUnavailable",
     "recipient-timeout": "RecipientTimeout",
+    "execution-timeout": "ExecutionTimeout",
     "declined": "Declined",
     "invalid-request": "InvalidRequest",
     "no-gm": "NoGm",

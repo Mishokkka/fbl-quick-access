@@ -9,11 +9,12 @@ import { canResetShortRestLimit, shouldPostNoChangeRestCards } from "./settings.
 import { openNewDayDialog } from "./new-day.js";
 import { usesCalendariaStateProgression } from "./state-progression.js";
 import { createObjectOperationQueue } from "./operation-queue.js";
-import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag } from "./document-writes.js";
+import { clearDocumentFlagNullVerified, clonePlainJson, createCodedError, flagReplaceUpdatePath, plainValuesEqual, readDocumentFlag, setDocumentFlagVerified } from "./document-writes.js";
 import { getCalendariaApi, getCalendariaQuarterInfo as readCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 const QUARTER_SECONDS = 6 * 60 * 60;
 const enqueueRestOperation = createObjectOperationQueue();
 const FLAG_PENDING_REST_CLEANUP = "pendingRestCleanup";
+const FLAG_PENDING_SHORT_REST = "pendingShortRest";
 
 export const REST_ATTRIBUTES = {
   strength: {
@@ -278,11 +279,8 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
     .join("");
 
   const shortUsed = snapshot.shortRestUse?.usedThisQuarter;
-  const shortStatus = shortUsed
-    ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", {
-        attribute: escapeHtml(localizeAttribute(REST_ATTRIBUTES[snapshot.shortRestUse.attribute] ?? { fallback: snapshot.shortRestUse.attribute ?? "?" }))
-      })
-    : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+  const resumeShortRest = Boolean(snapshot.pendingShortRecovery);
+  const shortStatus = formatShortRestStatus(snapshot);
 
   const newDayControl = usesCalendariaStateProgression()
     ? `<div class="fblqa-rest-progression-note"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>${escapeHtml(qaLocalize("Rest.StateProgressionCalendaria", "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."))}</span></div>`
@@ -299,8 +297,8 @@ function buildRestDialogContent(actor, snapshot, permissions = {}) {
       <div class="fblqa-rest-header-template" hidden>${conditionChips}</div>
 
       <fieldset class="fblqa-rest-type-switch">
-        <label><input type="radio" name="restType" value="long" checked> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
-        <label><input type="radio" name="restType" value="short"> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
+        <label><input type="radio" name="restType" value="long"${resumeShortRest ? "" : " checked"}> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
+        <label><input type="radio" name="restType" value="short"${resumeShortRest ? " checked" : ""}> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
       </fieldset>
 
       <section class="fblqa-rest-pane" data-rest-pane="long">
@@ -402,19 +400,17 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null, ge
   const updateShortRecoveryAvailability = () => {
     const status = form.querySelector(".fblqa-rest-short-status");
     let usedThisQuarter = status?.dataset?.shortUsed === "true";
+    let pendingRecovery = false;
     if (typeof getLiveSnapshot === "function") {
       try {
         const liveSnapshot = getLiveSnapshot();
         if (liveSnapshot) {
           usedThisQuarter = Boolean(liveSnapshot.shortRestUse?.usedThisQuarter);
+          pendingRecovery = Boolean(liveSnapshot.pendingShortRecovery);
           if (status) {
             status.dataset.shortUsed = usedThisQuarter ? "true" : "false";
             status.classList?.toggle?.("is-used", usedThisQuarter);
-            status.innerHTML = usedThisQuarter
-              ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", {
-                  attribute: escapeHtml(localizeAttribute(REST_ATTRIBUTES[liveSnapshot.shortRestUse.attribute] ?? { fallback: liveSnapshot.shortRestUse.attribute ?? "?" }))
-                })
-              : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+            status.innerHTML = formatShortRestStatus(liveSnapshot);
           }
           const timeSource = form.querySelector(".fblqa-rest-time-source");
           if (timeSource) {
@@ -427,8 +423,9 @@ function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null, ge
         // Keep the existing rendered status if a live snapshot cannot be read.
       }
     }
-    const resetChecked = Boolean(form.querySelector('input[name="resetShortQuarter"]')?.checked);
-    const locked = usedThisQuarter && !resetChecked;
+    const reset = form.querySelector('input[name="resetShortQuarter"]');
+    if (reset) reset.disabled = pendingRecovery;
+    const locked = pendingRecovery || (usedThisQuarter && !reset?.checked);
     const recoveryCheck = form.querySelector('input[name="useShortRecovery"]');
     const attributeSelect = form.querySelector('select[name="shortAttribute"]');
     const consumableInput = form.querySelector('input[name="shortConsumable"]');
@@ -545,7 +542,9 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
   }
 
   const pendingCleanup = options.type === "long" ? readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP) : null;
-  const result = pendingCleanup ? readPendingRestResult(pendingCleanup) : options.type === "short"
+  let pendingShortRest = options.type === "short" ? getPendingShortRest(actor) : null;
+  const pending = pendingCleanup ?? pendingShortRest;
+  const result = pending ? readPendingRestResult(pending) : options.type === "short"
     ? calculateShortRestChanges(actor, options, { ...context, allowResetShortQuarter: canResetShortRestLimit(actor) })
     : calculateLongRestChanges(actor, options, context);
 
@@ -559,12 +558,23 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       .map((effect) => effect?.id ?? effect?._id)
       .filter(Boolean);
 
-    // Actor data and the short-rest flag are one logical mutation. Keep them in
-    // one Actor.update so a rest does not emit multiple updateActor/render cycles.
+    if (result.flagValue !== undefined && !pendingShortRest) {
+      pendingShortRest = {
+        ...recordRestChanges(actor, result, []),
+        previousUse: getShortRestRecoveryFlag(actor)
+      };
+      await setDocumentFlagVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, pendingShortRest, { render: false }, { replace: true });
+    }
+
     const cleanupPath = `flags.${MODULE_ID}.${FLAG_PENDING_REST_CLEANUP}`;
-    const actorUpdate = pendingCleanup ? planRestRecoveryRetry(actor, pendingCleanup, result.updates) : { ...result.updates };
+    const savedRest = pendingCleanup ?? pendingShortRest;
+    const actorUpdate = savedRest ? planRestRecoveryRetry(actor, savedRest, result.updates) : { ...result.updates };
     if (result.flagValue !== undefined) {
-      actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = result.flagValue;
+      const currentUse = getShortRestRecoveryFlag(actor);
+      if (!plainValuesEqual(currentUse, result.flagValue)) {
+        if (!plainValuesEqual(currentUse, pendingShortRest.previousUse)) throw restRecoveryConflict();
+        actorUpdate[flagReplaceUpdatePath(MODULE_ID, FLAG_SHORT_REST_RECOVERY)] = result.flagValue;
+      }
     }
     // Reset clears the previous use; a successful recovery records the new use.
     // Use a normal null assignment instead of Foundry's `.-=` deletion path:
@@ -575,11 +585,7 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
     }
 
     if (effectIds.length && !pendingCleanup) {
-      const { updates, ...recordedResult } = result;
-      actorUpdate[cleanupPath] = clonePlainJson({
-        effectIds, result: { ...recordedResult, effectsToDelete: [] },
-        writes: Object.entries(updates).map(([path, target]) => ({ path, target, before: getProperty(actor._source ?? actor, path) }))
-      });
+      actorUpdate[cleanupPath] = recordRestChanges(actor, result, effectIds);
     }
     const hasActorUpdate = Object.keys(actorUpdate).length > 0;
     if (hasActorUpdate) {
@@ -617,6 +623,7 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
       }
       await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_REST_CLEANUP);
     }
+    if (pendingShortRest) await clearDocumentFlagNullVerified(actor, MODULE_ID, FLAG_PENDING_SHORT_REST, { render: false });
 
     if (result.changed) {
       ui.notifications?.info?.(result.notification);
@@ -645,6 +652,29 @@ async function applyRestUnlocked(app, actor, options, context = {}) {
   return result;
 }
 
+function getPendingShortRest(actor) {
+  return readDocumentFlag(actor, MODULE_ID, FLAG_PENDING_SHORT_REST);
+}
+
+function formatShortRestStatus(snapshot) {
+  const pending = snapshot.pendingShortRecovery;
+  const saved = snapshot.shortRestUse;
+  const attributeKey = pending?.attribute ?? saved.attribute;
+  const attribute = escapeHtml(localizeAttribute(REST_ATTRIBUTES[attributeKey] ?? { fallback: attributeKey ?? "?" }));
+  if (pending) return qaLocalize("Rest.ShortResume", "Apply to finish the pending Short Rest recovery for {attribute}.", { attribute });
+  return saved.usedThisQuarter
+    ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", { attribute })
+    : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
+}
+
+function recordRestChanges(actor, result, effectIds) {
+  const { updates, ...recordedResult } = result;
+  return clonePlainJson({
+    effectIds, result: { ...recordedResult, effectsToDelete: [] },
+    writes: Object.entries(updates).map(([path, target]) => ({ path, target, before: getProperty(actor._source ?? actor, path) }))
+  });
+}
+
 function readPendingRestResult(pending) {
   const result = clonePlainJson(pending.result);
   result.updates = pending.writes
@@ -660,12 +690,16 @@ function planRestRecoveryRetry(actor, pending, targets) {
     const current = getProperty(actor._source ?? actor, path);
     if (current === target) continue;
     if (!previous.has(path) || current !== previous.get(path)) {
-      throw createCodedError("rest-recovery-conflict", qaLocalize("Rest.RecoveryConflict",
-        "A character field changed during an unfinished Long Rest. Review the saved recovery and restore its expected value before retrying."));
+      throw restRecoveryConflict();
     }
     update[path] = target;
   }
   return update;
+}
+
+function restRecoveryConflict() {
+  return createCodedError("rest-recovery-conflict", qaLocalize("Rest.RecoveryConflict",
+    "A character field changed during an unfinished rest. Review the saved recovery and restore its expected value before retrying."));
 }
 
 function matchesQuarterKey(savedKey, quarterInfo) {
@@ -686,6 +720,7 @@ export function buildRestSnapshot(actor, context = {}) {
     blockedBy,
     currentQuarterKey,
     quarterInfo,
+    pendingShortRecovery: getPendingShortRest(actor)?.result?.flagValue ?? null,
     shortRestUse: {
       ...savedUse,
       usedThisQuarter: matchesQuarterKey(savedUse?.quarterKey, quarterInfo)

@@ -150,6 +150,7 @@
         "RecipientOffline": "No active player is available to confirm this transfer.",
         "RecipientDialogUnavailable": "The recipient could not open the confirmation dialog.",
         "RecipientTimeout": "The recipient did not answer in time.",
+        "ExecutionTimeout": "The transfer expired before the wallets could be updated.",
         "InvalidRequest": "The transfer request failed validation.",
         "IdentityProofFailed": "The transfer could not verify the sender identity. Retry after the clients finish connecting."
       },
@@ -250,7 +251,8 @@
       "NotSpecified": "not specified",
       "NoChanges": "Rest completed with no character-sheet changes.",
       "UpdateFailed": "Could not apply rest.",
-      "RecoveryConflict": "A character field changed during an unfinished Long Rest. Review the saved recovery and restore its expected value before retrying.",
+      "RecoveryConflict": "A character field changed during an unfinished rest. Review the saved recovery and restore its expected value before retrying.",
+      "ShortResume": "Apply to finish the pending Short Rest recovery for {attribute}.",
       "ChatRecovered": "Recovered",
       "ChatCleared": "Cleared",
       "ChatBlocked": "Blocked",
@@ -803,7 +805,8 @@
       "WashCleanupFailed": "The new wash state was created, but an older wash state could not be removed.",
       "MigrationFailed": "Expanded Conditions migration was not completed. Failed operations: {count}. It will be retried on the next load.",
       "TreatmentUnresolvedTime": "Resolve the healing duration into a number of days before applying treatment.",
-      "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry."
+      "ConditionActionFailed": "The action could not be completed. Refresh the sheet and retry.",
+      "DamageConflict": "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after})."
     },
     "Chat": {
       "Addiction": {

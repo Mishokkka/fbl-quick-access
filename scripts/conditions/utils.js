@@ -1,7 +1,7 @@
 import { MODULE_ID, SETTINGS } from "./constants.js";
 import { canModifyActor } from "../permissions.js";
-import { getActorAttributeState } from "../actor-data.js";
-import { createCodedError, opaquePreconditionToken } from "../document-writes.js";
+import { getActorAttributeState, getProperty } from "../actor-data.js";
+import { createCodedError, opaquePreconditionToken, readNumericValue } from "../document-writes.js";
 import { escapeHtml } from "../utils.js";
 
 export function localize(key, fallbackOrData = undefined, data = undefined) {
@@ -109,11 +109,8 @@ export function getActorAttributePath(actor, attributeName) {
   return state.hasValue ? state.valuePath : null;
 }
 
-export async function applyActorAttributeDamage(actor, damages = {}, documentOptions = {}, extraUpdate = null) {
-  if (!actor || !damages || typeof damages !== "object") return [];
-
-  const update = {};
-  const applied = [];
+export function planActorAttributeDamage(actor, damages) {
+  const plan = [];
 
   for (const [attributeName, amountRaw] of Object.entries(damages)) {
     const amount = Math.max(0, parseFirstInteger(amountRaw, 0));
@@ -122,37 +119,36 @@ export async function applyActorAttributeDamage(actor, damages = {}, documentOpt
     const path = getActorAttributePath(actor, attributeName);
     if (!path) continue;
 
-    const previous = Number(foundry.utils.getProperty(actor, path));
+    const previous = readNumericValue(getProperty(actor._source ?? actor, path));
     if (!Number.isFinite(previous)) continue;
 
     const value = Math.max(0, previous - amount);
-    update[path] = value;
-    applied.push({ attribute: attributeName, path, amount, previous, value });
+    plan.push({ attribute: attributeName, path, amount, previous, value });
   }
+  return plan;
+}
 
-  const extra = extraUpdate ? (typeof extraUpdate === "function" ? extraUpdate(applied) : extraUpdate) : null;
-  if (extra) Object.assign(update, extra);
+export async function applyActorAttributeDamage(actor, plan, documentOptions) {
+  const update = {};
+  const readValue = path => readNumericValue(getProperty(actor._source ?? actor, path));
+  for (const { attribute, path, previous, value } of plan) {
+    const current = readValue(path);
+    if (current === value) continue;
+    if (current !== previous) {
+      const message = localize("Notifications.DamageConflict",
+        "An attribute changed during the pending damage. Check {attribute} before retrying (expected {before} or {after}).",
+        { attribute, before: previous, after: value });
+      throw Object.assign(createCodedError("damage-conflict", message), { fblqaUserMessage: message });
+    }
+    update[path] = value;
+  }
   if (Object.keys(update).length) {
     await actor.update(update, documentOptions);
-    for (const entry of applied) {
-      const liveValue = Number(foundry.utils.getProperty(actor, entry.path));
-      if (liveValue !== entry.value) {
-        throw createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
-      }
-    }
-    if (extra) {
-      for (const [key, expected] of Object.entries(extra)) {
-        if (key.includes("-=")) continue;
-        const live = foundry.utils.getProperty(actor, key);
-        if (expected && typeof expected === "object" && expected.id !== undefined) {
-          if (live?.id !== expected.id) {
-            throw createCodedError("write-not-persisted", "Actor attribute damage receipt was not persisted.");
-          }
-        }
-      }
+    if (plan.some(({ path, value }) => readValue(path) !== value)) {
+      throw createCodedError("write-not-persisted", "Actor attribute damage was not persisted.");
     }
   }
-  return applied;
+  return plan;
 }
 
 export function canUserEditActor(actor) {

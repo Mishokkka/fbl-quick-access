@@ -4,7 +4,9 @@ import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
-import { applyMorGain, changePermanentMor, clearStaleMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { applyHeatFailure, applyMorGain, changePermanentMor, clearStaleMorGain, getMorState, updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
+import { getAddictionMorning, performAddictionMorning } from "../scripts/conditions/services/addiction-service.js";
+import { getActorCalendarMarker, setActorCalendarMarker } from "../scripts/state-progression.js";
 import { canonicalJson } from "../scripts/document-writes.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
@@ -105,7 +107,7 @@ async function expose(path, names) {
 reset();
 const calendar = await expose("scripts/state-progression.js", [
   "buildPlayerResultContent", "handleCalendariaMultiDayJump", "processActorAutomaticDays", "recordCalendarFailures",
-  "resetAllFromGMSummary", "rewindAllFromGMSummary", "applyCalendarDay"
+  "resetAllFromGMSummary", "rewindAllFromGMSummary", "applyCalendarDay", "handleCalendariaApplyRequest"
 ]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["executeMoneyTransfer", "processTransferDecision"]);
@@ -495,7 +497,52 @@ test("A06: retry after failed Heat finalization does not apply damage twice", as
   set(h.flags, `${scope}.conditions.heatValue`, 2); const update = h.update;
   h.update = async data => { if (data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failure"); return update(data); };
   await assert.rejects(updateHeatItem(a, h, 3, "failure")); assert.equal(a.system.attribute.strength.value, 4);
-  h.update = update; await updateHeatItem(a, h, 3, "failure"); assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 3);
+  assert.equal(parseHeatValue(h), 3);
+  h.update = update; await applyHeatFailure(a, h); assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 3);
+  assert.equal(h.getFlag(scope, "conditions.heatPendingChange"), null);
+});
+
+test("Heat retries only the part of threshold damage omitted by the first write", async () => {
+  reset();
+  const heat = item("heat", { rollModifiers: {} }, "Heat");
+  const character = actor([heat]);
+  character.system.attribute.strength.value = character.system.attribute.wits.value = 5;
+  set(heat.flags, `${scope}.conditions.heatValue`, 3);
+  const write = character.update;
+  const wits = "system.attribute.wits.value";
+  character.update = async patch => {
+    const filtered = { ...patch };
+    delete filtered[wits];
+    return write(filtered);
+  };
+  await assert.rejects(applyHeatFailure(character, heat), { code: "write-not-persisted" });
+  assert.equal(character.system.attribute.strength.value, 4);
+  assert.equal(character.system.attribute.wits.value, 5);
+  assert.equal(parseHeatValue(heat), 3);
+
+  character.update = write;
+  await applyHeatFailure(character, heat);
+  assert.deepEqual(character.updates.at(-1), { [wits]: 4 });
+  assert.equal(character.system.attribute.strength.value, 4);
+  assert.equal(character.system.attribute.wits.value, 4);
+  assert.equal(parseHeatValue(heat), 4);
+});
+
+test("an interrupted legacy Heat receipt can supply the original damage target", async () => {
+  reset();
+  const heat = item("heat", { rollModifiers: {} }, "Heat");
+  const character = actor([heat]);
+  character.system.attribute.strength.value = 5;
+  set(heat.flags, `${scope}.conditions.heatValue`, 2);
+  set(heat.flags, `${scope}.conditions.heatPendingChange`, {
+    id: "old-heat", previousValue: 2, value: 3, damage: { strength: 1 }, overcap: false
+  });
+  await character.setFlag(scope, "conditions.heatReceipts.heat", {
+    id: "old-heat", appliedDamage: [{ attribute: "strength", path: "system.attribute.strength.value", previous: 5, value: 4, amount: 1 }]
+  });
+  await applyHeatFailure(character, heat);
+  assert.equal(character.system.attribute.strength.value, 4);
+  assert.equal(parseHeatValue(heat), 3);
 });
 test("A06: Addiction phase and modifiers are one Item update", async () => {
   reset(); const dependency = item("dependency", { rollModifiers: {} }, "Addiction"); actor([dependency]);
@@ -517,6 +564,75 @@ test("A07: failed provider build does not consume the calendar day and persists 
     assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1); assert.equal(a.getFlag(scope, "stateProgressionFailures")[0].failures[0].kind, "provider-build"); }
   finally { unregister(); }
 });
+
+test("a Calendaria day finishes its selected provider and rest actions before pausing for Addiction", async () => {
+  reset();
+  initializeNewDayProviderBridge();
+  const addiction = item("addiction", { rollModifiers: {} }, "Addiction");
+  const wound = item("wound", { healingTime: "3 days" });
+  const character = actor([addiction, wound]);
+  await saveAddictionState(addiction, { phase: "flat", die: 6, daysLeft: 1, severity: 1 });
+  await setActorCalendarMarker(character, { ...context, date: start });
+  await character.setFlag(scope, "shortRestRecovery", { quarterKey: "current", attribute: "strength" });
+  let advances = 0;
+  const unregister = registerNewDayProvider({
+    id: "audit.endurance-day", category: "audit-timer",
+    buildActions: () => [{ id: "tick" }],
+    applyAction: () => { advances++; return { changed: true }; },
+    describeAction: () => "",
+    icon: () => "fa-clock"
+  });
+  try {
+    const result = await calendar.processActorAutomaticDays(character, start, context, 2);
+    assert.equal(result.processedDays, 1);
+    assert.equal(result.limitedDays, 1);
+    assert.equal(result.failedActions, 0);
+    assert.equal(result.pendingManual, 1);
+    assert.equal(advances, 1);
+    assert.equal(wound.system.healingTime, "2 days");
+    assert.equal(character.getFlag(scope, "shortRestRecovery"), null);
+    assert.equal(getActorCalendarMarker(character).date.day, 2);
+  } finally {
+    unregister();
+  }
+});
+
+for (const interactive of [false, true]) {
+  test(`Calendaria preserves the ${interactive ? "interactive" : "automatic"} day if Endurance starts while saving its journal`, async () => {
+    reset();
+    const addiction = item("addiction", { rollModifiers: {} }, "Addiction");
+    const wound = item("wound", { healingTime: "3 days" });
+    const character = assignedActor([addiction, wound]);
+    await saveAddictionState(addiction, { phase: "flat", die: 6, daysLeft: 1, severity: 1 });
+    const prior = { ...start, day: 2 };
+    await setActorCalendarMarker(character, { ...context, date: prior });
+    const write = character.update;
+    character.update = async patch => {
+      await write(patch);
+      if (patch[`flags.${scope}.==stateProgressionOperation`]?.phase === "applying") {
+        await performAddictionMorning(character, addiction, { postChat: false });
+      }
+    };
+
+    if (interactive) {
+      const result = await calendar.handleCalendariaApplyRequest({
+        actorId: character.id, calendarId: context.calendarId, targetDate: context.date, selectedIds: ["injury:wound:healing"]
+      }, { requestUser: game.user, requesterId: game.user.id });
+      assert.equal(result.status, "awaiting-endurance");
+      assert.equal(result.calendarResult.processedDays, 0);
+      assert.equal(result.calendarResult.pendingManual, 1);
+    } else {
+      const result = await calendar.processActorAutomaticDays(character, prior, context, 1);
+      assert.equal(result.processedDays, 0);
+      assert.equal(result.failedDays, 0);
+      assert.equal(result.pendingManual, 1);
+    }
+    assert.equal(getAddictionMorning(addiction).status, "pending");
+    assert.equal(wound.system.healingTime, "3 days");
+    assert.deepEqual(getActorCalendarMarker(character).date, prior);
+    assert.equal(character.getFlag(scope, "stateProgressionOperation"), null);
+  });
+}
 test("A12: duration parser refuses formulas and non-day/free-text inputs", () => {
   for (const value of ["2 hours", "2 часа", "1-3 days", "d6", "1.5 days", "Due 2026-10-09", "Permanent"]) assert.equal(decrementFirstInteger(value), null, value);
   assert.equal(decrementFirstInteger("2 дня").afterText, "1 день"); assert.equal(decrementFirstInteger("12 дней").afterText, "11 дней");
@@ -571,6 +687,46 @@ test("A09: revoking sender ownership while acceptance waits cancels the transfer
   assert.equal(source.system.currency.copper.value, 100); assert.equal(target.system.currency.copper.value, 0);
   assert.equal(source.updates.length + target.updates.length, 0);
 });
+
+for (const reason of ["offer expires", "recipient loses ownership"]) {
+  test(`accepted transfer leaves both wallets untouched if ${reason} while waiting for a character lock`, async () => {
+    reset();
+    const source = actor();
+    const target = actor();
+    source.system.currency.copper.value = 100;
+    const sender = user("sender");
+    const recipient = user("recipient");
+    game.users.push(sender, recipient);
+    const entered = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const blocker = enqueueActorMutationOperation(source, () => {
+      entered.resolve();
+      return release.promise;
+    });
+    await entered.promise;
+    const realNow = Date.now;
+    let now = realNow();
+    Date.now = () => now;
+    try {
+      const offer = {
+        requestId: "audit-transfer", requesterId: sender.id, recipientUserId: recipient.id, primaryGmId: game.user.id,
+        sourceActorId: source.id, targetActorId: target.id, amounts: { copper: 20 }, createdAt: now
+      };
+      const acceptance = money.processTransferDecision(offer, { ...offer, accepted: true });
+      await delay(0);
+      if (reason === "offer expires") now += 96_000;
+      else target.testUserPermission = () => false;
+      release.resolve();
+      await blocker;
+      await acceptance;
+    } finally {
+      Date.now = realNow;
+    }
+    assert.equal(source.system.currency.copper.value, 100);
+    assert.equal(target.system.currency.copper.value, 0);
+    assert.equal(source.updates.length + target.updates.length, 0);
+  });
+}
 test("BIO failed save keeps its captured draft for an explicit retry", async () => {
   reset(); const a = actor(); const state = getBiographyProfile(a); state.concept = "Keep this draft";
   const originalUpdate = a.update; a.update = async () => { throw new Error("Write unavailable"); };
@@ -689,32 +845,38 @@ test("unregistering a provider while its plan rebuilds prevents dispatch", async
   assert.equal(called, false);
 });
 
-test("Mor gain resumes a vetoed Item write after reload without repeating damage or the roll", async () => {
-  reset();
-  let rolls = 0;
-  globalThis.Roll = class {
-    async evaluate() { rolls += 1; this.terms = [{ results: [{ result: 1 }] }]; return this; }
-    static fromJSON(raw) { return Object.assign(new this(), JSON.parse(raw)); }
-  };
-  const mor = item("mor", { healingTime: "1/0" }, "Mor");
-  const character = actor([mor]);
-  character.system.attribute.strength.value = 4;
-  const write = mor.update;
-  mor.update = async patch => Object.values(patch).includes(null) ? undefined : write(patch);
-  await assert.rejects(applyMorGain(character, mor), { code: "write-not-persisted" });
-  assert.equal(character.system.attribute.strength.value, 3);
-  assert.equal(getMorState(mor).current, 1);
+for (const blocked of ["counter write", "pending roll cleanup"]) {
+  test(`Mor gain resumes after a vetoed ${blocked} without repeating damage or the roll`, async () => {
+    reset();
+    let rolls = 0;
+    globalThis.Roll = class {
+      async evaluate() { rolls += 1; this.terms = [{ results: [{ result: 1 }] }]; return this; }
+      static fromJSON(raw) { return Object.assign(new this(), JSON.parse(raw)); }
+    };
+    const mor = item("mor", { healingTime: "1/0" }, "Mor");
+    const character = actor([mor]);
+    character.system.attribute.strength.value = 4;
+    const write = mor.update;
+    mor.update = async patch => {
+      if (blocked === "counter write" && Object.hasOwn(patch, `flags.${scope}.conditions.morState`)) return;
+      if (blocked === "pending roll cleanup" && patch[`flags.${scope}.conditions.morPendingGain`] === null) return;
+      return write(patch);
+    };
+    await assert.rejects(applyMorGain(character, mor), { code: "write-not-persisted" });
+    assert.equal(character.system.attribute.strength.value, 3);
+    assert.equal(getMorState(mor).current, blocked === "counter write" ? 1 : 2);
 
-  const reloadedMor = item(mor.id, structuredClone(mor.system), "Mor");
-  reloadedMor.flags = structuredClone(mor.flags);
-  const reloadedActor = actor([reloadedMor]);
-  reloadedActor.flags = structuredClone(character.flags);
-  reloadedActor.system = structuredClone(character.system);
-  const result = await applyMorGain(reloadedActor, reloadedMor);
-  assert.equal(result.state.current, 2);
-  assert.equal(rolls, 1);
-  assert.equal(reloadedActor.system.attribute.strength.value, 3);
-});
+    const reloadedMor = item(mor.id, structuredClone(mor.system), "Mor");
+    reloadedMor.flags = structuredClone(mor.flags);
+    const reloadedActor = actor([reloadedMor]);
+    reloadedActor.system = structuredClone(character.system);
+    const result = await applyMorGain(reloadedActor, reloadedMor);
+    assert.equal(result.state.current, 2);
+    assert.equal(rolls, 1);
+    assert.equal(reloadedActor.system.attribute.strength.value, 3);
+    assert.equal(reloadedMor.getFlag(scope, "conditions.morPendingGain"), null);
+  });
+}
 
 test("a stale Mor gain can be cleared without replaying damage", async () => {
   reset();
@@ -728,7 +890,7 @@ test("a stale Mor gain can be cleared without replaying damage", async () => {
   const write = character.update;
   character.update = async patch => {
     await write(patch);
-    if (Object.hasOwn(patch, `flags.${scope}.conditions.morReceipts.${mor.id}`)) {
+    if (Object.hasOwn(patch, "system.attribute.strength.value")) {
       await mor.update({ [`flags.${scope}.conditions.morState`]: { current: 1, permanent: 2 } });
     }
   };
@@ -1018,6 +1180,53 @@ test("Short Rest verifies the replacement record even within the same quarter", 
   assert.equal(result.error?.code, "write-not-persisted");
   assert.equal(character.system.attribute.agility.value, 2);
   assert.deepEqual(character.getFlag(scope, "shortRestRecovery"), used);
+
+  const reloaded = actor();
+  reloaded.flags = structuredClone(character.flags);
+  reloaded.system = structuredClone(character.system);
+  const resumed = await rest.applyRest(null, reloaded, { type: "short" });
+  assert.equal(resumed.failed, undefined);
+  assert.equal(reloaded.system.attribute.agility.value, 2);
+  assert.equal(reloaded.getFlag(scope, "shortRestRecovery").attribute, "agility");
+  assert.equal(reloaded.getFlag(scope, "pendingShortRest"), null);
+});
+
+test("Short Rest can finish an omitted attribute write when the quarter is already marked", async () => {
+  reset();
+  const character = actor();
+  const write = character.update;
+  const strength = "system.attribute.strength.value";
+  character.update = async patch => {
+    const filtered = { ...patch };
+    delete filtered[strength];
+    return write(filtered);
+  };
+  const first = await rest.applyRest(null, character, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
+  assert.equal(first.error?.code, "write-not-persisted");
+  assert.equal(character.system.attribute.strength.value, 1);
+  const used = structuredClone(character.getFlag(scope, "shortRestRecovery"));
+  assert.equal(used.attribute, "strength");
+
+  character.update = write;
+  const retry = await rest.applyRest(null, character, { type: "short" });
+  assert.equal(retry.failed, undefined);
+  assert.equal(character.system.attribute.strength.value, 2);
+  assert.deepEqual(character.getFlag(scope, "shortRestRecovery"), used);
+  assert.equal(character.getFlag(scope, "pendingShortRest"), null);
+});
+
+test("Short Rest leaves the attribute untouched when its recovery plan cannot be saved", async () => {
+  reset();
+  const character = actor();
+  const write = character.update;
+  character.update = async patch => {
+    if (Object.keys(patch).some(path => path.endsWith("pendingShortRest"))) return;
+    return write(patch);
+  };
+  const result = await rest.applyRest(null, character, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
+  assert.equal(result.error?.code, "write-not-persisted");
+  assert.equal(character.system.attribute.strength.value, 1);
+  assert.equal(character.getFlag(scope, "shortRestRecovery"), undefined);
 });
 
 test("Short Rest rechecks the owner's reset permission after waiting in the queue", async () => {

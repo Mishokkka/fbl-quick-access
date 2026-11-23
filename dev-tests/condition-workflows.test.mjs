@@ -468,7 +468,7 @@ test("retrying failed Heat finalization does not repeat damage or omit the level
   heat.update = async data => { if (fail && data[`flags.${scope}.conditions.heatPendingChange`] === null) throw new Error("finalize failed"); return update(data); };
   await assert.rejects(applyHeatFailure(owner, heat), /finalize failed/);
   assert.equal(owner.system.attribute.strength.value, 5);
-  assert.equal(parseHeatValue(heat), 3);
+  assert.equal(parseHeatValue(heat), 4);
   await assert.rejects(updateHeatItem(owner, heat, 2, "rest"));
   fail = false; await applyHeatFailure(owner, heat);
   assert.equal(owner.system.attribute.strength.value, 5); assert.equal(parseHeatValue(heat), 4);

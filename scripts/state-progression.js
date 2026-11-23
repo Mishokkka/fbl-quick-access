@@ -603,6 +603,8 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
 
     const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, nextDate) });
     assertCalendarApplyContext(context);
+    pendingManual = getPendingAddictions(actor).length;
+    if (pendingManual || plan.blockedByAddiction) break;
     const selectedIds = plan.actions.filter((action) => action.checked !== false).map((action) => action.id);
 
     if (plan.providerErrors?.length) {
@@ -616,37 +618,23 @@ async function processActorAutomaticDaysUnlocked(actor, startDate, context, requ
       break;
     }
 
-    // If only the bookkeeping Short Rest reset remains, repeating an empty day
-    // hundreds of times would create document traffic with no gameplay value.
-    const meaningful = plan.actions.filter((action) => action.kind !== "short-rest-reset");
-    if (!meaningful.length) {
-      const reset = plan.actions.find((action) => action.kind === "short-rest-reset");
-      const targetDate = normalizeCalendariaDate(api?.addDays?.(cursor, remaining)) ?? context.date;
-      if (reset) {
-        const resetResult = await applyCalendarDay(actor, context, cursor, nextDate, targetDate, plan, [reset.id]);
-        dayResults.push({ date: nextDate, result: serializeNewDayResult(resetResult) });
-        if (resetResult.failed.length) {
-          failedDays += 1;
-          failedActions += resetResult.failed.length;
-        }
-      } else {
-        await setActorCalendarMarker(actor, { ...context, date: targetDate });
-      }
-      remaining = 0;
-      cursor = targetDate;
+    // The bookkeeping Short Rest reset only needs to run once for empty days.
+    const daysInPlan = plan.actions.some(action => action.kind !== "short-rest-reset") ? 1 : remaining;
+    const through = daysInPlan === 1 ? nextDate : normalizeCalendariaDate(api?.addDays?.(cursor, daysInPlan)) ?? context.date;
+    const applied = await applyCalendarDay(actor, context, cursor, nextDate, through, plan, selectedIds,
+      daysInPlan < remaining ? { render: false } : {});
+    if (applied.pausedForAddiction) {
+      pendingManual = getPendingAddictions(actor).length;
       break;
     }
-
-    const applied = await applyCalendarDay(actor, context, cursor, nextDate, nextDate, plan, selectedIds,
-      remaining > 1 ? { render: false } : {});
     const dayResult = { date: nextDate, result: serializeNewDayResult(applied) };
     dayResults.push(dayResult);
     if (applied.failed.length) {
       failedDays += 1;
       failedActions += applied.failed.length;
     }
-    cursor = nextDate;
-    remaining -= 1;
+    cursor = through;
+    remaining -= daysInPlan;
     pendingManual = getPendingAddictions(actor).length;
   }
 
@@ -803,6 +791,12 @@ async function handleCalendariaApplyRequest(payload, context) {
     const marker = getActorCalendarMarker(actor);
     const operation = getCalendarOperation(actor);
     const status = calculateActorCalendarStatus(marker, calendaria);
+    const awaitEndurance = pendingManual => {
+      updateCurrentGMSummary(actor.id, calendaria, { state: "blocked", days: status.days ?? 0 });
+      return { status: "awaiting-endurance", calendarResult: {
+        ...emptyCalendarResult(marker?.date ?? targetDate), pendingManual
+      } };
+    };
     let plan, selectedIds;
     if (operation) {
       if (!canFinishCalendarOperation(operation, marker, calendaria)) {
@@ -815,10 +809,7 @@ async function handleCalendariaApplyRequest(payload, context) {
       }
     } else {
       const pendingManual = getPendingAddictions(actor).length;
-      if (pendingManual) {
-        updateCurrentGMSummary(actor.id, calendaria, { state: "blocked", days: status.days ?? 0 });
-        return { status: "awaiting-endurance", calendarResult: { ...emptyCalendarResult(marker?.date ?? targetDate), pendingManual } };
-      }
+      if (pendingManual) return awaitEndurance(pendingManual);
       if (status.status === "baseline") {
         await setActorCalendarMarker(actor, calendaria);
         updateCurrentGMSummary(actor.id, calendaria, {
@@ -844,6 +835,7 @@ async function handleCalendariaApplyRequest(payload, context) {
         throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
       }
       ({ plan, selectedIds } = await buildInteractiveCalendarPlan(actor, calendaria, payload));
+      if (plan.blockedByAddiction) return awaitEndurance(getPendingAddictions(actor).length);
     }
 
     const releaseProcessing = beginSummaryOperation(actor.id);
@@ -856,6 +848,7 @@ async function handleCalendariaApplyRequest(payload, context) {
         days = [];
       } else {
         const applied = await applyCalendarDay(actor, calendaria, marker.date, targetDate, targetDate, plan, selectedIds);
+        if (applied.pausedForAddiction) return awaitEndurance(getPendingAddictions(actor).length);
         failedActions = applied.failed.length;
         days = [{ date: targetDate, result: serializeNewDayResult(applied) }];
       }
@@ -897,6 +890,7 @@ async function handleCalendariaApplyRequest(payload, context) {
 
 async function buildInteractiveCalendarPlan(actor, context, payload) {
   const plan = await buildNewDayPlanWithProviders(actor, { dayKey: addictionCalendarDayKey(context.calendarId, context.date) });
+  if (plan.blockedByAddiction) return { plan, selectedIds: [] };
   if (plan.providerErrors?.length) {
     await recordCalendarFailures(actor, context, context.date, plan.providerErrors.map(error => ({ id: error.providerId, kind: "provider-build" })));
     throw progressionError("provider-build-failed", "A New Day provider is unavailable. The day was not applied.");
@@ -2139,11 +2133,17 @@ async function applyCalendarDay(actor, context, previousDate, date, through, pla
     }
   };
   await writeOperation(operation);
-  const applied = await applyNewDayPlan(actor, plan, selectedIds, { ...calendarApplyOptions(), beforeApply }).catch(async error => {
+  const applied = await applyNewDayPlan(actor, plan, selectedIds, {
+    ...calendarApplyOptions(), beforeApply, pauseForPendingAddiction: true
+  }).catch(async error => {
     // The custom-condition lock is acquired before any daily action is sent.
     if (approvalFailed || error?.code === "actor-mutation-busy") await discardUnstarted();
     throw error;
   });
+  if (applied.pausedForAddiction) {
+    await discardUnstarted();
+    return applied;
+  }
   if (applied.stalePlan) {
     await discardUnstarted();
     throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "Данные изменились. Обновите предварительный просмотр."));
