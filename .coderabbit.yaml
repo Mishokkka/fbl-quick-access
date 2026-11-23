@@ -1,0 +1,74 @@
+# yaml-language-server: \$schema=https://coderabbit.ai/integrations/schema.v2.json
+
+# Язык комментариев CodeRabbit (при желании можно сменить на en-US)
+
+language: ru-RU
+
+reviews:
+profile: chill
+auto_approvals:
+enabled: false
+high_level_summary: true
+collapse_walkthrough: false
+poem: false
+auto_review:
+enabled: true
+auto_incremental_review: true
+drafts: false
+path_instructions:
+\- path: "scripts//\*.js"
+instructions: |
+Project context: client-side Foundry VTT v13 (13.351) module for Forbidden Lands (13.0.5),
+used at a trusted friendly tabletop RPG table with a single active GM browser tab.
+Follow ARCHITECTURE.md strictly.
+
+```
+    ALWAYS flag real reproducible defects:
+    - Reproducible duplicate damage, duplicate currency deduction, skipped or double-applied
+      days, silent data loss, or player-vs-GM race conditions across overlapping operations.
+    - Real Foundry VTT v13 / Forbidden Lands 13.0.5 API incompatibilities, broken hook usage,
+      or DialogV2 (e.g. button.form) / ApplicationV1 / ApplicationV2 integration bugs.
+    - Game-mechanic calculation bugs (Rest, New Day, Calendaria dates, Addiction, Heat/Mor,
+      Willpower, Reputation, normal wallet currency conversion).
+    - Missing state re-validation after entering a shared queue, or missing pre-delete
+      verification before deleting source records in Wash stage swaps and migrations.
+    - Unsafe fallbacks (e.g. falling back to current date on invalid addDays arithmetic
+      instead of failing fast), missing fail-fast stop, or failure to distinguish confirmed
+      partial failure (persisted via private GM ChatMessage whisper) from unknown network
+      outcome on critical operations (money transfers, Calendaria progression).
+    - DOM/event listener duplication on repeated sheet renders, stale drag/drop references,
+      and unescaped HTML injection for user-authored fields.
+
+    EXCLUDE from proposed fixes and DO NOT require as solutions:
+    - Database/ActiveEffect-based locks or cross-tab locking for the same GM account.
+    - Multi-document atomic transactions, browser reconciliation stores, or automatic
+      recovery journals for partial writes (Foundry VTT has no multi-document transactions).
+    - Persistent "needs manual reconciliation" flags stored on Actor/Item/World documents
+      to block retries across reloads (use private GM ChatMessage whispers instead).
+    - Adversarial/malicious player threat models or extreme unrealistic currency overflow
+      scenarios that do not affect normal tabletop play.
+    When flagging a valid bug, suggest simple in-scope fixes aligned with ARCHITECTURE.md
+    (active-GM routing, shared in-memory queue with post-queue re-check, pre-delete check,
+    fail-fast + GM whisper).
+- path: "templates/**/*.hbs"
+  instructions: |
+    Check for valid Handlebars syntax, XSS safety (avoid unescaped triple-stache for
+    user-authored text without explicit sanitization), and alignment with selectors used
+    by scripts/sheet-adapter/.
+- path: "dev-tests/**/*.test.mjs"
+  instructions: |
+    Verify that tests meaningfully cover game mechanics, UI/DialogV2 contracts, post-queue
+    state checks, pre-delete verification, and fail-fast/GM-whisper error handling.
+    Do NOT propose tests requiring database locks, multi-tab GM races, persistent
+    reconciliation flags, or automated partial-write recovery journals.
+
+```
+
+knowledge_base:
+code_guidelines:
+enabled: true
+filePatterns:
+\- "ARCHITECTURE.md"
+
+chat:
+auto_reply: true
