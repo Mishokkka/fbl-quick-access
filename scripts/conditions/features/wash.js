@@ -1,6 +1,6 @@
 import { MODULE_ID, SETTINGS } from "../constants.js";
 import { CONDITION_DEFINITIONS } from "../condition-definitions.js";
-import { getConditionKind, getWashStage } from "../condition-kind.js";
+import { conditionKindUpdate, getConditionKind, getWashStage } from "../condition-kind.js";
 import { isFeatureEnabled } from "../settings.js";
 import { escapeHTML, localize, namesIncludeCondition, normalizeConditionName } from "../utils.js";
 import { executeActorOperation, handleActorOperation, hasSocketHandler, registerSocketHandler } from "../../integration/socket-api.js";
@@ -127,6 +127,15 @@ export async function transitionWashLevelInternal(actor, currentName, documentOp
 
   const existing = washItems(actor).find(item => getWashStage(item) === nextName);
   let createdItems = existing ? [existing] : null;
+  const flags = conditionKindUpdate(existing);
+  if (flags) {
+    const { _id, ...update } = flags;
+    try { await existing.update(update, safeDocumentOptions); }
+    catch (error) {
+      console.error(`${MODULE_ID} | could not persist flags for existing Wash state`, error);
+      createdItems = null;
+    }
+  }
   // A retry only needs to finish cleanup if the replacement already exists.
   if (!existing) {
     const newItemSource = await findWashConditionSource(nextName);

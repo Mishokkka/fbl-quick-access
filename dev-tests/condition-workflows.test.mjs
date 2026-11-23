@@ -10,7 +10,7 @@ import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { applyStatOperation, runStatOperation } from "../scripts/conditions/services/stat-operations.js";
 import { enqueueActorMutation } from "../scripts/operation-queue.js";
 import { LEGACY_MODULE_ID, MIGRATION_VERSION } from "../scripts/conditions/constants.js";
-import { applyNewDayPlan, buildNewDayPlan, serializeNewDayResult } from "../scripts/new-day.js";
+import { applyNewDayPlan, buildNewDayPlan, decrementFirstInteger, serializeNewDayResult } from "../scripts/new-day.js";
 import { migrateActorData, runWorldMigration } from "../scripts/conditions/migrations.js";
 import { renderConditionItemRow } from "../scripts/conditions/render/stat-tab-renderer.js";
 
@@ -101,6 +101,15 @@ test("manual Addiction correction resolves a pending morning and synchronizes mo
   const duplicate = await resolveAddictionMorning(owner, dependency, "success", quiet);
   assert.equal(duplicate.changed, false);
   assert.deepEqual(getAddictionState(dependency), state);
+});
+
+test("changing Addiction severity from 5 to 10 preserves elapsed withdrawal days", async () => {
+  setup();
+  const dependency = item("Addiction", { phase: "flat", die: 6, daysLeft: 3, severity: 5 });
+  const owner = actor(dependency);
+  assert.equal((await correctAddictionState(owner, dependency, { severity: 10 })).changed, true);
+  assert.deepEqual(getAddictionState(dependency), { phase: "flat", die: 6, daysLeft: 8, severity: 10 });
+  assert.equal(dependency.updates.length, 1);
 });
 
 test("manual Addiction corrections clamp cycle endpoints without deleting the Item", async () => {
@@ -494,6 +503,19 @@ test("migration keeps legacy Actor flags and version after a veto and retries on
   assert.equal(owner.flags[LEGACY_MODULE_ID], undefined);
 });
 
+test("migration retains a current flag that differs from its legacy value", async () => {
+  setup();
+  const owner = actor();
+  const list = [{ id: "old", name: "Legacy", time: "2 days", notes: "", desc: "", order: 0 }];
+  owner.flags[LEGACY_MODULE_ID] = { list, layoutColumns: 1 };
+  set(owner, `flags.${scope}.conditions.layoutColumns`, 2);
+
+  assert.equal(await migrateActorData(owner), true);
+  assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);
+  assert.deepEqual(owner.getFlag(scope, "conditions.list"), list);
+  assert.equal(owner.flags[LEGACY_MODULE_ID], undefined);
+});
+
 test("legacy Item migration checks the actual copied value before removing its source", async () => {
   setup();
   const injury = item("Injury"), owner = actor(injury);
@@ -595,6 +617,45 @@ test("queued STAT edits use live fields and leave unresolved durations for manua
   assert.deepEqual([condition.name, condition.notes, condition.time], ["Changed", "Kept", range]);
   assert.deepEqual([injury.system.healingTime, injury.system.limit], [range, range]);
   assert.equal(injury.updates.length, 0);
+});
+
+test("STAT can manually advance a lethal limit in hours", async () => {
+  setup();
+  const injury = item("Injury"), owner = actor(injury);
+  injury.system.lethal = "yes";
+  injury.system.limit = "2 hours";
+  globalThis.TextEditor = { enrichHTML: async text => text };
+  globalThis.renderTemplate = async (_path, data) => data;
+  const row = await renderConditionItemRow(injury, true);
+  assert.match(row.lethalHtml, /lethal-limit-minus/);
+  assert.match(row.lethalHtml, /lethal-limit-plus/);
+  assert.equal(decrementFirstInteger(injury.system.limit), null);
+
+  const operation = { kind: "lethal-limit", itemId: injury.id };
+  assert.equal((await runStatOperation(owner, { ...operation, delta: 1 })).changed, true);
+  assert.equal(injury.system.limit, "3 hours");
+  await runStatOperation(owner, { ...operation, delta: -1 });
+  assert.equal(injury.system.limit, "2 hours");
+  injury.system.limit = "[[1d6]] hours";
+  assert.equal((await runStatOperation(owner, { ...operation, delta: -1 })).reason, "unresolved-duration");
+  assert.equal(injury.system.limit, "[[1d6]] hours");
+});
+
+test("STAT handlers keep numeric-looking condition IDs as strings for all three row actions", async () => {
+  const source = await readFile(new URL("../scripts/conditions/main.js", import.meta.url), "utf8");
+  assert.doesNotMatch(source, /\.data\(["']condition-id["']\)/);
+  assert.equal([...source.matchAll(/const id = .*\.dataset\.conditionId;/g)].length, 3);
+
+  setup();
+  const owner = actor();
+  const { conditionId: id } = { conditionId: "123" };
+  set(owner, `flags.${scope}.conditions.list`, [{ id, time: "2 hours", order: 0 }]);
+  const list = () => owner.getFlag(scope, "conditions.list");
+  await runStatOperation(owner, { kind: "custom-edit", id, field: "name", value: "Renamed" });
+  await runStatOperation(owner, { kind: "custom-time", id, delta: 1 });
+  assert.deepEqual([list()[0].id, list()[0].name, list()[0].time], ["123", "Renamed", "3 hours"]);
+  await runStatOperation(owner, { kind: "custom-remove", id });
+  assert.deepEqual(list(), []);
 });
 
 test("STAT renders the phase, pending result and disabled morning until resolution", async () => {

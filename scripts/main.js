@@ -18,7 +18,7 @@ import { handleExpandedConditionsCreateItem, initExpandedConditions, invalidateE
 import { getStoredSlots, saveSlots } from "./quick-access.js";
 import { refreshEquipmentSheets } from "./equipment-sheet.js";
 import { handleDeletedActorItem, pruneActorReferences, pruneWorldActorReferences } from "./data-hygiene.js";
-import { cleanupStatProviderListeners, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
+import { cleanupStatProviderListeners, getStatProviders, handleStatProviderActorDeleted, refreshStat, registerStatProvider } from "./integration/stat-providers.js";
 import { initializeNewDayProviderBridge, registerNewDayProvider } from "./integration/new-day-providers.js";
 import { executeAsActiveGM, getActiveGM, registerIntegrationSocket, registerSocketHandler } from "./integration/socket-api.js";
 import { closeReputationDialog, getReputationEntries, openReputationDialog, saveReputationEntries, setupReputationManager } from "./reputation.js";
@@ -127,10 +127,12 @@ Hooks.on("updateActor", (actor, changes, options, userId) => {
 // small quick-access panel; unrelated journal/status writes never touch it.
 Hooks.on("updateActor", refreshEquipmentSheets);
 Hooks.on("updateItem", (item, _changes, options, userId) => {
-  if (item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId);
+  const renderer = getStatProviders().length ? renderExpandedConditions : undefined;
+  if (renderer || item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId, renderer);
 });
 Hooks.on("deleteItem", (item, options, userId) => {
-  if (item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId);
+  const renderer = getStatProviders().length ? renderExpandedConditions : undefined;
+  if (renderer || item.type === "criticalInjury") scheduleStatSync(item.parent, options, userId, renderer);
 });
 Hooks.on("fblec-prosthetics.gearExtensionsInjected", handleProstheticsGearInjected);
 

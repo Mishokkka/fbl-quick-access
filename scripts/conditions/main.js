@@ -1,4 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, LEGACY_MODULE_ID, MODULE_ID } from "./constants.js";
+import { getActorAttributeState } from "../actor-data.js";
 import { confirmDangerAction, createFoundryDialog, findDialogForm } from "../dialogs.js";
 import { findActorSheetRoot } from "../sheet-adapter/forbidden-lands-v1.js";
 import { registerSettings } from "./settings.js";
@@ -7,7 +8,8 @@ import {
   canUserEditActor,
   createChatMessage,
   escapeHTML,
-  localize
+  localize,
+  parseStatDuration
 } from "./utils.js";
 import { initializeWashOperations } from "./features/wash.js";
 import {
@@ -391,7 +393,12 @@ export async function renderExpandedConditions(app, html) {
   }
 
   bindInjuryAction("change", ".injury-name-input", control => ({ kind: "item-name", value: control.value }));
-  bindInjuryAction("change", ".injury-notes", control => ({ kind: "item-notes", value: control.value }));
+  html.find(".conditions-tab").off("change", ".injury-notes").on("change", ".injury-notes", async event => {
+    if (!requireEditable()) return;
+    const control = event.currentTarget;
+    const item = getRowItem($(control).closest(".injury-row"));
+    if (item) await submitStatCommand({ kind: "item-notes", itemId: item.id, value: control.value });
+  });
   bindInjuryAction("click", ".delete-injury", async (_control, item) =>
     await confirmStatDelete(item.name, "injury") ? { kind: "item-delete" } : null);
   bindInjuryAction("click", ".heal-minus, .heal-plus", control => ({
@@ -495,7 +502,13 @@ export async function renderExpandedConditions(app, html) {
     const current = classes.contains("mor-item-x-plus") || classes.contains("mor-item-x-minus");
     const delta = classes.contains("mor-item-x-plus") || classes.contains("mor-item-y-plus") ? 1 : -1;
     return runSpecialItemAction(event, async item => {
-      const result = await changeMor(app.actor, item, current ? "current" : "permanent", delta, { render: false });
+      const result = await changeMor(app.actor, item, current ? "current" : "permanent", delta, { render: false }).catch(error => {
+        if (isCurrent() && current && delta > 0 && ["condition-partial-failure", "condition-outcome-unknown", "timeout"].includes(error?.code)) {
+          const strength = getActorAttributeState(app.actor, "strength");
+          if (strength.hasValue) syncAttributeDamageInputs([{ path: strength.valuePath, value: strength.value }]);
+        }
+        throw error;
+      });
       if (result?.changed === false && current && delta < 0) {
         ui.notifications.warn(localize("Notifications.NoCurrentMor", "There are no current Mor points to remove."));
       }
@@ -512,7 +525,7 @@ export async function renderExpandedConditions(app, html) {
     if (control.disabled) return;
     const button = $(control);
     const controls = button.closest(".condition-time-inline").find(timeButtons);
-    const id = button.closest(".condition-row").data("condition-id");
+    const id = control.closest(".condition-row")?.dataset.conditionId;
     controls.prop("disabled", true);
     try {
       const result = await submitStatCommand({ kind: "custom-time", id, delta: button.hasClass("time-plus") ? 1 : -1 });
@@ -561,7 +574,7 @@ export async function renderExpandedConditions(app, html) {
     const button = event.currentTarget;
     if (button.disabled) return;
     const row = $(button).closest(".condition-row");
-    const id = row.data("condition-id");
+    const id = row[0]?.dataset.conditionId;
     const conditionName = row.find(".condition-name").val() || row.find(".condition-name-static").text();
     button.disabled = true;
     try {
@@ -578,8 +591,19 @@ export async function renderExpandedConditions(app, html) {
     if (!requireEditable()) return;
     const control = event.currentTarget;
     const field = Object.keys(fields).find(name => control.classList.contains(name));
-    const id = $(control).closest(".condition-row").data("condition-id");
-    await submitStatCommand({ kind: "custom-edit", id, field: fields[field], value: control.value });
+    const row = control.closest(".condition-row");
+    const id = row?.dataset.conditionId;
+    const value = control.value;
+    const result = await submitStatCommand({ kind: "custom-edit", id, field: fields[field], value });
+    if (result?.changed && field === "condition-time" && isCurrent() && control.isConnected && control.value === value) {
+      const hidden = !parseStatDuration(value);
+      const buttons = $(control).siblings(timeButtons);
+      const focused = document.activeElement;
+      if (hidden && buttons.get().includes(focused)) {
+        row.querySelector(focused.classList.contains("time-plus") ? removeSelector : ".condition-name")?.focus();
+      }
+      buttons.prop("hidden", hidden);
+    }
   });
 
   bindStatDrag(app, html, { editable, isCurrent, persistRowOrder });

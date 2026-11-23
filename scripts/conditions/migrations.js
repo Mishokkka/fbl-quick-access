@@ -61,9 +61,11 @@ async function migrateLegacyFlags(document, readLive, mapping) {
   for (const [oldKey, newKey] of mapping) {
     const value = legacy[oldKey];
     if (value === undefined) continue;
-    const path = flagUpdatePath(newKey);
-    expected[path] = foundry.utils.deepClone(value);
-    if (document.getFlag?.(MODULE_ID, newKey) === undefined) writes[path] = foundry.utils.deepClone(expected[path]);
+    if (document.getFlag?.(MODULE_ID, newKey) === undefined) {
+      const path = flagUpdatePath(newKey);
+      expected[path] = foundry.utils.deepClone(value);
+      writes[path] = foundry.utils.deepClone(expected[path]);
+    }
     removed[`flags.${LEGACY_MODULE_ID}.-=${oldKey}`] = null;
   }
   const removedKeys = Object.keys(removed).length;

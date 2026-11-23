@@ -263,7 +263,7 @@ export async function correctAddictionStateInternal(actor, item, options = {}) {
   if (!item) return { changed: false, skipped: true };
   const previous = getAddictionState(item);
   if (options.severity !== undefined && ![1, 5, 10].includes(options.severity)) throw new TypeError("Invalid Addiction severity");
-  const state = options.severity !== undefined ? normalizeAddictionSeverityChange(previous, options.severity)
+  const state = options.severity !== undefined ? normalizeAddictionSeverityChange({ ...previous }, options.severity)
     : options.delta === 1 || options.delta === -1
     ? shiftAddictionState(previous, options.delta)
     : normalizeManualAddictionState(options.state, previous);

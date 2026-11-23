@@ -1,5 +1,5 @@
 import { CONDITIONS_TAB_ID, FLAGS, MODULE_ID, TEMPLATE_PATHS } from "../constants.js";
-import { escapeHTML, isPermanentTime, localize, normalizeConditionName } from "../utils.js";
+import { escapeHTML, isPermanentTime, localize, normalizeConditionName, parseStatDuration } from "../utils.js";
 import { getWashDisplayName, isWashCondition } from "../features/wash.js";
 import { getConditionKind } from "../condition-kind.js";
 import {
@@ -15,7 +15,6 @@ import {
   parseHeatValue
 } from "../features/special-counters.js";
 import { getAddictionDayKey, getAddictionMorning } from "../services/addiction-service.js";
-import { decrementFirstInteger } from "../../new-day.js";
 
 function toUpperTitle(name) {
   return String(name || "").toUpperCase();
@@ -41,7 +40,7 @@ function buildLethalHtml(item, editable) {
   }
 
   const itemId = escapeHTML(item.id);
-  const adjustable = Boolean(decrementFirstInteger(sys.limit || "0", 0));
+  const adjustable = Boolean(parseStatDuration(sys.limit || "0"));
   return `
     <div class="injury-lethal-wrapper">
       <div class="injury-lethal">${escapeHTML(localize("Injury.Lethal", "LETHAL"))}:</div>
@@ -61,7 +60,7 @@ function buildTimeControlsHtml(item, editable) {
   const permanentClass = permanent ? "is-permanent" : "";
   const value = escapeHTML(timeStr || "0");
 
-  if (permanent || !editable || !decrementFirstInteger(timeStr || "0", 0)) {
+  if (!editable || !parseStatDuration(timeStr || "0")) {
     return `<input type="text" value="${value}" class="healing-time-input ${permanentClass}" readonly>`;
   }
 
@@ -137,7 +136,7 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
     notes: condition.notes || "",
     desc: condition.desc || "",
     permanentClass: isPermanentTime(time) ? "is-permanent" : "",
-    showTimeButtons: Boolean(decrementFirstInteger(time, 0)),
+    showTimeButtons: Boolean(parseStatDuration(time)),
     editable
   });
 }

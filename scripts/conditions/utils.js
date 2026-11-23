@@ -63,6 +63,14 @@ export function isPermanentTime(value) {
   return /permanent|постоян/i.test(String(value ?? ""));
 }
 
+export function parseStatDuration(value) {
+  const text = String(value ?? "");
+  const match = text.match(/^(\s*)(\d+)((?:\s*\p{L}+(?:\(\p{L}+\))?\.?)?\s*)$/u);
+  if (!match || isPermanentTime(text)) return null;
+  const count = Number(match[2]);
+  return Number.isSafeInteger(count) ? { count, prefix: match[1], unit: match[3] } : null;
+}
+
 export function makeCustomCondition(data = {}, fallbackOrder = 0) {
   const parsedOrder = Number(data.order);
   return {

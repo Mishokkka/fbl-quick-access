@@ -4,7 +4,7 @@ import { FLAGS, MODULE_ID, SETTINGS, flagDeletePath, flagUpdatePath } from "../c
 import { conditionKindUpdate, getConditionKind, getWashStage } from "../condition-kind.js";
 import { buildHeatModifierUpdate, isAddictionCondition, isHeatCondition, isMorCondition, parseHeatValue } from "../features/special-counters.js";
 import { isWashCondition, removeOtherWashStates, transitionWashLevelInternal } from "../features/wash.js";
-import { isPermanentTime, makeCustomCondition, normalizeCustomConditionList } from "../utils.js";
+import { isPermanentTime, makeCustomCondition, normalizeCustomConditionList, parseStatDuration } from "../utils.js";
 import { getConditionItem, updateConditionDocument, verifyConditionWrite } from "./condition-writes.js";
 
 const STAT_OPERATION = "conditions.stat";
@@ -29,11 +29,12 @@ function injuries(actor) {
 }
 
 function adjustStatDuration(value, adjust) {
-  const duration = decrementFirstInteger(value, 0);
+  const duration = parseStatDuration(value);
   if (!duration) return null;
-  const next = Math.max(0, adjust(duration.beforeNumber));
-  if (!Number.isSafeInteger(next)) return null;
-  return decrementFirstInteger(duration.beforeText.replace(/\d+/, String(next)), 0);
+  const afterNumber = Math.max(0, adjust(duration.count));
+  if (!Number.isSafeInteger(afterNumber)) return null;
+  const text = `${duration.prefix}${afterNumber}${duration.unit}`;
+  return { afterNumber, afterText: decrementFirstInteger(text, 0)?.afterText ?? text };
 }
 
 async function writeActor(actor, update) {
@@ -157,7 +158,9 @@ async function applyTreatment(actor, item, kind, action) {
     || isHeatCondition(item) || isMorCondition(item) || isAddictionCondition(item)) return { changed: false };
   if (item.getFlag(MODULE_ID, FLAGS.TREATMENT_STATUS)) return { changed: false, reason: "treated" };
   const original = String(data.originalHealingTime ?? item.system.healingTime ?? "0");
-  const duration = adjustStatDuration(original, value => action === "fail" ? value * 2 : action === "prof" ? Math.ceil(value / 2) : value);
+  const duration = decrementFirstInteger(original, 0)
+    ? adjustStatDuration(original, value => action === "fail" ? value * 2 : action === "prof" ? Math.ceil(value / 2) : value)
+    : null;
   if (!duration && /\d/.test(original)) return { changed: false, reason: "unresolved-duration" };
   const adjusted = duration?.afterText ?? original;
   const update = {

@@ -15,6 +15,8 @@ export function bindStatDrag(app, html, { editable, isCurrent, persistRowOrder }
     event.preventDefault();
     event.stopPropagation();
     activeDrag?.finish(false);
+    const focused = document.activeElement;
+    if (focused && list.contains(focused)) focused.blur();
     const next = row.nextSibling;
     const twoColumns = html.find(".conditions-tab").hasClass("fblec-columns-2");
     let pointerDrag = { frame: null, active: false, position: null, target: null, before: null };
