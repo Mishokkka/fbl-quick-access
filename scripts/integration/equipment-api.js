@@ -210,7 +210,7 @@ export async function performEquipmentAction(actor, action, { expectedRevision, 
     }
     if (changed) {
       // Foundry can cancel an update without rejecting its Promise.
-      const updatedActor = await actor.update(update, { render: false, fblqaEquipmentOnly: true });
+      const updatedActor = await actor.update(structuredClone(update), { render: false, fblqaEquipmentOnly: true });
       if (!updatedActor) {
         throw new Error("Equipment update was cancelled. Refresh the snapshot before trying again.");
       }

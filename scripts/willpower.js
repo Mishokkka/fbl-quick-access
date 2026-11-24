@@ -422,8 +422,17 @@ function positionPopover(popover, anchor) {
 function wrapWillpowerAnchor(textNode) {
   const text = String(textNode.textContent ?? "");
   const match = text.match(WILLPOWER_LABEL_PATTERN);
-  const start = match ? match.index : text.search(/\S/);
-  const length = match ? match[0].length : text.trim().length;
+  let start;
+  let length;
+  if (match) {
+    start = match.index;
+    length = match[0].length;
+  } else {
+    const trimmed = text.trim();
+    const labelText = trimmed.replace(/\s*:\s*$/, "") || trimmed;
+    start = labelText ? text.indexOf(labelText) : -1;
+    length = labelText.length;
+  }
   if (start < 0 || length < 1) return null;
 
   const before = text.slice(0, start);
@@ -444,20 +453,51 @@ function wrapWillpowerAnchor(textNode) {
 }
 
 function unwrapElement(element) {
+  const parent = element.parentNode;
   element.replaceWith(document.createTextNode(element.textContent ?? ""));
+  parent?.normalize?.();
 }
 
 function findWillpowerAnchorNode(root) {
   const wpInput = root?.querySelector?.(`input[name="${WP_PATH}"]`);
-  const container = wpInput?.closest?.("tr, .bio-stat, .willpower, .form-group, div");
-  if (container && !container.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
-    const labelEl = container.querySelector?.("label, th, td:first-child, h3, h4, span");
-    if (labelEl) {
-      const textNode = firstSafeTextNode(labelEl);
-      if (textNode) return textNode;
+  if (wpInput && !wpInput.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
+    if (wpInput.id) {
+      const explicitLabel = Array.from(root.querySelectorAll?.("label[for]") ?? [])
+        .find((el) => el.getAttribute?.("for") === wpInput.id);
+      if (explicitLabel && !explicitLabel.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
+        const textNode = firstSafeTextNode(explicitLabel);
+        if (textNode) return textNode;
+      }
+    }
+
+    const cell = wpInput.closest?.("td, th");
+    if (cell) {
+      const ownLabel = findLabelTextInElement(cell);
+      if (ownLabel) return ownLabel;
+
+      const prev = cell.previousElementSibling;
+      if (prev?.matches?.("td, th") && !prev.querySelector?.("input, select, textarea")) {
+        const prevLabel = findLabelTextInElement(prev);
+        if (prevLabel) return prevLabel;
+      }
+    } else {
+      const container = wpInput.closest?.(".bio-stat, .willpower, .form-group");
+      if (container && !container.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) {
+        const controls = container.querySelectorAll?.("input, select, textarea");
+        if (!controls || controls.length <= 1) {
+          const textNode = findLabelTextInElement(container);
+          if (textNode) return textNode;
+        }
+      }
     }
   }
   return findWillpowerTextNode(root);
+}
+
+function findLabelTextInElement(element) {
+  if (!element || element.closest?.(".tab, .sheet-body, .fblqa-panel, .fblqa-wp-popover")) return null;
+  const labelEl = element.querySelector?.("label") ?? element.querySelector?.("h3, h4, span") ?? element;
+  return firstSafeTextNode(labelEl) ?? (labelEl !== element ? firstSafeTextNode(element) : null);
 }
 
 function firstSafeTextNode(container) {

@@ -44,7 +44,7 @@ export async function updateConditionDocument(document, update, options, readLiv
   try {
     const write = Promise.resolve().then(() => {
       if (socket?.connected === false) throw unknown();
-      return document.update(update, options);
+      return document.update(foundry.utils.deepClone(update), options);
     });
     if (disconnected) await Promise.race([write, disconnected]);
     else await write;

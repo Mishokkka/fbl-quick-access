@@ -2,18 +2,20 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger } from "../scripts/new-day.js";
+import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan, decrementFirstInteger, getNewDaySelection, initializeNewDayOperations } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
 import { initializeWalletOperations } from "../scripts/wallet.js";
-import { executeAsActiveGM } from "../scripts/integration/socket-api.js";
+import { executeAsActiveGM, registerIntegrationSocket } from "../scripts/integration/socket-api.js";
 import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scripts/integration/new-day-providers.js";
-import { enqueueCurrencyOperation } from "../scripts/operation-queue.js";
+import { enqueueActorMutation, enqueueCurrencyOperation } from "../scripts/operation-queue.js";
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
+import { getCurrentQuarterInfo } from "../scripts/rest.js";
+import { performEquipmentAction } from "../scripts/integration/equipment-api.js";
 
 const scope = "fbl-quick-access";
 // Several cases deliberately simulate failed writes/notifications. Keep their
@@ -98,24 +100,140 @@ async function expose(path, names) {
   return exposedModules.get(key);
 }
 reset();
-const calendar = await expose("scripts/state-progression.js", ["processActorAutomaticDays", "recordCalendarFailures"]);
+const calendar = await expose("scripts/state-progression.js", [
+  "processActorAutomaticDays", "handleCalendariaApplyRequest", "sendPlayerResult",
+  "handlePlayerResultMessage", "buildPlayerResultContent", "prepareGMSummary", "applyAutomaticDaysFromSummary"
+]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["gmOffers", "processTransferDecision"]);
 const start = { year: 1, month: 1, day: 1 };
 const context = { calendarId: "audit", date: { ...start, day: 3 } };
 
+async function assignForCalendar(actor, date = context.date) {
+  const player = user(`player-${actor.id}`);
+  player.character = actor;
+  game.users.push(player);
+  CALENDARIA.api.getCurrentDateTime = () => date;
+  await actor.setFlag(scope, "stateProgressionCalendaria", { calendarId: context.calendarId, date: start });
+  return player;
+}
+
+test("Rest and manual New Day send player writes to the active GM and share its Actor queue", { timeout: 2_000 }, async () => {
+  reset();
+  const wound = item("wound", { healingTime: "3 days" });
+  const a = actor([wound]);
+  const gm = game.user;
+  const owner = user("owner");
+  game.users.push(owner);
+  game.user = owner;
+  rest.initializeRestOperations();
+  initializeNewDayOperations();
+  let receive;
+  const packets = [];
+  game.socket = { on(_channel, listener) { receive = listener; }, emit(_channel, packet, options) { packets.push({ packet, options }); } };
+  registerIntegrationSocket();
+  const waitFor = async predicate => {
+    for (let attempt = 0; attempt < 100 && !predicate(); attempt += 1) await delay(2);
+    assert.ok(predicate(), "Expected both socket packets");
+  };
+
+  const restResult = rest.applyRest(null, a, { type: "short", useShortRecovery: true, shortAttribute: "strength", shortConsumable: "food" });
+  const plan = buildNewDayPlan(a);
+  const dayResult = applyNewDayPlan(a, plan, ["injury:wound:healing"], { postChat: false });
+  await waitFor(() => packets.length === 2);
+  assert.deepEqual(packets.map(({ packet }) => packet.operation).sort(), ["new-day.apply", "rest.apply"]);
+  assert.ok(packets.every(({ packet, options }) => packet.activeGMId === gm.id && options.recipients[0] === gm.id));
+  assert.deepEqual(owner.flags, {}, "addressed requests do not store payloads on User flags");
+  assert.equal(wound.system.healingTime, "3 days");
+  assert.equal(a.system.attribute.strength.value, 1);
+
+  game.user = gm;
+  let release;
+  const barrier = new Promise(resolve => { release = resolve; });
+  const queued = enqueueActorMutation(a, () => barrier);
+  const requests = packets.splice(0);
+  for (const { packet } of requests) receive(packet, gm.id);
+  await delay(5);
+  assert.deepEqual(packets, [], "a claimed requester must match the server sender");
+  for (const { packet } of requests) receive(packet, owner.id);
+  await delay(5);
+  assert.equal(wound.system.healingTime, "3 days");
+  assert.equal(a.system.attribute.strength.value, 1);
+  release();
+  await queued;
+  await waitFor(() => packets.length === 2);
+  assert.ok(packets.every(({ options }) => options.recipients.length === 1 && options.recipients[0] === owner.id));
+  assert.deepEqual(gm.flags, {}, "addressed responses do not store results on User flags");
+  game.user = owner;
+  for (const { packet } of packets) receive({ ...packet, result: { forged: true } }, owner.id);
+  for (const { packet } of packets) receive(packet, gm.id);
+  assert.equal((await restResult).changed, true);
+  assert.equal((await dayResult).changed, true);
+  assert.equal(a.system.attribute.strength.value, 2);
+  assert.equal(wound.system.healingTime, "2 days");
+});
+
+test("a dropped connection after sending a Rest request reports an unknown outcome immediately", { timeout: 1_000 }, async () => {
+  reset();
+  const a = actor();
+  const owner = user("owner");
+  game.users.push(owner);
+  game.user = owner;
+  const socketListeners = new Map();
+  const sent = [];
+  game.socket = { connected: true, on(event, fn) { socketListeners.set(event, fn); },
+    off(event, fn) { if (socketListeners.get(event) === fn) socketListeners.delete(event); },
+    emit(_channel, packet) { sent.push(packet); } };
+  const warnings = [];
+  ui.notifications.warn = message => warnings.push(message);
+  const restResult = rest.applyRest(null, a, { type: "long" });
+  assert.equal(sent.length, 1);
+  game.socket.connected = false;
+  socketListeners.get("disconnect")();
+  const result = await restResult;
+  assert.equal(result.outcomeUnknown, true);
+  assert.match(warnings[0], /outcome.*unknown.*Check the sheet/);
+  assert.equal(socketListeners.has("disconnect"), false);
+});
+
 test("A01: overlapping calendar requests read the live marker inside the queue", async () => {
   reset(); const a = actor([item("timer", { healingTime: "10 days" })]);
-  await a.setFlag(scope, "stateProgressionCalendaria", { calendarId: "audit", date: start });
-  const results = await Promise.all([calendar.processActorAutomaticDays(a, start, context, 2), calendar.processActorAutomaticDays(a, start, context, 2)]);
+  await assignForCalendar(a);
+  const results = await Promise.all([calendar.processActorAutomaticDays(a.id, context, 2), calendar.processActorAutomaticDays(a.id, context, 2)]);
   assert.equal(a.items[0].system.healingTime, "8 days");
   assert.equal(results.reduce((sum, result) => sum + result.processedDays, 0), 2);
 });
-test("A01: a later overlapping target processes only remaining dates", async () => {
+test("A01: a superseded calendar target stops before processing", async () => {
   reset(); const a = actor([item("timer", { healingTime: "10 days" })]);
-  await a.setFlag(scope, "stateProgressionCalendaria", { calendarId: "audit", date: start });
-  await Promise.all([calendar.processActorAutomaticDays(a, start, context, 2), calendar.processActorAutomaticDays(a, start, { ...context, date: { ...start, day: 4 } }, 3)]);
+  const target = { ...context, date: { ...start, day: 4 } };
+  await assignForCalendar(a, target.date);
+  await assert.rejects(calendar.processActorAutomaticDays(a.id, context, 2), { code: "stale-calendar-day" });
+  assert.equal(a.items[0].system.healingTime, "10 days");
+  await calendar.processActorAutomaticDays(a.id, target, 3);
   assert.equal(a.items[0].system.healingTime, "7 days");
+});
+
+test("Calendaria sends results only to assigned players and verifies the server sender", async () => {
+  reset();
+  const a = actor();
+  const player = await assignForCalendar(a);
+  const gm = game.user;
+  const sent = [];
+  game.socket.emit = (_channel, message, options) => sent.push({ message, options });
+  const result = { days: [{ date: context.date, result: { entries: [{ itemName: "Private injury" }] } }] };
+  await calendar.sendPlayerResult(user("other"), a, context, result);
+  assert.equal(sent.length, 0);
+  await calendar.sendPlayerResult(player, a, context, result);
+  assert.deepEqual(sent.map(({ options }) => options.recipients), [[player.id]]);
+  assert.deepEqual(gm.flags, {});
+  const notices = [];
+  ui.notifications.info = message => notices.push(message);
+  game.user = player;
+  await calendar.handlePlayerResultMessage(sent[0].message, player.id);
+  assert.deepEqual(notices, []);
+  await calendar.handlePlayerResultMessage(sent[0].message, gm.id);
+  await calendar.handlePlayerResultMessage(sent[0].message, gm.id);
+  assert.equal(notices.length, 1);
 });
 for (const [initial, replacement, expectedLength] of [["2 days", "10 days", 1], ["1 day", "20 days", 1]]) {
   test(`A02: stale ${initial} preview neither overwrites nor deletes a changed injury`, async () => {
@@ -131,6 +249,19 @@ test("A02: stale custom timer preview preserves a newer timer", async () => {
   const result = await applyNewDayPlan(a, plan, plan.actions.map(action => action.id), { postChat: false });
   assert.equal(a.getFlag(scope, "conditions.list")[0].time, "9 days"); assert.equal(result.failed.length, 1);
 });
+
+test("New Day detects a changed stored injury timer even when its prepared data is stale", async () => {
+  reset();
+  const wound = item("source", { healingTime: "2 days" });
+  wound._source = { system: { healingTime: "2 days" } };
+  const a = actor([wound]);
+  const plan = buildNewDayPlan(a);
+  wound._source.system.healingTime = "10 days";
+  const result = await applyNewDayPlan(a, plan, ["injury:source:healing"], { postChat: false });
+  assert.equal(result.failed[0].code, "stale-plan");
+  assert.equal(wound._source.system.healingTime, "10 days");
+  assert.deepEqual(wound.updates, []);
+});
 test("A03: reset then recover records the newly consumed quarter", async () => {
   reset(); const a = actor();
   await rest.applyRest(null, a, { type: "short", resetShortQuarter: true, useShortRecovery: true, shortAttribute: "strength", shortConsumable: "food" }, { allowResetShortQuarter: true });
@@ -142,6 +273,95 @@ test("A05: failed chat is a notification error after a successful rest", async (
   reset(); const a = actor(); ChatMessage.create = async () => { throw new Error("offline chat"); };
   const result = await rest.applyRest(null, a, { type: "long" });
   assert.notEqual(result.failed, true); assert.equal(result.notificationError, "offline chat"); assert.equal(a.system.attribute.strength.value, 2);
+});
+
+test("parallel Short Rests can recover only once in a single quarter", async () => {
+  reset();
+  const a = actor();
+  const options = { type: "short", useShortRecovery: true, shortConsumable: "food" };
+  const results = await Promise.all(["strength", "agility"].map(shortAttribute => rest.applyRest(null, a, { ...options, shortAttribute })));
+  assert.equal(results.filter(result => result.changed).length, 1);
+  assert.equal(results.filter(result => result.errors.length).length, 1);
+  assert.equal(a.updates.length, 1);
+});
+
+test("Short Rest honors a saved Calendaria quarter key from before calendar IDs were included", async () => {
+  reset();
+  const a = actor();
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "calendaria:1:1:3:q0" });
+  const result = await rest.applyRest(null, a, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
+  assert.equal(result.errors.length, 1);
+  assert.deepEqual(a.updates, []);
+});
+
+test("Short Rest stops on an active Calendaria error without falling back to world time", async () => {
+  reset();
+  const a = actor();
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "calendaria:audit:1:1:3:q0" });
+  CALENDARIA.api.getActiveCalendar = () => { throw new Error("calendar broken"); };
+  const result = await rest.applyRest(null, a, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
+  assert.equal(result.failed, true);
+  assert.equal(result.changed, false);
+  assert.match(result.error, /Calendaria could not determine the current quarter day/i);
+  assert.deepEqual(a.updates, []);
+
+  delete globalThis.CALENDARIA;
+  game.modules.set("calendaria", { active: false });
+  assert.equal(getCurrentQuarterInfo().source, "foundry");
+});
+
+test("Long Rest reads active effects, ignores disabled ones and removes active conditions in one batch", async () => {
+  reset();
+  const a = actor();
+  a.system.condition = { sleepy: { value: false }, cold: { value: false }, thirsty: { value: false } };
+  a.effects = [
+    { id: "sleepy", statuses: ["sleepy"] }, { id: "cold", statuses: ["cold"] },
+    { id: "inactive", statuses: ["thirsty"], disabled: true }
+  ];
+  const deletions = [];
+  a.deleteEmbeddedDocuments = async (type, ids) => {
+    deletions.push([type, ids]);
+    a.effects = a.effects.filter(effect => !ids.includes(effect.id));
+  };
+  const result = await rest.applyRest(null, a, { type: "long", hasHeatSource: true });
+  assert.deepEqual(result.recovered, ["agility", "empathy"]);
+  assert.deepEqual(deletions, [["ActiveEffect", ["sleepy", "cold"]]]);
+  assert.deepEqual(a.effects.map(effect => effect.id), ["inactive"]);
+});
+
+for (const timeout of [false, true]) test(`Long Rest reports ${timeout ? "an unknown outcome" : "a partial application"} when effect removal fails`, async () => {
+  reset();
+  const a = actor();
+  a.effects = [{ id: "sleepy", statuses: ["sleepy"] }];
+  const messages = [];
+  const notices = [];
+  ChatMessage.create = async message => messages.push(message);
+  ui.notifications.warn = ui.notifications.error = message => notices.push(message);
+  a.deleteEmbeddedDocuments = async () => {
+    if (timeout) throw Object.assign(new Error("Timed out"), { code: "ETIMEDOUT" });
+    return [];
+  };
+  const result = await rest.applyRest(null, a, { type: "long" });
+  assert.equal(result.failed, true);
+  assert.equal(result.partiallyApplied, true);
+  assert.equal(result.outcomeUnknown, timeout);
+  assert.equal(a.effects.length, 1);
+  assert.equal(a.system.attribute.strength.value, 2);
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /Audit.*ActiveEffect removal/);
+  assert.match(notices[0], timeout ? /outcome .* unknown/ : /partially applied/);
+});
+
+test("Long Rest skips ActiveEffect deletion when its Actor update was vetoed", async () => {
+  reset();
+  const a = actor();
+  a.effects = [{ id: "sleepy", statuses: ["sleepy"] }];
+  a.update = async () => {};
+  a.deleteEmbeddedDocuments = async () => assert.fail("An unverified Actor update must stop Rest");
+  const result = await rest.applyRest(null, a, { type: "long" });
+  assert.equal(result.failed, true);
+  assert.equal(result.partiallyApplied, false);
+  assert.equal(a.effects.length, 1);
 });
 test("BIO close flush saves captured patches without waiting for debounce", async () => {
   reset(); const a = actor(); const state = getBiographyProfile(a); state.physical.appearance = "New appearance";
@@ -201,11 +421,16 @@ test("A06: retrying Wash cleanup reuses the created target", async () => {
   a.deleteEmbeddedDocuments = remove; assert.equal((await transitionWashLevel(a, "Помытый")).changed, true);
   assert.equal(a.items.length, 1); assert.equal(getWashStage(a.items[0]), "Немытый");
 });
-test("A07: failed provider build does not consume the calendar day and persists failure metadata", async () => {
-  reset(); initializeNewDayProviderBridge(); const a = actor(); await a.setFlag(scope, "stateProgressionCalendaria", { calendarId: "audit", date: start });
+test("A07: failed provider build leaves the date pending and whispers to the GM", async () => {
+  reset(); initializeNewDayProviderBridge(); const a = actor(); await assignForCalendar(a);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
   const unregister = registerNewDayProvider({ id: "audit.fail", category: "audit", buildActions: async () => { throw new Error("offline provider"); }, applyAction: async () => ({}), describeAction: () => "", icon: () => "fa-check" });
-  try { const result = await calendar.processActorAutomaticDays(a, start, context, 2); assert.equal(result.processedDays, 0); assert.equal(result.failedActions, 1);
-    assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1); assert.equal(a.getFlag(scope, "stateProgressionFailures")[0].failures[0].kind, "provider-build"); }
+  try { const result = await calendar.processActorAutomaticDays(a.id, context, 2); assert.equal(result.processedDays, 0); assert.equal(result.failedActions, 1);
+    assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1);
+    assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+    assert.match(messages[0].content, /audit.fail/);
+    assert.equal(a.getFlag(scope, "stateProgressionFailures"), undefined); }
   finally { unregister(); }
 });
 test("A12: duration parser refuses formulas and non-day/free-text inputs", () => {
@@ -396,10 +621,231 @@ test("provider action revalidation preserves the existing index fallback", async
     { requestUser: game.user, activeGM: game.user, isRemote: false }); assert.deepEqual(applied, actions[1]); }
   finally { unregister(); }
 });
-test("calendar failure records retain IDs without action payloads or private errors", async () => {
-  reset(); const a = actor(); await calendar.recordCalendarFailures(a, context, context.date, [{ action: { id: "public-id", secret: "Hidden diagnosis" }, error: "Private failure" }]);
-  const records = a.getFlag(scope, "stateProgressionFailures"); assert.equal(records[0].failures[0].id, "public-id");
-  assert.doesNotMatch(JSON.stringify(records), /Hidden diagnosis|Private failure/);
+test("Calendaria stops on an invalid addDays endpoint without clearing the Short Rest marker", async () => {
+  reset(); const a = actor(); await assignForCalendar(a);
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0" });
+  const addDays = CALENDARIA.api.addDays;
+  CALENDARIA.api.addDays = (date, count) => count === 2 ? { ...date, day: NaN } : addDays(date, count);
+  await assert.rejects(calendar.processActorAutomaticDays(a.id, context, 2), { code: "invalid-calendar-date" });
+  assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1);
+  assert.ok(a.getFlag(scope, "shortRestRecovery"));
+  assert.deepEqual(a.updates, []);
+});
+
+test("Calendaria advances the Short Rest-only shortcut by its default and approved limits", async () => {
+  reset();
+  const a = actor();
+  const target = { ...context, date: { ...start, day: 500 } };
+  await assignForCalendar(a, target.date);
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0" });
+  const first = await calendar.processActorAutomaticDays(a.id, target, 499);
+  assert.equal(first.processedDays, 90);
+  assert.equal(first.limitedDays, 409);
+  assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 91);
+  assert.equal(a.getFlag(scope, "shortRestRecovery"), null);
+  const next = await calendar.processActorAutomaticDays(a.id, target, 499, { maxDays: 499 });
+  assert.equal(next.processedDays, 365);
+  assert.equal(next.limitedDays, 44);
+  assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 456);
+});
+
+for (const field of ["date", "calendarId"]) test(`Calendaria stops when the marker's ${field} fails verification`, async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" }, "Broken arm");
+  const a = actor([wound]);
+  await assignForCalendar(a);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const update = a.update;
+  const markPath = `flags.${scope}.stateProgressionCalendaria`;
+  a.update = async (data, options) => {
+    if (data[markPath]) data[markPath][field] = field === "date" ? start : "other-calendar";
+    await update(data, options);
+  };
+  const result = await calendar.processActorAutomaticDays(a.id, context, 2);
+  assert.equal(result.processedDays, 0);
+  assert.equal(result.failedDays, 1);
+  assert.equal(result.limitedDays, 2);
+  assert.equal(wound.system.healingTime, "3 days");
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /2\.1\.1 \(audit\).*Actual marker.*Broken arm/);
+  assert.equal(a.getFlag(scope, "stateProgressionFailures"), undefined);
+  await assert.rejects(calendar.processActorAutomaticDays(a.id, context, 2), { code: "calendar-needs-review" });
+  assert.equal(wound.system.healingTime, "3 days");
+});
+
+for (const deleting of [false, true]) test(`New Day verifies the ${deleting ? "delete" : "update"} batch and halts on the omitted actions`, async () => {
+  reset();
+  const wounds = [item("first", { healingTime: deleting ? "1 day" : "3 days" }, "First wound"),
+    item("omitted", { healingTime: deleting ? "1 day" : "4 days" }, "Omitted wound")];
+  const a = actor([...wounds]);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0" });
+  const update = a.updateEmbeddedDocuments;
+  const remove = a.deleteEmbeddedDocuments;
+  a.updateEmbeddedDocuments = async (type, batch) => update(type, batch.filter(document => document._id === "first"));
+  a.deleteEmbeddedDocuments = async (type, batch) => remove(type, batch.filter(id => id === "first"));
+  const plan = buildNewDayPlan(a);
+  const result = await applyNewDayPlan(a, plan, plan.actions.map(action => action.id), { postChat: false });
+  assert.equal(result.partiallyApplied, true);
+  assert.deepEqual(result.succeeded.map(entry => entry.action.itemId), ["first"]);
+  assert.deepEqual(result.failed.map(entry => entry.action.itemId), ["omitted"]);
+  assert.equal(wounds[1].system.healingTime, deleting ? "1 day" : "4 days");
+  assert.ok(a.getFlag(scope, "shortRestRecovery"), "the next stage must not write");
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /First wound.*Omitted wound/);
+});
+
+test("New Day reports a batch-level failure without duplicating already confirmed items", async () => {
+  reset();
+  const wounds = [item("first", { healingTime: "3 days" }, "First wound"), item("second", { healingTime: "4 days" }, "Second wound")];
+  const a = actor([...wounds]);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const update = a.updateEmbeddedDocuments;
+  a.updateEmbeddedDocuments = async (type, batch) => {
+    await update(type, batch);
+    throw new Error("hook failed");
+  };
+  const plan = buildNewDayPlan(a);
+  const result = await applyNewDayPlan(a, plan, plan.actions.map(action => action.id), { postChat: false });
+  assert.equal(result.partiallyApplied, true);
+  assert.deepEqual(result.succeeded.map(entry => entry.action.itemId), ["first", "second"]);
+  assert.deepEqual(result.failed.map(entry => entry.action.id), ["item-update-batch"]);
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /Confirmed actions: First wound, Second wound.*Failed: Item update batch \(item-update-batch\): hook failed/);
+});
+
+test("player progression dialog distinguishes an unknown write outcome from a confirmed partial failure", () => {
+  reset();
+  const unknownHtml = calendar.buildPlayerResultContent({
+    detail: "Some detail",
+    days: [{ date: context.date, result: { outcomeUnknown: true, entries: [] } }]
+  });
+  const confirmedHtml = calendar.buildPlayerResultContent({
+    detail: "Some detail",
+    days: [{ date: context.date, result: { outcomeUnknown: false, partiallyApplied: true, entries: [] } }]
+  });
+  assert.match(unknownHtml, /outcome is unknown\. Check the sheet before trying again\./i);
+  assert.doesNotMatch(confirmedHtml, /outcome is unknown/i);
+});
+
+test("an interactive Calendaria request must include fresh preview data for each selected action", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const date = { ...start, day: 2 };
+  const player = await assignForCalendar(a, date);
+  const plan = buildNewDayPlan(a, { dayKey: "calendar:audit:1:1:2" });
+  const selection = getNewDaySelection(plan, ["injury:w:healing"]);
+  const request = { ...selection, actorId: a.id, calendarId: "audit", targetDate: date };
+  await assert.rejects(calendar.handleCalendariaApplyRequest({ ...request, selectedPreconditions: null }, { requestUser: player }), { code: "stale-plan" });
+  wound.system.healingTime = "6 days";
+  await assert.rejects(calendar.handleCalendariaApplyRequest(request, { requestUser: player }), { code: "stale-plan" });
+  assert.equal(wound.system.healingTime, "6 days");
+  assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1);
+});
+
+test("interactive Calendaria apply preserves the player request context for providers and GM private summaries", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const date = { ...start, day: 2 };
+  const player = await assignForCalendar(a, date);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const applyContexts = [];
+  const unregister = registerNewDayProvider({
+    id: "audit.requester-context",
+    category: "audit",
+    buildActions: async (_actor, providerContext) => [{
+      id: "ctx-action",
+      label: `Action for ${providerContext.requestUser?.id}:${providerContext.isRemote}`
+    }],
+    applyAction: async (_actor, _action, providerContext) => {
+      applyContexts.push({ userId: providerContext.requestUser?.id, isRemote: providerContext.isRemote, suppressChat: providerContext.suppressChat });
+      return { changed: true, summary: "Public done", privateSummary: "Secret GM note" };
+    },
+    describeAction: action => action.label,
+    icon: () => "fa-check"
+  });
+  try {
+    const playerContext = { requestUser: player, requesterId: player.id, activeGM: game.user, isRemote: true };
+    const plan = await buildNewDayPlanWithProviders(a, { dayKey: "calendar:audit:1:1:2", authority: playerContext });
+    const selection = getNewDaySelection(plan, ["provider:audit.requester-context:ctx-action"]);
+    const result = await calendar.handleCalendariaApplyRequest(
+      { ...selection, actorId: a.id, calendarId: "audit", targetDate: date },
+      playerContext
+    );
+    await delay(0);
+
+    assert.equal(result.status, "processed");
+    assert.deepEqual(applyContexts, [{ userId: player.id, isRemote: true, suppressChat: false }]);
+    const entry = result.calendarResult.days[0].result.entries[0];
+    assert.equal(entry.detail, "Public done");
+    assert.equal(entry.privateSummary, undefined);
+    assert.equal(messages.some(message => /Secret GM note/.test(message.content) && message.whisper.includes(game.user.id)), true);
+  } finally {
+    unregister();
+  }
+});
+
+test("Calendaria finishes Wash, STAT timers, multiple Addictions and providers before pausing a later day", { timeout: 1_000 }, async () => {
+  reset();
+  const wash = item("wash", { healingTime: "1 day" }, "Помытый");
+  const addictions = [item("a", {}, "Addiction A"), item("b", {}, "Addiction B")];
+  const a = actor([wash, ...addictions]);
+  await assignForCalendar(a);
+  await a.setFlag(scope, "conditions.list", [{ id: "fever", name: "Fever", time: "3 days" }]);
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0" });
+  game.items.push(item("wash-source", { healingTime: "3 days" }, "Немытый"));
+  const totals = [2, 4];
+  globalThis.Roll = class { async evaluate() { this.total = totals.shift(); return this; } };
+  const providerCalls = [];
+  const unregister = registerNewDayProvider({
+    id: "audit.queued", category: "audit", buildActions: async () => [{ id: "today", label: "Provider action" }],
+    applyAction: async (actor, action, providerContext) => {
+      providerCalls.push([actor.id, action.id, providerContext.suppressChat]);
+      return { changed: true, summary: "Provider applied" };
+    }, describeAction: () => "", icon: () => "fa-check"
+  });
+  try {
+    const result = await calendar.processActorAutomaticDays(a.id, context, 2);
+    assert.equal(result.processedDays, 1);
+    assert.equal(result.pendingManual, 1);
+    assert.equal(result.limitedDays, 1);
+    assert.equal(result.failedActions, 0);
+    assert.equal(a.items.some(entry => entry.id === wash.id), false);
+    assert.ok(a.items.some(entry => getWashStage(entry) === "Немытый"));
+    assert.equal(a.getFlag(scope, "conditions.list")[0].time, "2 days");
+    assert.equal(a.getFlag(scope, "shortRestRecovery"), null);
+    assert.deepEqual(addictions.map(entry => entry.getFlag(scope, "conditions.addictionMorning").dayKey),
+      ["calendar:audit:1:1:2", "calendar:audit:1:1:2"]);
+    assert.deepEqual(providerCalls, [[a.id, "today", true]]);
+  } finally {
+    unregister();
+  }
+});
+
+test("an unknown Wash creation outcome halts New Day before the Short Rest reset", async () => {
+  reset();
+  const wash = item("wash", { healingTime: "1 day" }, "Помытый");
+  const a = actor([wash]);
+  game.items.push(item("source", { healingTime: "3 days" }, "Немытый"));
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "world:0" });
+  a.createEmbeddedDocuments = async () => { throw Object.assign(new Error("Timed out"), { code: "ETIMEDOUT" }); };
+  a.deleteEmbeddedDocuments = async () => assert.fail("Unknown creation must not delete the old stage");
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const plan = buildNewDayPlan(a);
+  const result = await applyNewDayPlan(a, plan, plan.actions.map(action => action.id), { postChat: false });
+  assert.equal(result.outcomeUnknown, true);
+  assert.equal(result.partiallyApplied, false);
+  assert.equal(result.failed[0].code, "condition-outcome-unknown");
+  assert.ok(a.getFlag(scope, "shortRestRecovery"));
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /outcome.*unknown.*Check the sheet/);
 });
 test("reputation caps direct selected rolls before allocating dice", async () => {
   reset(); const a = actor(); const rep = await expose("scripts/reputation.js", ["rollReputation"]); let rolls = 0;
@@ -505,4 +951,177 @@ test("CodeRabbit: reputation dialog warns and disables rolls until the displayed
     : controls[selector.match(/data-action='([^']+)'/)?.[1]] ?? null };
   rep.refreshDialogSummary(root); assert.equal(warning.hidden, false); assert.ok(Object.values(controls).every(control => control.disabled));
   amount = "900"; rep.refreshDialogSummary(root); assert.equal(warning.hidden, true); assert.ok(Object.values(controls).every(control => !control.disabled));
+});
+
+test("handleApplyProviderAction allows GM and OWNER players on NPC actors and rejects non-owners", async () => {
+  reset();
+  const npc = actor();
+  npc.type = "npc";
+  const owner = user("npc-owner");
+  const outsider = user("npc-outsider");
+  npc.testUserPermission = (candidate, perm) => perm === "OWNER" && candidate.id === owner.id;
+  const providerModule = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]);
+  const action = { id: "npc-step", label: "NPC tick" };
+  let calls = 0;
+  const unregister = providerModule.registerNewDayProvider({
+    id: "audit.npc",
+    category: "audit",
+    buildActions: async () => [{ ...action }],
+    applyAction: async () => { calls += 1; return { changed: true, summary: "Ticked" }; },
+    describeAction: () => "",
+    icon: () => "fa-check"
+  });
+  try {
+    const gmResult = await providerModule.handleApplyProviderAction(
+      { actorUuid: npc.uuid, providerId: "audit.npc", action },
+      { requestUser: game.user, requesterId: game.user.id, activeGM: game.user, isRemote: false }
+    );
+    assert.equal(gmResult.changed, true);
+    const ownerResult = await providerModule.handleApplyProviderAction(
+      { actorUuid: npc.uuid, providerId: "audit.npc", action },
+      { requestUser: owner, requesterId: owner.id, activeGM: game.user, isRemote: true }
+    );
+    assert.equal(ownerResult.changed, true);
+    await assert.rejects(
+      providerModule.handleApplyProviderAction(
+        { actorUuid: npc.uuid, providerId: "audit.npc", action },
+        { requestUser: outsider, requesterId: outsider.id, activeGM: game.user, isRemote: true }
+      ),
+      { code: "no-actor-permission" }
+    );
+    assert.equal(calls, 2);
+  } finally {
+    unregister();
+  }
+});
+
+test("handleCalendariaApplyRequest rejects assigned players who lost OWNER permission before writing", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const date = { ...start, day: 2 };
+  const player = await assignForCalendar(a, date);
+  a.testUserPermission = () => false;
+  const plan = buildNewDayPlan(a, { dayKey: "calendar:audit:1:1:2" });
+  const selection = getNewDaySelection(plan, ["injury:w:healing"]);
+  await assert.rejects(
+    calendar.handleCalendariaApplyRequest({ ...selection, actorId: a.id, calendarId: "audit", targetDate: date }, { requestUser: player }),
+    { code: "no-actor-permission" }
+  );
+  assert.equal(wound.system.healingTime, "4 days");
+  assert.equal(a.updates.length, 0);
+});
+
+test("New Day rejects as stale-plan if the calendar returns to request.dayKey after building an earlier day plan", async () => {
+  reset();
+  const addiction = item("addiction-item", {}, "Addiction");
+  set(addiction.flags, `${scope}.conditions.kind`, "addiction");
+  set(addiction.flags, `${scope}.conditions.addictionState`, { phase: "down", die: 12, daysLeft: 0, severity: 5 });
+  const a = actor([addiction]);
+  let rolls = 0;
+  globalThis.Roll = class { constructor() { rolls += 1; } async evaluate() { this.total = 4; return this; } };
+  const requestedDate = { year: 1, month: 1, day: 5 };
+  const earlierDate = { year: 1, month: 1, day: 4 };
+  let flipDuringBuild = false;
+  const unregister = registerNewDayProvider({
+    id: "audit.date-flip",
+    category: "audit",
+    buildActions: async () => {
+      if (flipDuringBuild) CALENDARIA.api.getCurrentDateTime = () => requestedDate;
+      return [{ id: "noop", label: "Provider" }];
+    },
+    applyAction: async () => ({ changed: true }),
+    describeAction: () => "",
+    icon: () => "fa-check"
+  });
+  try {
+    CALENDARIA.api.getCurrentDateTime = () => requestedDate;
+    const plan = await buildNewDayPlanWithProviders(a);
+    flipDuringBuild = true;
+    CALENDARIA.api.getCurrentDateTime = () => earlierDate;
+    const result = await applyNewDayPlan(a, plan, [`addiction:${addiction.id}:day`, "provider:audit.date-flip:noop"], { postChat: false });
+    assert.equal(rolls, 0);
+    assert.equal(result.failed.length, 2);
+    assert.ok(result.failed.every(entry => entry.code === "stale-plan"));
+    assert.equal(addiction.updates.length, 0);
+  } finally {
+    unregister();
+  }
+});
+
+test("prepareGMSummary stops writing subsequent baselines after one actor baseline write fails", async () => {
+  reset();
+  const first = actor();
+  const second = actor();
+  const third = actor();
+  first.name = "Alpha";
+  second.name = "Beta";
+  third.name = "Gamma";
+  for (const candidate of [first, second, third]) {
+    const owner = user(`player-${candidate.id}`);
+    owner.character = candidate;
+    game.users.push(owner);
+  }
+  second.setFlag = async () => { throw new Error("baseline rejected"); };
+  let thirdWrites = 0;
+  const origThirdSetFlag = third.setFlag;
+  third.setFlag = async (...args) => { thirdWrites += 1; return origThirdSetFlag(...args); };
+
+  const summary = await calendar.prepareGMSummary(context, { reason: "day-change" });
+  assert.ok(first.getFlag(scope, "stateProgressionCalendaria"));
+  assert.equal(summary.statuses.get(second.id)?.state, "error");
+  assert.equal(third.getFlag(scope, "stateProgressionCalendaria"), undefined);
+  assert.equal(thirdWrites, 0);
+});
+
+test("applyAutomaticDaysFromSummary preserves error state and stops the batch when unassignment races a day failure", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const player = await assignForCalendar(a);
+  const origSetFlag = a.setFlag;
+  a.setFlag = async (module, key, value) => {
+    if (key === "stateProgressionCalendaria") {
+      player.character = null;
+      throw new Error("marker write failed");
+    }
+    return origSetFlag(module, key, value);
+  };
+  const entry = { actor: a, users: [player], primaryUser: player };
+  const state = { key: "audit:1.1.3", context, entries: new Map([[a.id, entry]]), statuses: new Map(), root: null, dialog: null };
+  const marker = a.getFlag(scope, "stateProgressionCalendaria");
+
+  const proceed = await calendar.applyAutomaticDaysFromSummary(state, entry, context, 1, { marker });
+  assert.equal(proceed, false);
+  assert.equal(state.statuses.get(a.id)?.state, "error");
+});
+
+test("equipment updates still verify changes when Foundry expands dotted paths in place", async () => {
+  reset();
+  const { CONFIG } = globalThis;
+  globalThis.CONFIG = { fbl: {} };
+  try {
+    const sword = item("sword", { weight: "normal" }, "Sword");
+    sword.type = "weapon";
+    const a = actor([sword]);
+    await a.setFlag(scope, "slots", ["sword"]);
+    const origUpdate = a.update;
+    a.update = async data => {
+      await origUpdate({ [`flags.${scope}.equipmentHands`]: { left: null, right: null } });
+      for (const key of Object.keys(data)) {
+        if (!key.includes(".")) continue;
+        const value = data[key];
+        delete data[key];
+        set(data, key, value);
+      }
+      return a;
+    };
+    await assert.rejects(
+      performEquipmentAction(a, { type: "hold", hand: "left", itemId: "sword" }),
+      /changed during the update/
+    );
+  } finally {
+    if (CONFIG === undefined) delete globalThis.CONFIG;
+    else globalThis.CONFIG = CONFIG;
+  }
 });

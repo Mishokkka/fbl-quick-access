@@ -214,15 +214,17 @@ async function renderInjury(item, editable, orderOverride = null) {
     const state = getAddictionState(item);
     const morning = getAddictionMorning(item);
     const pending = morning?.status === "pending";
-    const processed = morning?.dayKey === getAddictionDayKey(item.parent);
+    const dayKey = getAddictionDayKey(item.parent, { allowMissingCalendar: true });
+    const processed = Boolean(dayKey) && morning?.dayKey === dayKey;
     return renderTemplate(TEMPLATE_PATHS.addiction, {
       ...common,
       pending,
       modifierText: getAddictionModifierText(item),
-      morningDisabled: pending || processed,
+      morningDisabled: pending || processed || !dayKey,
       morningText: pending ? localize("Addiction.Pending", "Awaiting manual Endurance")
         : processed ? localize(`Addiction.Outcome.${morning.outcome}`, "Morning resolved")
-          : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
+          : !dayKey ? localize("Addiction.CalendarUnavailable", "Calendar date is unavailable. Restore calendar access to start the morning.")
+            : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
       rollText: morning?.total != null ? localize("Addiction.LastCraving", "Craving: {total}", { total: morning.total }) : "",
       statusText: getAddictionStatusText(state),
       statusTitle: getAddictionStatusTitle(state),

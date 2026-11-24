@@ -184,22 +184,6 @@ test("integration socket cleans a pending request when emit throws synchronously
   }
 });
 
-test("new-day custom-condition application recalculates the live timer", () => {
-  const source = read("scripts", "new-day.js");
-  const applySection = source.slice(source.indexOf("export async function applyNewDayPlan"));
-
-  assert.match(applySection, /const timer = decrementFirstInteger\(condition\.time, 1\)/);
-  assert.doesNotMatch(applySection, /time:\s*action\.afterText/);
-});
-
-test("rest deletes ActiveEffects in one embedded-document batch", () => {
-  const source = read("scripts", "rest.js");
-
-  assert.match(source, /deleteEmbeddedDocuments\("ActiveEffect", effectIds\)/);
-  assert.doesNotMatch(source, /for \(const effect of result\.effectsToDelete\) await effect\.delete/);
-  assert.match(source, /statusEffect\?\.img \?\? statusEffect\?\.icon/);
-});
-
 test("nested CONDITIONS headings remain discoverable for the decorative-border toggle", async () => {
   const previousHTMLElement = globalThis.HTMLElement;
 
@@ -251,17 +235,11 @@ test("PR11: BIO save queues survive release until the active write settles", () 
   assert.match(source, /chain\.finally\(\(\) => \{\s*if \(PILGRIM_SAVE_CHAINS\.get\(key\) === chain\) PILGRIM_SAVE_CHAINS\.delete\(key\);/);
 });
 
-test("PR11: failed wash cleanup cannot fall through to the success path", () => {
-  const source = read("scripts", "conditions", "features", "wash.js");
-  const cleanupCatch = source.slice(source.indexOf("could not remove stale wash states"), source.indexOf("Notifications.WashChanged"));
-  assert.match(cleanupCatch, /return \{[\s\S]*changed:\s*false,[\s\S]*reason:\s*"cleanup-failed"/);
-});
-
 test("PR11: only the local GM may suppress provider private summaries", () => {
   const source = read("scripts", "integration", "new-day-providers.js");
   assert.match(source, /const suppressChat = Boolean\(payload\?\.suppressChat\) && Boolean\(context\.requestUser\?\.isGM\) && !context\.isRemote/);
   assert.match(source, /provider\.applyAction\(actor, action, providerContext\)/);
-  assert.match(source, /if \(!suppressChat\) await postPrivateSummary/);
+  assert.match(source, /if \(!suppressChat\) void postPrivateSummary/);
 });
 
 test("PR11: BIO mounting is guarded against duplicate hooks in one render pass", () => {

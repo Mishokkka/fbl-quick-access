@@ -158,7 +158,11 @@ test("STAT and New Day share one controlled morning even when world time does no
 
 for (const total of [1, 2]) test(`craving ${total} remains pending after retries and across a later day`, async () => {
   const rolls = setup([total]); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
+  let day = 2;
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
+  globalThis.CALENDARIA = { api: { getCurrentDateTime: () => ({ year: 1, month: 1, day }), getActiveCalendar: () => ({ id: "test" }) } };
   const first = await processAddictionNewDay(owner, dependency, { ...quiet, dayKey: "calendar:test:1:1:2" });
+  day = 3;
   const again = await processAddictionNewDay(owner, dependency, { ...quiet, dayKey: "calendar:test:1:1:3" });
   assert.equal(first.pending, true); assert.equal(first.advanced, false);
   assert.equal(again.reused, true); assert.equal(again.dayKey, first.dayKey);
@@ -176,12 +180,54 @@ test("simultaneous morning requests roll once and retain the pending result", as
 test("a committed New Day survives failure of the Actor's day counter", async () => {
   const rolls = setup([4]); const dependency = item("Зависимость", decline()); const owner = actor(dependency);
   owner.update = async () => { throw new Error("Actor unavailable"); };
-  await assert.rejects(processAddictionNewDay(owner, dependency, quiet), /Actor unavailable/);
+  await assert.rejects(processAddictionNewDay(owner, dependency, quiet), {
+    code: "condition-partial-failure", message: /morning was saved on the Item.*Actor day 1 is unconfirmed/
+  });
   assert.equal(getAddictionState(dependency).die, 10);
   assert.equal(getAddictionDayKey(owner), "manual:1");
   assert.equal((await performAddictionMorning(owner, dependency, quiet)).reused, true);
   assert.equal(buildNewDayPlan(owner).actions.find(entry => entry.kind === "addiction-day").dayKey, "manual:2");
   assert.equal(rolls.length, 1);
+});
+
+for (const cured of [false, true]) test(`New Day stops if the Actor's day fails after Addiction ${cured ? "cure" : "update"}`, async t => {
+  const rolls = setup([4]);
+  t.mock.method(console, "error", () => {});
+  const first = item("Addiction A", { ...decline(), phase: cured ? "up" : "down" });
+  const second = item("Addiction B", decline());
+  const owner = actor(first, second);
+  await owner.setFlag(scope, "shortRestRecovery", { quarterKey: "manual" });
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  owner.update = async data => {
+    assert.deepEqual(Object.keys(data), [`flags.${scope}.conditions.addictionDay`]);
+    throw new Error("Actor day vetoed");
+  };
+  const plan = buildNewDayPlan(owner);
+  const result = await applyNewDayPlan(owner, plan, plan.actions.map(action => action.id), { postChat: false });
+  assert.equal(result.partiallyApplied, true);
+  assert.equal(result.failed[0].code, "condition-partial-failure");
+  assert.equal(owner.items.has(first.id), !cured);
+  if (!cured) assert.equal(getAddictionMorning(first).dayKey, "manual:1");
+  assert.ok(owner.getFlag(scope, "shortRestRecovery"));
+  assert.equal(second.updates.length, 0);
+  assert.equal(rolls.length, 1);
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /Addiction A.*Actor day 1 is unconfirmed/);
+  assert.match(messages[0].content, cured ? /recovery removed the Item/ : /morning was saved on the Item/);
+});
+
+test("an offline-GM Addiction operation rejects a stale explicit day before rolling or writing", async () => {
+  const rolls = setup();
+  const dependency = item("Addiction", decline());
+  const owner = actor(dependency);
+  owner.isOwner = true;
+  game.user = { id: "owner", active: true };
+  game.users = [game.user];
+  await owner.setFlag(scope, "conditions.addictionDay", 2);
+  await assert.rejects(processAddictionNewDay(owner, dependency, { ...quiet, dayKey: "manual:1" }), { code: "stale-plan" });
+  assert.deepEqual(rolls, []);
+  assert.deepEqual(dependency.updates, []);
 });
 
 test("the final withdrawal day keeps its severe modifiers until manual success", async () => {
@@ -293,19 +339,26 @@ async function calendarWorker() {
 }
 
 test("a calendar skip consumes only the started day and resumes after its manual outcome", async () => {
-  const rolls = setup(); globalThis.CALENDARIA = { api: { daysBetween: (from, to) => to.day - from.day, addDays: (date, n) => ({ ...date, day: date.day + n }) } };
+  const rolls = setup();
+  const start = { year: 1, month: 1, day: 1 }; const context = { calendarId: "test", date: { ...start, day: 4 } };
+  globalThis.CALENDARIA = { api: { daysBetween: (from, to) => to.day - from.day, addDays: (date, n) => ({ ...date, day: date.day + n }),
+    getCurrentDateTime: () => context.date, getActiveCalendar: () => ({ id: context.calendarId }) } };
   const dependency = item("Зависимость", { phase: "flat", die: 6, daysLeft: 3, severity: 5 });
   const wound = item("Wound"); wound.system.healingTime = "6 days";
   const owner = actor(dependency, wound); const worker = await calendarWorker();
-  const start = { year: 1, month: 1, day: 1 }; const context = { calendarId: "test", date: { ...start, day: 4 } };
-  const first = await worker.processActorAutomaticDays(owner, start, context, 3);
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
+  game.user.active = true;
+  game.users = [game.user, { id: "owner", active: true, character: owner }];
+  game.actors = new Map([[owner.id, owner]]);
+  await owner.setFlag(scope, "stateProgressionCalendaria", { calendarId: "test", date: start });
+  const first = await worker.processActorAutomaticDays(owner.id, context, 3);
   assert.equal(first.processedDays, 1); assert.equal(first.limitedDays, 2); assert.equal(first.pendingManual, 1);
   assert.equal(getAddictionState(dependency).daysLeft, 3); assert.equal(wound.system.healingTime, "5 days");
   assert.equal(getAddictionMorning(dependency).dayKey, "calendar:test:1:1:2");
-  const retry = await worker.processActorAutomaticDays(owner, start, context, 3);
+  const retry = await worker.processActorAutomaticDays(owner.id, context, 3);
   assert.equal(retry.processedDays, 0); assert.equal(wound.system.healingTime, "5 days");
   await resolveAddictionMorning(owner, dependency, "failure-no-dose", quiet);
-  const resumed = await worker.processActorAutomaticDays(owner, start, context, 3);
+  const resumed = await worker.processActorAutomaticDays(owner.id, context, 3);
   assert.equal(resumed.processedDays, 1); assert.equal(resumed.limitedDays, 1);
   assert.equal(wound.system.healingTime, "4 days"); assert.equal(getAddictionState(dependency).daysLeft, 2);
   assert.equal(getAddictionMorning(dependency).dayKey, "calendar:test:1:1:3");
@@ -353,6 +406,60 @@ test("two separate GM Addiction actions can use the same manual morning", async 
   assert.deepEqual([first, second].map(entry => getAddictionState(entry).die), [10, 10]);
   assert.equal(owner.getFlag(scope, "conditions.addictionDay"), 1);
   assert.deepEqual(rolls, ["1d12", "1d12"]);
+});
+
+test("Calendaria addiction refuses manual:1 fallback while keeping STAT row rendering safe", async () => {
+  const rolls = setup([4]);
+  const dependency = item("Зависимость", decline());
+  const owner = actor(dependency);
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
+  globalThis.CALENDARIA = { api: { getCurrentDateTime: () => ({ year: 2, month: 3, day: 4 }), getActiveCalendar: () => ({ id: "test" }) } };
+  await performAddictionMorning(owner, dependency, quiet);
+  CALENDARIA.api.getCurrentDateTime = () => { throw new Error("calendar unavailable"); };
+
+  await assert.rejects(performAddictionMorning(owner, dependency, quiet), { code: "calendaria-date-unavailable" });
+  assert.deepEqual(rolls, ["1d12"]);
+  assert.equal(getAddictionDayKey(owner, { allowMissingCalendar: true }), null);
+
+  globalThis.TextEditor = { enrichHTML: async text => text };
+  globalThis.renderTemplate = async (_path, data) => data;
+  try {
+    const row = await renderConditionItemRow(dependency, true);
+    assert.equal(row.morningDisabled, true);
+    assert.match(row.morningText, /Calendar date is unavailable/);
+  } finally {
+    delete globalThis.renderTemplate;
+    delete globalThis.TextEditor;
+  }
+});
+
+test("reusing a STAT morning in New Day reports changed when persisting startedByNewDay or day counter", async t => {
+  setup([4, 4]);
+  t.mock.method(console, "error", () => {});
+  const first = item("Addiction A", decline());
+  const second = item("Addiction B", decline());
+  const owner = actor(first, second);
+  await performAddictionMorning(owner, first, quiet);
+
+  const originalUpdate = second.update.bind(second);
+  second.update = async (data, opts) => {
+    if (data[`flags.${scope}.conditions.addictionMorning`]) throw new Error("second failed");
+    return originalUpdate(data, opts);
+  };
+
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const plan = buildNewDayPlan(owner);
+  const selected = plan.actions.filter(action => action.kind === "addiction-day").map(action => action.id);
+  const partial = await applyNewDayPlan(owner, plan, selected, { postChat: false, notify: false });
+  assert.equal(partial.partiallyApplied, true);
+  assert.deepEqual(partial.succeeded.map(entry => entry.action.itemId), [first.id]);
+  assert.deepEqual(partial.failed.map(entry => entry.action.itemId), [second.id]);
+  assert.match(messages[0]?.content ?? "", /Addiction A/);
+
+  const noop = await processAddictionNewDayInternal(owner, first, { ...quiet, dayKey: "manual:1" });
+  assert.equal(noop.reused, true);
+  assert.equal(noop.changed, false);
 });
 
 for (const [level, expected] of [[0, {}], [1, {}], [2, { strength: 1 }], [3, { strength: 1, wits: 1 }], [4, { strength: 1, wits: 1, agility: 1 }]]) {
@@ -621,10 +728,46 @@ for (const failure of ["missing", "missing flags", "incorrect stage"]) {
       return [replacement];
     };
     const result = await transitionWashLevel(owner, old.name);
-    assert.equal(result.reason, "create-failed");
+    assert.equal(result.reason, failure === "missing" ? "create-failed" : "replacement-invalid");
+    assert.equal(result.partiallyApplied, failure !== "missing");
     assert.equal(owner.items.get(old.id), old);
   });
 }
+
+for (const changed of ["itemId", "healingTime"]) test(`queued Wash rejects a changed ${changed} from the New Day plan`, async () => {
+  setup();
+  const { owner, old } = washActor();
+  const expected = { itemId: old.id, healingTime: old.system.healingTime };
+  const prior = enqueueActorMutation(owner, () => {
+    if (changed === "healingTime") old.system.healingTime = "2 days";
+    else {
+      owner.items.delete(old.id);
+      const replacement = item(old.name);
+      replacement.system.healingTime = expected.healingTime;
+      owner.items.set(replacement.id, replacement);
+    }
+  });
+  const transition = transitionWashLevel(owner, old.name, {}, expected);
+  await prior;
+  assert.equal((await transition).reason, "stale-stage");
+  assert.deepEqual([...owner.items.values()].map(entry => entry.name), [old.name]);
+});
+
+test("a confirmed Wash cleanup failure whispers to the GM even with suppressed notifications", async t => {
+  setup();
+  t.mock.method(console, "error", () => {});
+  const { owner, old } = washActor();
+  owner.deleteEmbeddedDocuments = async () => [];
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  ui.notifications.warn = () => assert.fail("Notifications were suppressed");
+  const result = await transitionWashLevel(owner, old.name, { fblqaSuppressNotifications: true });
+  assert.equal(result.code, "condition-partial-failure");
+  assert.equal(result.reason, "cleanup-failed");
+  assert.equal(owner.items.size, 2);
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /Немытый.*is on the sheet/);
+});
 
 test("STAT can call Wash and Addiction directly inside an Actor operation", { timeout: 1_000 }, async () => {
   setup([4]);
@@ -735,4 +878,70 @@ test("the native dose dialog distinguishes dose, no-dose, cancel and closing the
     else current.config.buttons.find(button => button.action === action).callback(null, null, { element: null });
     assert.equal(await answer, expected);
   }
+});
+
+test("Foundry v13 in-place update object expansion does not break verifyConditionWrite in migrations or STAT", async () => {
+  setup();
+  const expandInPlace = patch => {
+    for (const key of Object.keys(patch)) {
+      if (!key.includes(".")) continue;
+      const value = patch[key];
+      delete patch[key];
+      const parts = key.split(".");
+      let cursor = patch;
+      while (parts.length > 1) {
+        const part = parts.shift();
+        cursor[part] = cursor[part] && typeof cursor[part] === "object" ? cursor[part] : {};
+        cursor = cursor[part];
+      }
+      cursor[parts[0]] = value;
+    }
+  };
+
+  const wound = item("Broken Leg", null);
+  wound.system.healingTime = "3 days";
+  const heat = item("Heat", null);
+  heat.name = "Heat";
+  heat.system.healingTime = "2";
+  const owner = actor(wound, heat);
+  set(owner, `flags.${LEGACY_MODULE_ID}.layoutColumns`, 2);
+  set(owner, `flags.${scope}.conditions.list`, [{ id: "custom-1", name: "Cold" }]);
+
+  const applyAndExpand = (target, data) => {
+    for (const [path, value] of Object.entries(data)) set(target, path, value);
+    expandInPlace(data);
+  };
+  owner.update = async data => applyAndExpand(owner, data);
+  for (const entry of [wound, heat]) {
+    entry.update = async data => {
+      entry.updates.push(data);
+      applyAndExpand(entry, data);
+    };
+  }
+  owner.updateEmbeddedDocuments = async (_type, updates) => {
+    for (const data of updates) {
+      const live = owner.items.get(data._id);
+      await live.update(data);
+    }
+  };
+
+  assert.equal(await migrateActorData(owner), true);
+  assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);
+  assert.equal(owner.flags[LEGACY_MODULE_ID], undefined);
+  assert.equal(parseHeatValue(heat), 2);
+  assert.equal(heat.system.healingTime, "");
+  assert.equal(wound.getFlag(scope, "conditions.order"), 10);
+  assert.equal(heat.getFlag(scope, "conditions.order"), 20);
+
+  const reordered = await applyStatOperation(owner, {
+    kind: "order",
+    rows: [
+      { kind: "item", id: heat.id },
+      { kind: "custom", id: "custom-1" },
+      { kind: "item", id: wound.id }
+    ]
+  });
+  assert.equal(reordered.changed, true);
+  assert.equal(heat.getFlag(scope, "conditions.order"), 0);
+  assert.equal(wound.getFlag(scope, "conditions.order"), 20);
 });

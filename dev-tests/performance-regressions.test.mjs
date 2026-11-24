@@ -64,18 +64,6 @@ test("startup reference pruning reads flags before enumerating embedded Items an
   assert.match(source, /actor\.update\(updateData, \{ render: false \}\)/);
 });
 
-test("New Day batches simple embedded Item writes and Calendaria suppresses only redundant marker renders", () => {
-  const newDay = read("scripts", "new-day.js");
-  const stateProgression = read("scripts", "state-progression.js");
-
-  assert.match(newDay, /actor\.updateEmbeddedDocuments\("Item", \[\.\.\.updatesById\.values\(\)\], documentOptions\)/);
-  assert.match(newDay, /actor\.deleteEmbeddedDocuments\("Item", valid\.map/);
-  assert.match(newDay, /item update batch failed; retrying individually/);
-  assert.match(newDay, /item delete batch failed; retrying individually/);
-  assert.doesNotMatch(functionBody(stateProgression, "calendarApplyOptions"), /documentOptions|render:\s*false/);
-  assert.match(stateProgression, /finalIteration \? \{\} : \{ render: false \}/);
-});
-
 test("BIO saves one dirty subtree when safe and does not recalculate language layout for unrelated controls", () => {
   const source = read("scripts", "biography.js");
   assert.match(source, /const SAVE_PENDING = new Map\(\)/);

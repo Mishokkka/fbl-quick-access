@@ -402,7 +402,7 @@ export async function migrateSpecialCounter(actor, item) {
   }
   const live = getConditionItem(actor, item.id);
   const cleanup = { "system.healingTime": "" };
-  await live.update(cleanup, options);
+  await live.update(structuredClone(cleanup), options);
   verifyConditionWrite(getConditionItem(actor, item.id), cleanup);
   return true;
 }

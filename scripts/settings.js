@@ -18,6 +18,15 @@ export function registerCoreSettings() {
     onChange: (mode) => globalThis.Hooks?.callAll?.("fblQuickAccess.stateProgressionModeChanged", mode)
   });
 
+  game.settings.registerMenu?.(MODULE_ID, "stateProgressionManager", {
+    name: qaLocalize("Settings.StateProgressionManager.Name", "Calendaria processed days"),
+    label: qaLocalize("Settings.StateProgressionManager.Label", "Manage Calendaria days"),
+    hint: qaLocalize("Settings.StateProgressionManager.Hint", "Inspect, reset or rewind processed-day markers."),
+    icon: "fas fa-calendar-check",
+    type: createStateProgressionMenuLauncher(),
+    restricted: true
+  });
+
   game.settings.register(MODULE_ID, SETTINGS.PLAYERS_CAN_RESET_SHORT_REST, {
     name: qaLocalize("Settings.PlayersCanResetShortRest.Name", "Players can reset the Short Rest limit"),
     hint: qaLocalize("Settings.PlayersCanResetShortRest.Hint", "Allow character owners to manually clear the once-per-Quarter-Day Short Rest recovery limit. GMs can always reset it."),
@@ -48,9 +57,21 @@ export function registerCoreSettings() {
   });
 }
 
-export function canResetShortRestLimit(actor = null) {
-  if (game.user?.isGM) return true;
-  if (!actor?.isOwner) return false;
+function createStateProgressionMenuLauncher() {
+  const Application = globalThis.foundry?.applications?.api?.ApplicationV2 ?? globalThis.FormApplication ?? class {};
+  return class extends Application {
+    render() {
+      void import("./state-progression.js").then(({ openStateProgressionManager }) => openStateProgressionManager())
+        .catch(error => console.error(`${MODULE_ID} | could not open Calendaria day management`, error));
+      return this;
+    }
+  };
+}
+
+export function canResetShortRestLimit(actor = null, user = globalThis.game?.user) {
+  if (user?.isGM) return true;
+  const ownsActor = user === game.user ? actor?.isOwner : actor?.testUserPermission?.(user, "OWNER");
+  if (!ownsActor) return false;
   return Boolean(game.settings.get(MODULE_ID, SETTINGS.PLAYERS_CAN_RESET_SHORT_REST));
 }
 
