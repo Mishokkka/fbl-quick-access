@@ -2,7 +2,7 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
-import { buildNewDayPlan, applyNewDayPlan, decrementFirstInteger, getNewDaySelection, initializeNewDayOperations } from "../scripts/new-day.js";
+import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan, decrementFirstInteger, getNewDaySelection, initializeNewDayOperations } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
@@ -743,6 +743,50 @@ test("an interactive Calendaria request must include fresh preview data for each
   await assert.rejects(calendar.handleCalendariaApplyRequest(request, { requestUser: player }), { code: "stale-plan" });
   assert.equal(wound.system.healingTime, "6 days");
   assert.equal(a.getFlag(scope, "stateProgressionCalendaria").date.day, 1);
+});
+
+test("interactive Calendaria apply preserves the player request context for providers and GM private summaries", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const date = { ...start, day: 2 };
+  const player = await assignForCalendar(a, date);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const applyContexts = [];
+  const unregister = registerNewDayProvider({
+    id: "audit.requester-context",
+    category: "audit",
+    buildActions: async (_actor, providerContext) => [{
+      id: "ctx-action",
+      label: `Action for ${providerContext.requestUser?.id}:${providerContext.isRemote}`
+    }],
+    applyAction: async (_actor, _action, providerContext) => {
+      applyContexts.push({ userId: providerContext.requestUser?.id, isRemote: providerContext.isRemote, suppressChat: providerContext.suppressChat });
+      return { changed: true, summary: "Public done", privateSummary: "Secret GM note" };
+    },
+    describeAction: action => action.label,
+    icon: () => "fa-check"
+  });
+  try {
+    const playerContext = { requestUser: player, requesterId: player.id, activeGM: game.user, isRemote: true };
+    const plan = await buildNewDayPlanWithProviders(a, { dayKey: "calendar:audit:1:1:2", authority: playerContext });
+    const selection = getNewDaySelection(plan, ["provider:audit.requester-context:ctx-action"]);
+    const result = await calendar.handleCalendariaApplyRequest(
+      { ...selection, actorId: a.id, calendarId: "audit", targetDate: date },
+      playerContext
+    );
+    await delay(0);
+
+    assert.equal(result.status, "processed");
+    assert.deepEqual(applyContexts, [{ userId: player.id, isRemote: true, suppressChat: false }]);
+    const entry = result.calendarResult.days[0].result.entries[0];
+    assert.equal(entry.detail, "Public done");
+    assert.equal(entry.privateSummary, undefined);
+    assert.equal(messages.some(message => /Secret GM note/.test(message.content) && message.whisper.includes(game.user.id)), true);
+  } finally {
+    unregister();
+  }
 });
 
 test("Calendaria finishes Wash, STAT timers, multiple Addictions and providers before pausing a later day", { timeout: 1_000 }, async () => {

@@ -408,6 +408,59 @@ test("two separate GM Addiction actions can use the same manual morning", async 
   assert.deepEqual(rolls, ["1d12", "1d12"]);
 });
 
+test("Calendaria addiction refuses manual:1 fallback while keeping STAT row rendering safe", async () => {
+  const rolls = setup([4]);
+  const dependency = item("Зависимость", decline());
+  const owner = actor(dependency);
+  game.settings.get = (_scope, key) => key === "stateProgressionMode" ? "calendaria" : true;
+  globalThis.CALENDARIA = { api: { getCurrentDateTime: () => ({ year: 2, month: 3, day: 4 }), getActiveCalendar: () => ({ id: "test" }) } };
+  await performAddictionMorning(owner, dependency, quiet);
+  CALENDARIA.api.getCurrentDateTime = () => { throw new Error("calendar unavailable"); };
+
+  await assert.rejects(performAddictionMorning(owner, dependency, quiet), { code: "calendaria-date-unavailable" });
+  assert.deepEqual(rolls, ["1d12"]);
+  assert.equal(getAddictionDayKey(owner, { allowMissingCalendar: true }), null);
+
+  globalThis.TextEditor = { enrichHTML: async text => text };
+  globalThis.renderTemplate = async (_path, data) => data;
+  try {
+    const row = await renderConditionItemRow(dependency, true);
+    assert.equal(row.morningDisabled, true);
+  } finally {
+    delete globalThis.renderTemplate;
+    delete globalThis.TextEditor;
+  }
+});
+
+test("reusing a STAT morning in New Day reports changed when persisting startedByNewDay or day counter", async t => {
+  setup([4, 4]);
+  t.mock.method(console, "error", () => {});
+  const first = item("Addiction A", decline());
+  const second = item("Addiction B", decline());
+  const owner = actor(first, second);
+  await performAddictionMorning(owner, first, quiet);
+
+  const originalUpdate = second.update.bind(second);
+  second.update = async (data, opts) => {
+    if (data[`flags.${scope}.conditions.addictionMorning`]) throw new Error("second failed");
+    return originalUpdate(data, opts);
+  };
+
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const plan = buildNewDayPlan(owner);
+  const selected = plan.actions.filter(action => action.kind === "addiction-day").map(action => action.id);
+  const partial = await applyNewDayPlan(owner, plan, selected, { postChat: false, notify: false });
+  assert.equal(partial.partiallyApplied, true);
+  assert.deepEqual(partial.succeeded.map(entry => entry.action.itemId), [first.id]);
+  assert.deepEqual(partial.failed.map(entry => entry.action.itemId), [second.id]);
+  assert.match(messages[0]?.content ?? "", /Addiction A/);
+
+  const noop = await processAddictionNewDayInternal(owner, first, { ...quiet, dayKey: "manual:1" });
+  assert.equal(noop.reused, true);
+  assert.equal(noop.changed, false);
+});
+
 for (const [level, expected] of [[0, {}], [1, {}], [2, { strength: 1 }], [3, { strength: 1, wits: 1 }], [4, { strength: 1, wits: 1, agility: 1 }]]) {
   test(`final Endurance failure at Heat ${level} applies the correct level and damage`, async () => {
     setup(); const heat = item("Жара"); set(heat, `flags.${scope}.conditions.heatValue`, level); const owner = actor(heat);

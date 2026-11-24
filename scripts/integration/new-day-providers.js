@@ -181,7 +181,7 @@ export function normalizeProviderActions(provider, rawActions) {
       id: `provider:${provider.id}:${rawId}`,
       providerId: provider.id,
       providerActionId: rawId,
-      providerAction: rawAction,
+      providerAction: structuredClone(rawAction),
       kind: String(rawAction.kind ?? "provider-action"),
       category,
       categoryOrder: Number.isFinite(Number(rawAction.categoryOrder)) ? Number(rawAction.categoryOrder) : provider.order,

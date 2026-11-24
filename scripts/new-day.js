@@ -160,7 +160,7 @@ export function buildNewDayPlan(actor, options = {}) {
       continue;
     }
 
-    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.beforeNumber > 0 && healing.afterNumber === 0);
+    const injuryExpires = Boolean(healing && !healingIsPermanent && healing.afterNumber === 0);
     if (injuryExpires) {
       actions.push({
         id: `injury:${item.id}:expire`,

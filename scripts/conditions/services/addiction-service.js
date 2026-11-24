@@ -85,11 +85,13 @@ export function addictionCalendarDayKey(calendarId, date) {
   return `calendar:${calendarId}:${date.year}:${date.month}:${date.day}`;
 }
 
-export function getAddictionDayKey(actor, { dayKey, newDay = false } = {}) {
+export function getAddictionDayKey(actor, { dayKey, newDay = false, allowMissingCalendar = false } = {}) {
   if (dayKey) return String(dayKey);
   if (globalThis.game?.settings?.get?.(MODULE_ID, "stateProgressionMode") === "calendaria") {
     const context = getCalendariaContext();
     if (context) return addictionCalendarDayKey(context.calendarId, context.date);
+    if (allowMissingCalendar) return null;
+    throw Object.assign(new Error("Calendaria date is unavailable for Addiction."), { code: "calendaria-date-unavailable" });
   }
   // Long Rest need not advance world time. Its explicit New Day action starts
   // the next numbered morning; STAT reuses the currently started morning.
@@ -106,18 +108,19 @@ export function getAddictionDayKey(actor, { dayKey, newDay = false } = {}) {
 }
 
 async function rememberManualDay(actor, dayKey, documentOptions) {
-  if (!dayKey.startsWith("manual:")) return;
+  if (!dayKey.startsWith("manual:")) return false;
   const number = Number(dayKey.slice(7));
-  if (!(number > Number(actor?.getFlag?.(MODULE_ID, FLAGS.ADDICTION_DAY) || 0))) return;
+  if (!(number > Number(actor?.getFlag?.(MODULE_ID, FLAGS.ADDICTION_DAY) || 0))) return false;
   await runDocumentWrite(() => actor.update
     ? actor.update({ [flagUpdatePath(FLAGS.ADDICTION_DAY)]: number }, documentOptions)
     : actor.setFlag(MODULE_ID, FLAGS.ADDICTION_DAY, number));
   if (actor.getFlag(MODULE_ID, FLAGS.ADDICTION_DAY) !== number) throw new Error("Addiction day was not persisted");
+  return true;
 }
 
 async function rememberCommittedMorning(actor, item, morning, options) {
   try {
-    await rememberManualDay(actor, morning.dayKey, options.documentOptions ?? {});
+    return await rememberManualDay(actor, morning.dayKey, options.documentOptions ?? {});
   } catch (cause) {
     const outcomeUnknown = isUnknownWriteOutcome(cause);
     const details = {
@@ -175,15 +178,17 @@ export async function performAddictionMorningInternal(actor, item, options = {})
   const dayKey = getAddictionDayKey(actor, options);
   const previous = getAddictionMorning(item);
   if (previous?.status === "pending" || previous?.dayKey === dayKey) {
+    let persisted = false;
     if (options.newDay && previous.dayKey === dayKey) {
       if (!previous.startedByNewDay) {
         const update = { [flagUpdatePath(FLAGS.ADDICTION_MORNING)]: { ...previous, startedByNewDay: true } };
         await runDocumentWrite(() => item.update(structuredClone(update), options.documentOptions ?? {}));
         verifyConditionWrite(getConditionItem(actor, item.id), update);
+        persisted = true;
       }
-      await rememberCommittedMorning(actor, item, previous, options);
+      if (await rememberCommittedMorning(actor, item, previous, options)) persisted = true;
     }
-    return morningResult(previous, { reused: true });
+    return morningResult(previous, { changed: persisted, reused: true });
   }
 
   const state = getAddictionState(item);

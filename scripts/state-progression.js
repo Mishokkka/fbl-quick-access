@@ -644,7 +644,8 @@ async function handleCalendariaApplyRequest(payload, context) {
     if (status.status === "unavailable") throw progressionError("invalid-calendar-date", invalidCalendarDateDetail(actor, live));
     if (status.days !== 1) throw progressionError("multi-day-pending", "Multiple Calendaria days are pending");
 
-    const plan = await buildCalendarPlan(actor, live);
+    const authority = calendarAuthority(context);
+    const plan = await buildCalendarPlan(actor, live, authority);
     requireLiveCalendarDay(live);
     assertRequesterAssignedToActor(resolveAssignedActorEntry(actor.id), context.requestUser);
     if (getPendingAddictions(actor).length || !documentValuesEqual(getActorCalendarMarker(actor), marker)
@@ -653,7 +654,7 @@ async function handleCalendariaApplyRequest(payload, context) {
     }
 
     updateCurrentGMSummary(actor.id, live, { state: "processing", days: 1 });
-    const applied = await applyCalendarPlan(actor, live, plan, selected);
+    const applied = await applyCalendarPlan(actor, live, plan, selected, authority);
     const calendarResult = {
       mode: "interactive", processedDays: 0, failedDays: 0, failedActions: 0,
       pendingManual: getPendingAddictions(actor).length,
@@ -684,9 +685,9 @@ async function handleCalendariaApplyRequest(payload, context) {
   });
 }
 
-async function buildCalendarPlan(actor, day) {
+async function buildCalendarPlan(actor, day, authority = calendarAuthority()) {
   const plan = await buildNewDayPlanWithProviders(actor, {
-    dayKey: addictionCalendarDayKey(day.calendarId, day.date), authority: calendarAuthority()
+    dayKey: addictionCalendarDayKey(day.calendarId, day.date), authority
   });
   if (!plan.providerErrors.length) return plan;
   const providers = plan.providerErrors.map(error => error.providerId).join(", ");
@@ -698,17 +699,23 @@ async function buildCalendarPlan(actor, day) {
   throw Object.assign(progressionError("provider-build-failed", message), { failedActions: plan.providerErrors.length });
 }
 
-async function applyCalendarPlan(actor, day, plan, selected) {
+async function applyCalendarPlan(actor, day, plan, selected, authority = calendarAuthority()) {
   const applied = await applyNewDayPlanInternal(actor, plan, selected, {
-    postChat: false, suppressNotifications: true, authority: calendarAuthority(), dateLabel: formatCalendariaDate(day.date)
+    postChat: false, suppressNotifications: true, authority, dateLabel: formatCalendariaDate(day.date)
   });
   if (applied.failed.length && (applied.partiallyApplied || applied.outcomeUnknown)) actorsNeedingReview.set(actor.id, day.calendarId);
   return applied;
 }
 
-function calendarAuthority() {
-  const user = game.user;
-  return { requestUser: user, requesterId: user.id, activeGM: user, isRemote: false };
+function calendarAuthority(context = null) {
+  const gm = game.user;
+  const requestUser = context?.requestUser ?? gm;
+  return {
+    requestUser,
+    requesterId: context?.requesterId ?? requestUser?.id ?? gm?.id,
+    activeGM: context?.activeGM ?? gm,
+    isRemote: Boolean(context?.isRemote)
+  };
 }
 
 async function commitCalendarDay(actor, day, applied, expectedMarker, documentOptions) {
@@ -824,6 +831,7 @@ function openOrRefreshGMSummary(context, entries, reason) {
   }
 
   if (!hasFoundryDialogApi() || state.dialog) {
+    refreshGMSummaryDom(state);
     state.dialog?.bringToFront?.();
     state.dialog?.bringToTop?.();
     return state;
@@ -894,9 +902,10 @@ function renderGMSummaryRow(state, entry) {
   const pendingDays = Math.max(0, Number(status.days) || 0);
   const isProcessing = status.state === "processing";
   const review = needsCalendarReview(entry.actor, state.context);
-  const canResolve = !review && ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
-  const canMarkAbsent = !review && ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
-  const canUndoAbsent = status.state === "absent" && Boolean(status.undoAvailable);
+  const calendariaMode = usesCalendariaStateProgression();
+  const canResolve = calendariaMode && !review && ["pending", "offline", "error", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
+  const canMarkAbsent = calendariaMode && !review && ["pending", "offline", "blocked"].includes(status.state) && pendingDays > 0 && !pendingManual;
+  const canUndoAbsent = calendariaMode && status.state === "absent" && Boolean(status.undoAvailable);
   const canResetCurrent = !isProcessing && (
     review || status.state === "ahead"
     || status.state === "baseline"
