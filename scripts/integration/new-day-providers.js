@@ -281,13 +281,9 @@ function requireProvider(id) {
 }
 
 async function resolveActor(payload) {
-  let actor = null;
-  if (payload?.actorUuid && globalThis.fromUuid) {
-    actor = await fromUuid(payload.actorUuid);
-  }
-  if (actor?.documentName !== "Actor" && payload?.actorId) {
-    actor = globalThis.game?.actors?.get?.(payload.actorId) ?? null;
-  }
+  const actor = payload?.actorUuid
+    ? await globalThis.fromUuid?.(payload.actorUuid)
+    : globalThis.game?.actors?.get?.(payload?.actorId);
   if (actor?.documentName !== "Actor") {
     const error = new Error("New-day provider actor was not found");
     error.code = "missing-actor";

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { applyDocumentUpdate } from "./helpers/document-update.mjs";
 
 globalThis.foundry = {
   utils: {
@@ -29,12 +30,12 @@ function makeActor(items) {
     items,
     flags: {},
     async update(data) {
-      this.flags["fbl-quick-access"] = { conditions: { list: structuredClone(data["flags.fbl-quick-access.conditions.list"]) } };
+      applyDocumentUpdate(this, data);
     },
     async updateEmbeddedDocuments(_type, updates) {
       for (const update of updates) {
         const item = this.items.find((candidate) => candidate.id === update._id);
-        item.flags["fbl-quick-access"] = { conditions: { order: update["flags.fbl-quick-access.conditions.order"] } };
+        applyDocumentUpdate(item, update);
       }
     }
   };

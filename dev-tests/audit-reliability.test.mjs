@@ -2,13 +2,16 @@ import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import { setTimeout as delay } from "node:timers/promises";
+import { applyDocumentUpdate, expandUpdateInPlace } from "./helpers/document-update.mjs";
 import { buildNewDayPlan, buildNewDayPlanWithProviders, applyNewDayPlan, decrementFirstInteger, getNewDaySelection, initializeNewDayOperations } from "../scripts/new-day.js";
 import { queueProfileSave, flushBiographySaves, releaseBiographyState, getBiographyProfile, biographyDisplayHtml } from "../scripts/biography.js";
 import { updateHeatItem, parseHeatValue, saveAddictionState } from "../scripts/conditions/features/special-counters.js";
 import { transitionWashLevel } from "../scripts/conditions/features/wash.js";
 import { getConditionKind, getWashStage } from "../scripts/conditions/condition-kind.js";
+import { applyActorAttributeDamage } from "../scripts/conditions/services/condition-writes.js";
 import { getReputationEntries, normalizeReputationEntries, selectRandomReputation, saveReputationEntries } from "../scripts/reputation.js";
 import { initializeWalletOperations } from "../scripts/wallet.js";
+import { writeCurrencyUpdate } from "../scripts/currency.js";
 import { executeAsActiveGM, registerIntegrationSocket } from "../scripts/integration/socket-api.js";
 import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scripts/integration/new-day-providers.js";
 import { enqueueActorMutation, enqueueCurrencyOperation } from "../scripts/operation-queue.js";
@@ -60,7 +63,10 @@ function user(id, isGM = false) {
 function item(id, system = {}, name = "Wound") {
   const result = { id, name, type: "criticalInjury", flags: {}, system, updates: [],
     getFlag: (module, key) => get(result.flags[module], key),
-    update: async data => { result.updates.push(data); for (const [key, value] of Object.entries(data)) set(result, key, value); },
+    update: async data => {
+      result.updates.push(structuredClone(data));
+      applyDocumentUpdate(result, data);
+    },
     toObject: () => ({ name: result.name, type: result.type, system: structuredClone(result.system), flags: structuredClone(result.flags) }) };
   return result;
 }
@@ -76,7 +82,10 @@ function actor(items = []) {
     getFlag: (module, key) => get(result.flags[module], key),
     setFlag: async (module, key, value) => set(result.flags, `${module}.${key}`, value),
     testUserPermission: () => true,
-    update: async data => { result.updates.push(data); for (const [key, value] of Object.entries(data)) set(result, key, value); },
+    update: async data => {
+      result.updates.push(structuredClone(data));
+      applyDocumentUpdate(result, data);
+    },
     updateEmbeddedDocuments: async (_type, updates) => { for (const update of updates) await items.get(update._id).update(update); },
     deleteEmbeddedDocuments: async (_type, ids) => { for (const id of ids) { const index = items.findIndex(entry => entry.id === id); if (index >= 0) items.splice(index, 1); } },
     createEmbeddedDocuments: async (_type, sources) => sources.map(source => {
@@ -329,6 +338,37 @@ test("Long Rest reads active effects, ignores disabled ones and removes active c
   assert.deepEqual(a.effects.map(effect => effect.id), ["inactive"]);
 });
 
+test("Long Rest reports only conditions removed after Actor and Item effects are applied", async () => {
+  reset();
+  const cloak = item("cloak", {}, "Cloak");
+  const a = actor([cloak]);
+  const transferred = { id: "item-sleepy", parent: cloak, transfer: true, statuses: new Set(["sleepy"]) };
+  cloak.effects = [transferred];
+  a.effects = [
+    { id: "actor-sleepy", parent: a, statuses: new Set(["sleepy"]) },
+    { id: "actor-cold", parent: a, statuses: new Set(["cold"]) }
+  ];
+  Object.defineProperty(a, "appliedEffects", {
+    get: () => [...a.effects, ...cloak.effects.filter(effect => effect.transfer)]
+  });
+  a.system.condition = { sleepy: { value: true }, cold: { value: true } };
+  const deletions = [];
+  a.deleteEmbeddedDocuments = async (type, ids) => {
+    deletions.push([type, ids]);
+    a.effects = a.effects.filter(effect => !ids.includes(effect.id));
+  };
+
+  const result = await rest.applyRest(null, a, { type: "long", hasHeatSource: true });
+
+  assert.deepEqual(result.errors, []);
+  assert.deepEqual(result.clearedConditions, ["cold"]);
+  assert.match(result.notification, /\bCold\b/);
+  assert.doesNotMatch(result.notification, /\bSleepy\b/);
+  assert.deepEqual(deletions, [["ActiveEffect", ["actor-sleepy", "actor-cold"]]]);
+  assert.deepEqual(a.appliedEffects, [transferred]);
+  assert.deepEqual(cloak.effects, [transferred]);
+});
+
 for (const timeout of [false, true]) test(`Long Rest reports ${timeout ? "an unknown outcome" : "a partial application"} when effect removal fails`, async () => {
   reset();
   const a = actor();
@@ -408,6 +448,45 @@ test("Heat reports confirmed damage when the counter write fails", async () => {
   assert.equal(a.system.attribute.strength.value, 4); assert.equal(parseHeatValue(h), 2);
   assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
 });
+
+test("Active Effect overrides on Strength and copper do not hide successful writes", async () => {
+  reset();
+  const a = actor();
+  a.system.attribute.strength.value = 5;
+  a.system.currency.copper.value = 10;
+  // Prepared values stay overridden while the document update changes its source.
+  a._source = { system: structuredClone(a.system) };
+
+  const damage = await applyActorAttributeDamage(a, { strength: 1 }, {});
+  await writeCurrencyUpdate(a, { "system.currency.copper.value": 9 });
+
+  assert.equal(damage[0].value, 4);
+  assert.equal(a._source.system.attribute.strength.value, 4);
+  assert.equal(a._source.system.currency.copper.value, 9);
+  assert.equal(a.system.attribute.strength.value, 5);
+  assert.equal(a.system.currency.copper.value, 10);
+});
+
+for (const partial of [false, true]) {
+  test(`currency distinguishes a ${partial ? "partial write" : "veto"} using stored balances`, async () => {
+    reset();
+    const a = actor();
+    a._source = { system: structuredClone(a.system) };
+    a._source.system.currency.copper.value = 10;
+    a.system.currency.copper.value = 50;
+    const copper = "system.currency.copper.value";
+    const silver = "system.currency.silver.value";
+    a.update = async data => {
+      if (partial) applyDocumentUpdate(a, { [copper]: data[copper] });
+    };
+
+    await assert.rejects(writeCurrencyUpdate(a, { [copper]: 9, [silver]: 1 }), {
+      code: partial ? "outcome-unknown" : "write-not-persisted"
+    });
+    assert.equal(a._source.system.currency.copper.value, partial ? 9 : 10);
+    assert.equal(a._source.system.currency.silver.value, 0);
+  });
+}
 test("A06: Addiction phase and modifiers are one Item update", async () => {
   reset(); const dependency = item("dependency", { rollModifiers: {} }, "Addiction"); actor([dependency]);
   await saveAddictionState(dependency, { phase: "down", die: 8, daysLeft: 0, severity: 5 });
@@ -1108,12 +1187,7 @@ test("equipment updates still verify changes when Foundry expands dotted paths i
     const origUpdate = a.update;
     a.update = async data => {
       await origUpdate({ [`flags.${scope}.equipmentHands`]: { left: null, right: null } });
-      for (const key of Object.keys(data)) {
-        if (!key.includes(".")) continue;
-        const value = data[key];
-        delete data[key];
-        set(data, key, value);
-      }
+      expandUpdateInPlace(data);
       return a;
     };
     await assert.rejects(

@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { applyDocumentUpdate } from "./helpers/document-update.mjs";
 
 globalThis.game = {
   i18n: {
@@ -46,7 +47,7 @@ test("wash day(s) timers appear and advance alongside ordinary injury days", asy
   injury.system.healingTime = "5 days";
   actor.updateEmbeddedDocuments = async (_type, updates) => updates.map(update => {
     const item = actor.items.find(item => item.id === update._id);
-    item.system.healingTime = update["system.healingTime"];
+    applyDocumentUpdate(item, update);
     return item;
   });
   const plan = newDay.buildNewDayPlan(actor);
@@ -319,8 +320,8 @@ function makeItem(id, name, system, addictionState = null) {
       return undefined;
     },
     async update(data) {
-      this.updates.push(data);
-      for (const [path, value] of Object.entries(data)) this.system[path.split(".").at(-1)] = value;
+      this.updates.push(structuredClone(data));
+      applyDocumentUpdate(this, data);
     },
     async delete() {
       this.parent.items.splice(this.parent.items.indexOf(this), 1);
@@ -330,18 +331,9 @@ function makeItem(id, name, system, addictionState = null) {
 
 function makeAddictionItem(initialState) {
   const get = (object, path) => path.split(".").reduce((entry, key) => entry?.[key], object);
-  const apply = (document, update) => {
-    for (const [path, value] of Object.entries(update)) {
-      const parts = path.split(".");
-      const key = parts.pop();
-      const parent = parts.reduce((entry, part) => entry[part] ??= {}, document);
-      if (key.startsWith("-=")) delete parent[key.slice(2)];
-      else parent[key] = structuredClone(value);
-    }
-  };
   const documentMethods = {
     getFlag(scope, key) { return get(this.flags[scope], key); },
-    async update(data) { apply(this, data); }
+    async update(data) { applyDocumentUpdate(this, data); }
   };
   const item = {
     ...documentMethods,
@@ -364,12 +356,12 @@ test("New Day combines independent healing and lethal timers into one Foundry bu
     name: "Bulk Tester",
     items,
     async updateEmbeddedDocuments(type, updates, options) {
-      calls.push({ type, updates, options });
-      for (const update of updates) {
-        item.system.healingTime = update["system.healingTime"];
-        item.system.limit = update["system.limit"];
-      }
-      return updates;
+      calls.push({ type, updates: structuredClone(updates), options });
+      return updates.map(update => {
+        const live = items.get(update._id);
+        applyDocumentUpdate(live, update);
+        return live;
+      });
     }
   };
   const plan = newDay.buildNewDayPlan(actor);

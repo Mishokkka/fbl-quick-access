@@ -17,12 +17,13 @@ function conditionValuesEqual(actual, expected) {
 }
 
 export function verifyConditionWrite(document, update) {
+  const source = document?._source ?? document;
   for (const [path, value] of Object.entries(update)) {
     const parts = path.split(".");
     const leaf = parts.at(-1);
     const deletion = leaf.startsWith("-=");
     if (deletion) parts[parts.length - 1] = leaf.slice(2);
-    if (!document || !conditionValuesEqual(getProperty(document, parts.join(".")), deletion ? undefined : value)) {
+    if (!source || !conditionValuesEqual(getProperty(source, parts.join(".")), deletion ? undefined : value)) {
       throw new Error(`Condition write was not persisted (${path})`);
     }
   }
