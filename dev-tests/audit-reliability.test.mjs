@@ -1019,10 +1019,13 @@ test("CodeRabbit: over-limit reputation stays visible and unchanged until explic
   }
 });
 test("CodeRabbit: reputation dialog warns and disables rolls until the displayed pool is corrected", async () => {
-  reset(); const rep = await expose("scripts/reputation.js", ["refreshDialogSummary", "buildDialogContent"]);
+  reset(); const rep = await expose("scripts/reputation.js", ["refreshDialogSummary", "reputationTemplateData"]);
   const a = actor(); await a.setFlag(scope, "reputationEntries", [{ id: "old", amount: 1500, description: "Legacy" }]);
-  const content = rep.buildDialogContent(a, true);
-  assert.match(content, /data-role="limit-warning" role="alert" >[\s\S]*Existing values are preserved/);
+  const data = rep.reputationTemplateData(a);
+  assert.equal(data.overLimit, true);
+  assert.match(data.labels.limit, /Existing values are preserved/);
+  const template = await fs.readFile(new URL("../templates/reputation/reputation-dialog.hbs", import.meta.url), "utf8");
+  assert.match(template, /data-role="limit-warning" role="alert"{{#unless overLimit}} hidden{{\/unless}}>\s*{{labels\.limit}}/);
   let amount = "1500"; const warning = { hidden: true }; const controls = Object.fromEntries(["roll-selected", "roll-half", "roll-third"].map(key => [key, { disabled: false }]));
   const row = { dataset: { entryId: "old" }, querySelector: selector => selector.includes("amount") ? { value: amount } : selector.includes("selected") ? { checked: true } : { value: "Legacy" } };
   const rowsRoot = { querySelectorAll: () => [row] };

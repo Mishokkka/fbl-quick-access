@@ -1,0 +1,47 @@
+<div class="fblqa-reputation-intro">
+  <div>
+    <strong>{{labels.heading}}</strong>
+    <span>{{labels.hint}}</span>
+  </div>
+  <div class="fblqa-reputation-total-badge" title="{{labels.total}}">
+    <i class="fas fa-star" aria-hidden="true"></i>
+    <span data-role="total">{{total}}</span>
+  </div>
+</div>
+
+<div class="fblqa-reputation-save-status is-error" data-role="limit-warning" role="alert"{{#unless overLimit}} hidden{{/unless}}>
+  {{labels.limit}}
+</div>
+
+<div class="fblqa-reputation-table-head" aria-hidden="true">
+  <span>{{labels.use}}</span>
+  <span>{{labels.amount}}</span>
+  <span>{{labels.description}}</span>
+  <span>{{labels.location}}</span>
+  <span></span>
+</div>
+
+<div class="fblqa-reputation-rows"></div>
+
+<div class="fblqa-reputation-footer">
+  <div class="fblqa-reputation-selection-summary">
+    <strong data-role="selected">{{total}}</strong>
+    <span>{{labels.selected}}</span>
+  </div>
+  <span class="fblqa-reputation-save-status" data-role="save-status" aria-live="polite"></span>
+</div>
+
+<div class="fblqa-reputation-actions">
+  <button type="button" data-action="roll-half" title="{{labels.halfHint}}">
+    <i class="fas fa-adjust" aria-hidden="true"></i>
+    {{labels.half}}
+  </button>
+  <button type="button" data-action="roll-third" title="{{labels.thirdHint}}">
+    <i class="fas fa-chart-pie" aria-hidden="true"></i>
+    {{labels.third}}
+  </button>
+  <button type="button" class="fblqa-reputation-roll-button" data-action="roll-selected">
+    <i class="fas fa-dice" aria-hidden="true"></i>
+    {{labels.roll}}
+  </button>
+</div>

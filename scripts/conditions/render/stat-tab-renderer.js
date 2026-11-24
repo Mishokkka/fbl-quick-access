@@ -15,6 +15,7 @@ import {
   parseHeatValue
 } from "../features/special-counters.js";
 import { getAddictionDayKey, getAddictionMorning } from "../services/addiction-service.js";
+import { renderModuleTemplate } from "../../template-renderer.js";
 
 function toUpperTitle(name) {
   return String(name || "").toUpperCase();
@@ -107,7 +108,8 @@ function buildTreatmentHtml(item, editable, isNormalInjury) {
 }
 
 async function enrichEffect(item) {
-  return TextEditor.enrichHTML(item.system?.effect || "", {
+  const editor = globalThis.foundry?.applications?.ux?.TextEditor?.implementation ?? globalThis.TextEditor;
+  return editor.enrichHTML(item.system?.effect || "", {
     async: true,
     rollData: item.getRollData?.() || {}
   });
@@ -119,7 +121,7 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
   const time = String(condition.time || "0");
 
   if (isArc) {
-    return renderTemplate(TEMPLATE_PATHS.customArc, {
+    return renderModuleTemplate(TEMPLATE_PATHS.customArc, {
       id: condition.id,
       order: Number(orderOverride ?? condition.order ?? 0),
       title: toUpperTitle(rawName),
@@ -128,7 +130,7 @@ async function renderCustomCondition(condition, editable, orderOverride = null) 
     });
   }
 
-  return renderTemplate(TEMPLATE_PATHS.customCondition, {
+  return renderModuleTemplate(TEMPLATE_PATHS.customCondition, {
     id: condition.id,
     order: Number(orderOverride ?? condition.order ?? 0),
     name: rawName,
@@ -179,7 +181,7 @@ async function renderInjury(item, editable, orderOverride = null) {
 
   const isArc = getConditionKind(item) === "arc";
   if (isArc) {
-    return renderTemplate(TEMPLATE_PATHS.injuryArc, {
+    return renderModuleTemplate(TEMPLATE_PATHS.injuryArc, {
       ...common,
       title: toUpperTitle(name),
       lethalHtml: buildLethalHtml(item, editable)
@@ -190,7 +192,7 @@ async function renderInjury(item, editable, orderOverride = null) {
     const heat = getHeatDefinition();
     const value = parseHeatValue(item);
     const level = getHeatLevel(value);
-    return renderTemplate(TEMPLATE_PATHS.heat, {
+    return renderModuleTemplate(TEMPLATE_PATHS.heat, {
       ...common,
       value,
       max: heat.max,
@@ -203,7 +205,7 @@ async function renderInjury(item, editable, orderOverride = null) {
 
   if (isMorCondition(item)) {
     const mor = getMorState(item);
-    return renderTemplate(TEMPLATE_PATHS.mor, {
+    return renderModuleTemplate(TEMPLATE_PATHS.mor, {
       ...common,
       current: mor.current,
       permanent: mor.permanent
@@ -216,7 +218,7 @@ async function renderInjury(item, editable, orderOverride = null) {
     const pending = morning?.status === "pending";
     const dayKey = getAddictionDayKey(item.parent, { allowMissingCalendar: true });
     const processed = Boolean(dayKey) && morning?.dayKey === dayKey;
-    return renderTemplate(TEMPLATE_PATHS.addiction, {
+    return renderModuleTemplate(TEMPLATE_PATHS.addiction, {
       ...common,
       pending,
       modifierText: getAddictionModifierText(item),
@@ -238,7 +240,7 @@ async function renderInjury(item, editable, orderOverride = null) {
 
   const isWash = isWashCondition(item);
   const isNormalInjury = !getConditionKind(item);
-  return renderTemplate(TEMPLATE_PATHS.injury, {
+  return renderModuleTemplate(TEMPLATE_PATHS.injury, {
     ...common,
     name: isWash ? getWashDisplayName(name) : name,
     notes: item.getFlag(MODULE_ID, FLAGS.NOTES) || "",
@@ -283,7 +285,7 @@ export async function renderConditionsRows({ customConditions, injuries, editabl
 
 export async function renderStatTab({ tabGroup, rowsHtml, providerSectionsHtml = "", editable, layoutColumns = 1 }) {
   const columns = Number(layoutColumns) === 2 ? 2 : 1;
-  return renderTemplate(TEMPLATE_PATHS.statTab, {
+  return renderModuleTemplate(TEMPLATE_PATHS.statTab, {
     tabGroup,
     tabId: CONDITIONS_TAB_ID,
     rowsHtml,

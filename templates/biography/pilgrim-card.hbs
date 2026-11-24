@@ -1,0 +1,41 @@
+{{#*inline "pilgrimInput"}}
+  <label class="fblqa-bio-field {{extraClass}}"><span>{{label}}</span><input type="text" data-bio-path="{{path}}" value="{{value}}"{{#unless @root.editable}} disabled{{/unless}}></label>
+{{/inline}}
+{{#*inline "pilgrimTextarea"}}
+  <label class="fblqa-bio-field fblqa-growing-text-field {{extraClass}}"><span>{{label}}</span><textarea rows="1" data-bio-autosize data-bio-path="{{path}}"{{#unless @root.editable}} disabled{{/unless}}>{{value}}</textarea></label>
+{{/inline}}
+<div class="fblqa-pilgrim-pocket">
+  <div class="fblqa-pilgrim-windowbar" data-pilgrim-drag>
+    <span class="fblqa-pilgrim-window-title"><i class="fa-solid fa-id-card"></i>{{labels.title}}</span>
+    <span class="fblqa-pilgrim-window-actions">
+      <button type="button" data-bio-action="edit-birth-date" aria-expanded="false" aria-label="{{labels.editBirthDate}}" title="{{labels.editBirthDate}}"{{#unless editable}} disabled{{/unless}}><i class="fa-solid fa-calendar-days"></i></button>
+      <button type="button" data-bio-action="toggle-pilgrim-attachment"><i class="fa-solid fa-link"></i></button>
+      <button type="button" data-bio-action="close-pilgrim" aria-label="{{labels.close}}" title="{{labels.close}}"><i class="fa-solid fa-xmark"></i></button>
+    </span>
+  </div>
+  <div class="fblqa-pilgrim-birth-editor" data-pilgrim-birth-editor hidden>
+    <label>
+      <span>{{labels.birthDate}}</span>
+      <input type="text" data-pilgrim-birth-input value="{{birthDate}}" placeholder="{{labels.birthDatePlaceholder}}"{{#unless editable}} disabled{{/unless}}>
+    </label>
+  </div>
+  <div class="fblqa-pilgrim-card" data-stamp="{{labels.stamp}}">
+    <div class="fblqa-pilgrim-serial">{{serial}}</div>
+    <div class="fblqa-pilgrim-identity">
+      {{> pilgrimInput name}}
+      <div class="fblqa-pilgrim-pair">
+        {{> pilgrimInput kin}}
+        {{> pilgrimInput kinVariant}}
+      </div>
+      {{> pilgrimInput issuingCountry}}
+    </div>
+    {{> pilgrimTextarea appearance}}
+    <div class="fblqa-pilgrim-details">
+      {{#each details}}
+        {{> pilgrimInput}}
+      {{/each}}
+    </div>
+    {{> pilgrimTextarea distinguishingMarks}}
+    <footer><span data-pilgrim-birth-label>{{birthDateText}}</span><span>{{labels.validity}}</span></footer>
+  </div>
+</div>

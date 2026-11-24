@@ -168,7 +168,7 @@ test("native header Reputation control opens the ledger dialog", () => {
 
 const rollActions = ["roll-selected", "roll-half", "roll-third"];
 
-function ledgerFixture(t) {
+function ledgerFixture(t, render = async () => "<div></div>") {
   class Element {
     dataset = {};
     children = [];
@@ -201,13 +201,19 @@ function ledgerFixture(t) {
         this.rows = new Element();
         this.status = new Element();
         this.buttons = Object.fromEntries(rollActions.map(action => [action, new Element()]));
+        this.marker = {
+          isConnected: true,
+          insertAdjacentHTML: () => { this.contentMounted = true; },
+          remove() { this.isConnected = false; }
+        };
         const controls = new Map([
+          ["[data-fblqa-reputation-content]", this.marker],
           [".fblqa-reputation-rows", this.rows], ["[data-role='save-status']", this.status],
           ...rollActions.map(action => [`[data-action='${action}']`, this.buttons[action]])
         ]);
         const root = new Element();
         root.querySelector = selector => controls.get(selector) ?? null;
-        this.config.render(root);
+        this.ready = this.config.render(root);
       }
       close() { this.config.close(); }
       edit(amount) {
@@ -218,6 +224,7 @@ function ledgerFixture(t) {
       roll(action) { return this.buttons[action].listeners.get("click")(); }
     },
     foundry: undefined,
+    renderTemplate: render,
     Roll: class { async evaluate() { return this; } },
     ChatMessage: { async create() { rolls += 1; } }
   };
@@ -237,6 +244,7 @@ test("all reputation rolls wait for a successful save and still work read-only",
   let attempts = 0;
   actor.update = async () => { attempts += 1; throw new Error("Write failed"); };
   const dialog = reputation.openReputationDialog(null, actor);
+  await dialog.ready;
   dialog.edit(9);
   for (const action of rollActions) {
     await dialog.roll(action);
@@ -252,6 +260,7 @@ test("all reputation rolls wait for a successful save and still work read-only",
   actor.isOwner = false;
   actor.update = () => assert.fail("A read-only roll must not write");
   const readOnly = reputation.openReputationDialog(null, actor);
+  await readOnly.ready;
   for (const action of rollActions) await readOnly.roll(action);
   assert.equal(rollCount(), 1 + rollActions.length);
 });
@@ -271,15 +280,34 @@ test("closing and reopening a reputation dialog preserves write order for the ac
     writes.push(amount);
   };
   const first = reputation.openReputationDialog(null, actor);
+  await first.ready;
   first.edit(7);
   first.close();
   await started;
 
   const second = reputation.openReputationDialog(null, { ...actor });
+  await second.ready;
   second.edit(9);
   const saved = second.roll("roll-selected");
   await new Promise(resolve => setImmediate(resolve));
   unblock();
   await saved;
   assert.deepEqual(writes, [7, 9]);
+});
+
+test("a pending reputation template shares the open dialog and cannot mount after close", async t => {
+  let resolveTemplate;
+  const pending = new Promise(resolve => { resolveTemplate = resolve; });
+  const { actor } = ledgerFixture(t, () => pending);
+
+  const first = reputation.openReputationDialog(null, actor);
+  assert.equal(reputation.openReputationDialog(null, actor), first);
+  first.close();
+  const second = reputation.openReputationDialog(null, actor);
+  assert.notEqual(second, first);
+
+  resolveTemplate("<div></div>");
+  await Promise.all([first.ready, second.ready]);
+  assert.equal(first.contentMounted, undefined);
+  assert.equal(second.contentMounted, true);
 });

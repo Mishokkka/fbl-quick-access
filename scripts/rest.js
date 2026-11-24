@@ -11,6 +11,8 @@ import { usesCalendariaStateProgression } from "./state-progression.js";
 import { getCalendariaQuarterInfo } from "./integration/calendaria-adapter.js";
 import { executeActorOperation, handleActorOperation, registerSocketHandler } from "./integration/socket-api.js";
 import { documentValuesEqual, getDocumentWriteMismatches, isUnknownWriteOutcome, runDocumentWrite, whisperToGM } from "./document-writes.js";
+import { renderModuleTemplate } from "./template-renderer.js";
+const REST_DIALOG_TEMPLATE = `modules/${MODULE_ID}/templates/rest/rest-dialog.hbs`;
 const QUARTER_SECONDS = 6 * 60 * 60;
 const REST_OPERATION = "rest.apply";
 
@@ -158,14 +160,22 @@ export async function openRestDialog(app, actor, root = null) {
     ui.notifications?.error?.(escapeHtml(message));
     return null;
   }
-  const content = buildRestDialogContent(actor, snapshot, {
-    canResetShortRest: canResetShortRestLimit(actor)
-  });
-
   if (!hasFoundryDialogApi()) {
     ui.notifications?.warn?.(qaLocalize("Rest.DialogUnavailable", "Окно отдыха недоступно в этом окружении."));
     return;
   }
+
+  let content;
+  try {
+    content = await renderModuleTemplate(REST_DIALOG_TEMPLATE, restTemplateData(actor, snapshot, {
+      canResetShortRest: canResetShortRestLimit(actor)
+    }));
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not render rest dialog`, error);
+    ui.notifications?.error?.(qaLocalize("Rest.DialogUnavailable", "Окно отдыха недоступно в этом окружении."));
+    return null;
+  }
+  if (!globalThis.foundry?.applications?.api?.DialogV2) content = `<form class="fblqa-rest-form">${content}</form>`;
 
   return new Promise((resolve) => {
     let resolved = false;
@@ -264,114 +274,65 @@ export async function runPostRestWorkflow({ startsNewDay = false, closeDialog, o
   if (startsNewDay && typeof openNewDay === "function") await openNewDay();
 }
 
-function buildRestDialogContent(actor, snapshot, permissions = {}) {
-  const conditionChips = Object.values(REST_CONDITIONS)
-    .map((condition) => renderConditionChip(condition, snapshot.conditions[condition.key]))
-    .join("");
-
-  const longRows = Object.values(REST_ATTRIBUTES)
-    .map((attribute) => renderLongAttributeRow(actor, snapshot, attribute))
-    .join("");
-
-  const attributeOptions = Object.values(REST_ATTRIBUTES)
-    .map((attribute) => `<option value="${attribute.key}">${escapeHtml(localizeAttribute(attribute))}</option>`)
-    .join("");
-
+function restTemplateData(actor, snapshot, { canResetShortRest } = {}) {
+  const attributes = Object.values(REST_ATTRIBUTES).map(attribute => ({
+    key: attribute.key,
+    label: localizeAttribute(attribute)
+  }));
   const shortUsed = snapshot.shortRestUse?.usedThisQuarter;
   const shortStatus = shortUsed
     ? qaLocalize("Rest.ShortAlreadyUsed", "В этой четверти дня восстановление уже использовано: {attribute}.", {
-        attribute: escapeHtml(localizeAttribute(REST_ATTRIBUTES[snapshot.shortRestUse.attribute] ?? { fallback: snapshot.shortRestUse.attribute ?? "?" }))
+        attribute: localizeAttribute(REST_ATTRIBUTES[snapshot.shortRestUse.attribute] ?? { fallback: snapshot.shortRestUse.attribute ?? "?" })
       })
     : qaLocalize("Rest.ShortAvailable", "Восстановление Short Rest в этой четверти дня доступно.");
 
-  const newDayControl = usesCalendariaStateProgression()
-    ? `<div class="fblqa-rest-progression-note"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>${escapeHtml(qaLocalize("Rest.StateProgressionCalendaria", "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."))}</span></div>`
-    : `<label class="fblqa-rest-check fblqa-rest-new-day-check">
-          <input type="checkbox" name="startsNewDay">
-          <span>
-            <strong>${qaLocalize("Rest.StartsNewDay", "Этот отдых начинает новый день")}</strong>
-            <small>${qaLocalize("Rest.StartsNewDayHint", "После Long Rest откроется отдельное окно ежедневного продвижения травм, помытости, состояний и зависимостей.")}</small>
-          </span>
-        </label>`;
-
-  return `
-    <form class="fblqa-rest-form">
-      <div class="fblqa-rest-header-template" hidden>${conditionChips}</div>
-
-      <fieldset class="fblqa-rest-type-switch">
-        <label><input type="radio" name="restType" value="long" checked> <span>${qaLocalize("Rest.LongTitle", "Long Rest")}</span></label>
-        <label><input type="radio" name="restType" value="short"> <span>${qaLocalize("Rest.ShortTitle", "Short Rest")}</span></label>
-      </fieldset>
-
-      <section class="fblqa-rest-pane" data-rest-pane="long">
-        <div class="fblqa-rest-pane-head">
-          <h2>${qaLocalize("Rest.LongHeading", "Long Rest — 6 часов сна")}</h2>
-          <p>${qaLocalize("Rest.LongDescription", "Восстанавливает по 1 единице каждой незаблокированной повреждённой характеристики.")}</p>
-        </div>
-        <label class="fblqa-rest-check">
-          <input type="checkbox" name="hasHeatSource">
-          <span>${qaLocalize("Rest.HeatSource", "Есть источник тепла. В конце отдыха снять Cold.")}</span>
-        </label>
-        ${newDayControl}
-        <div class="fblqa-rest-attribute-table">${longRows}</div>
-        <p class="fblqa-rest-note">${qaLocalize("Rest.LongConditionRemoval", "Sleepy снимается сном. Cold снимается только при источнике тепла. Эти состояния всё равно блокируют восстановление на текущем Long Rest.")}</p>
-      </section>
-
-      <section class="fblqa-rest-pane" data-rest-pane="short" hidden aria-hidden="true">
-        <div class="fblqa-rest-pane-head">
-          <h2>${qaLocalize("Rest.ShortHeading", "Short Rest — 15 минут передышки")}</h2>
-          <p>${qaLocalize("Rest.ShortDescription", "Можно выполнить продолжительные действия. Один раз в четверть дня можно восстановить 1 единицу одной характеристики, если потрачен подходящий расходник или выполнено подходящее условие.")}</p>
-        </div>
-        <div class="fblqa-rest-short-status${shortUsed ? " is-used" : ""}" data-short-used="${shortUsed}">${shortStatus}</div>
-        <div class="fblqa-rest-time-source">${qaLocalize("Rest.TimeSource", "Источник четверти дня: {source}", { source: escapeHtml(snapshot.quarterInfo?.label ?? "—") })}</div>
-        <label class="fblqa-rest-check">
-          <input type="checkbox" name="useShortRecovery" ${shortUsed ? "disabled" : ""}>
-          <span>${qaLocalize("Rest.UseShortRecovery", "Восстановить одну характеристику на 1")}</span>
-        </label>
-        <label class="fblqa-rest-field">
-          <span>${qaLocalize("Rest.ShortAttribute", "Характеристика")}</span>
-          <select name="shortAttribute" ${shortUsed ? "disabled" : ""}>${attributeOptions}</select>
-        </label>
-        <label class="fblqa-rest-field">
-          <span>${qaLocalize("Rest.ShortConsumable", "Расходник / обоснование")}</span>
-          <input type="text" name="shortConsumable" value="${escapeHtml(localizeDefaultConsumable(REST_ATTRIBUTES.strength))}" ${shortUsed ? "disabled" : ""}>
-        </label>
-        ${permissions.canResetShortRest ? `
-          <label class="fblqa-rest-check fblqa-rest-reset-quarter">
-            <input type="checkbox" name="resetShortQuarter">
-            <span>${qaLocalize("Rest.ResetShortQuarter", "Reset the Short Rest limit for a new Quarter Day")}</span>
-          </label>` : ""}
-        <p class="fblqa-rest-note">${qaLocalize("Rest.ShortManualConsumableNote", "Модуль не списывает расходник автоматически: еда, вода, курево, разговоры, наркотики и зелья могут быть оформлены по-разному. Он фиксирует восстановление и пишет выбранное обоснование в результат.")}</p>
-      </section>
-    </form>
-  `;
+  return {
+    attributes,
+    conditionChips: Object.values(REST_CONDITIONS).map(condition => ({
+      active: snapshot.conditions[condition.key],
+      label: localizeCondition(condition)
+    })),
+    longRows: attributes.map(attribute => longRestAttributeData(actor, snapshot, attribute)),
+    calendaria: usesCalendariaStateProgression(),
+    canResetShortRest,
+    shortUsed,
+    shortUsedValue: String(shortUsed),
+    shortStatus,
+    defaultConsumable: localizeDefaultConsumable(REST_ATTRIBUTES.strength),
+    labels: {
+      longTitle: qaLocalize("Rest.LongTitle", "Long Rest"),
+      shortTitle: qaLocalize("Rest.ShortTitle", "Short Rest"),
+      longHeading: qaLocalize("Rest.LongHeading", "Long Rest — 6 часов сна"),
+      longDescription: qaLocalize("Rest.LongDescription", "Восстанавливает по 1 единице каждой незаблокированной повреждённой характеристики."),
+      heatSource: qaLocalize("Rest.HeatSource", "Есть источник тепла. В конце отдыха снять Cold."),
+      calendaria: qaLocalize("Rest.StateProgressionCalendaria", "Daily state progression is handled by Calendaria when a new day is registered. Long Rest does not advance daily states in this mode."),
+      startsNewDay: qaLocalize("Rest.StartsNewDay", "Этот отдых начинает новый день"),
+      startsNewDayHint: qaLocalize("Rest.StartsNewDayHint", "После Long Rest откроется отдельное окно ежедневного продвижения травм, помытости, состояний и зависимостей."),
+      longConditionRemoval: qaLocalize("Rest.LongConditionRemoval", "Sleepy снимается сном. Cold снимается только при источнике тепла. Эти состояния всё равно блокируют восстановление на текущем Long Rest."),
+      shortHeading: qaLocalize("Rest.ShortHeading", "Short Rest — 15 минут передышки"),
+      shortDescription: qaLocalize("Rest.ShortDescription", "Можно выполнить продолжительные действия. Один раз в четверть дня можно восстановить 1 единицу одной характеристики, если потрачен подходящий расходник или выполнено подходящее условие."),
+      timeSource: qaLocalize("Rest.TimeSource", "Источник четверти дня: {source}", { source: snapshot.quarterInfo?.label ?? "—" }),
+      useShortRecovery: qaLocalize("Rest.UseShortRecovery", "Восстановить одну характеристику на 1"),
+      shortAttribute: qaLocalize("Rest.ShortAttribute", "Характеристика"),
+      shortConsumable: qaLocalize("Rest.ShortConsumable", "Расходник / обоснование"),
+      resetShortQuarter: qaLocalize("Rest.ResetShortQuarter", "Reset the Short Rest limit for a new Quarter Day"),
+      shortManualConsumableNote: qaLocalize("Rest.ShortManualConsumableNote", "Модуль не списывает расходник автоматически: еда, вода, курево, разговоры, наркотики и зелья могут быть оформлены по-разному. Он фиксирует восстановление и пишет выбранное обоснование в результат.")
+    }
+  };
 }
 
-function renderConditionChip(condition, isActive) {
-  const label = escapeHtml(localizeCondition(condition));
-  const stateClass = isActive ? "is-active" : "is-inactive";
-  const icon = isActive ? "fa-circle-exclamation" : "fa-circle-check";
-  return `<span class="fblqa-rest-condition ${stateClass}"><i class="fas ${icon}" aria-hidden="true"></i>${label}</span>`;
-}
-
-function renderLongAttributeRow(actor, snapshot, attribute) {
-  const state = getAttributeState(actor, attribute.key);
-  const blockedBy = snapshot.blockedBy[attribute.key] ?? [];
+function longRestAttributeData(actor, snapshot, { key, label }) {
+  const state = getAttributeState(actor, key);
+  const blockedBy = snapshot.blockedBy[key] ?? [];
   const blocked = blockedBy.length > 0;
   const canRecover = !blocked && state.canRecover;
   const status = blocked
-    ? qaLocalize("Rest.BlockedBy", "Блокировано: {conditions}", { conditions: blockedBy.map((key) => escapeHtml(localizeCondition(REST_CONDITIONS[key]))).join(", ") })
+    ? qaLocalize("Rest.BlockedBy", "Блокировано: {conditions}", { conditions: blockedBy.map(key => localizeCondition(REST_CONDITIONS[key])).join(", ") })
     : canRecover
       ? qaLocalize("Rest.WillRecover", "Восстановит 1")
       : qaLocalize("Rest.NoRecoveryNeeded", "Не требует восстановления");
 
-  return `
-    <div class="fblqa-rest-attribute-row${blocked ? " is-blocked" : ""}${canRecover ? " will-recover" : ""}">
-      <strong>${escapeHtml(localizeAttribute(attribute))}</strong>
-      <span>${state.hasValue ? `${state.value}/${state.max}` : "—"}</span>
-      <em>${status}</em>
-    </div>
-  `;
+  return { label, blocked, canRecover, value: state.hasValue ? `${state.value}/${state.max}` : "—", status };
 }
 
 function setupRestDialogInteractivity(dialogOrElement, onLayoutChange = null) {

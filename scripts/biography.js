@@ -3,8 +3,11 @@ import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { applyPilgrimCardFont, getPilgrimCardFontFamily } from "./settings.js";
 import { findApplicationRoot, findBiographyTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { renderModuleTemplate } from "./template-renderer.js";
 import { actorKey, decodeHtmlEntities, escapeHtml, stripHtml } from "./utils.js";
 
+const BIOGRAPHY_TEMPLATE = `modules/${MODULE_ID}/templates/biography/biography-tab.hbs`;
+const PILGRIM_TEMPLATE = `modules/${MODULE_ID}/templates/biography/pilgrim-card.hbs`;
 const PROFILE_VERSION = 1;
 const QUESTION_FIELDS = Object.freeze([
   ["bestFriend", "Bio.Questions.BestFriend", "Лучший друг или самый близкий человек"],
@@ -22,6 +25,7 @@ const LANGUAGE_LEVELS = Object.freeze({
   academic: ["Bio.LanguageLevels.Academic", "Академический"]
 });
 const DRAWERS = new Map();
+const BIO_RENDERS = new WeakMap();
 const SAVE_TIMERS = new Map();
 const SAVE_CHAINS = new Map();
 const SAVE_PENDING = new Map();
@@ -194,31 +198,45 @@ export async function saveBiographyProfile(actor, value, { render = false } = {}
 export function setupBiographyTab(app, actor, root) {
   const bioTab = findBiographyTab(root);
   if (!(bioTab instanceof HTMLElement)) return null;
+  const alreadyMounted = bioTab.dataset.fblqaBiographyMounted === "true" && bioTab.querySelector(".fblqa-bio-shell");
+  if (alreadyMounted || BIO_RENDERS.has(bioTab)) return bioTab;
 
   const nativePrideRoll = captureNativePrideRoll(bioTab);
   const headingSpec = captureNativeHeadingSpec(bioTab);
-  bioTab.classList.add("fblqa-biography-tab");
   const editable = canModifyActor(actor);
   const state = editable ? getBiographyDraft(actor) : getBiographyProfile(actor);
 
-  const render = () => {
-    commitActiveRichEditor(bioTab);
-    const viewport = captureBiographyViewport(bioTab, actor);
-    cleanupBiographyMount(bioTab);
-    bioTab.innerHTML = biographyHtml(actor, state, editable, headingSpec);
-    bioTab.dataset.fblqaBiographyMounted = "true";
-    mountNativePrideRoll(bioTab, nativePrideRoll);
-    bindBiographyInteractions({ app, actor, root, bioTab, state, editable, render });
-    void enrichBiographyPreviews(actor, bioTab);
-    restoreBiographyViewport(bioTab, actor, viewport);
+  const render = async () => {
+    const token = {};
+    BIO_RENDERS.set(bioTab, token);
+    try {
+      commitActiveRichEditor(bioTab);
+      const html = await renderModuleTemplate(BIOGRAPHY_TEMPLATE, biographyTemplateData(actor, state, editable, headingSpec));
+      if (BIO_RENDERS.get(bioTab) !== token || !bioTab.isConnected || app?.rendered === false || findBiographyTab(root) !== bioTab) return;
+
+      const viewport = captureBiographyViewport(bioTab, actor);
+      cleanupBiographyMount(bioTab);
+      bioTab.classList.add("fblqa-biography-tab");
+      bioTab.innerHTML = html;
+      bioTab.dataset.fblqaBiographyMounted = "true";
+      mountNativePrideRoll(bioTab, nativePrideRoll);
+      bindBiographyInteractions({ actor, root, bioTab, state, editable, render });
+      void enrichBiographyPreviews(actor, bioTab);
+      restoreBiographyViewport(bioTab, actor, viewport);
+    } catch (error) {
+      console.error(`${MODULE_ID} | BIO render failed`, error);
+    } finally {
+      if (BIO_RENDERS.get(bioTab) === token) BIO_RENDERS.delete(bioTab);
+    }
   };
-  render();
+  void render();
   return bioTab;
 }
 
 export function cleanupBiographyTab(root) {
   const bioTab = findBiographyTab(root);
   if (!(bioTab instanceof HTMLElement)) return false;
+  BIO_RENDERS.delete(bioTab);
   cleanupBiographyMount(bioTab);
   commitActiveRichEditor(bioTab);
   return true;
@@ -248,12 +266,12 @@ export function closeBiographyDrawer(actorOrId, { discardPending = false } = {})
   const key = typeof actorOrId === "string" ? actorOrId : drawerKey(actorOrId);
   if (!discardPending) flushPilgrimSave(key);
   const record = DRAWERS.get(key);
-  if (!record) return;
-  const drawer = record.element ?? record;
+  DRAWERS.delete(key);
+  const drawer = record?.element;
+  if (!drawer) return;
   record.cleanup?.();
   drawer.classList.remove("is-open");
   globalThis.setTimeout?.(() => drawer.remove(), 180);
-  DRAWERS.delete(key);
 }
 
 function readLegacyImporterProfile(actor) {
@@ -326,97 +344,86 @@ function profileFromActor(actor) {
   });
 }
 
-function biographyHtml(actor, profile, editable, headingSpec) {
-  const disabled = editable ? "" : " disabled";
-  const questionFields = QUESTION_FIELDS.map(([key, localizationKey, fallback]) => fieldEditor(
-    actor,
-    `questions.${key}`,
-    t(localizationKey, fallback),
-    profile.questions[key],
-    disabled,
-    {
-      headingSpec,
-      sectionKey: `question-${key}`,
-      subheading: true
+function biographyTemplateData(actor, profile, editable, headingSpec) {
+  const richField = (path, label, value, sectionKey, options = {}) => {
+    const html = biographyDisplayHtml(value, actor);
+    return {
+      path,
+      name: `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}.${path}`,
+      html,
+      hasContent: richTextHasContent(html),
+      heading: biographyHeadingData(actor, headingSpec, sectionKey, label, options)
+    };
+  };
+  const legacy = [
+    ["face", t("Bio.Archive.Face", "Лицо"), profile.legacy.face],
+    ["body", t("Bio.Archive.Body", "Телосложение"), profile.legacy.body],
+    ["clothing", t("Bio.Archive.Clothing", "Одежда"), profile.legacy.clothing]
+  ].filter(([, , value]) => richTextHasContent(value)).map(([key, label, value]) => ({
+    key, label,
+    html: biographyDisplayHtml(value, actor),
+    copyLabel: t("Bio.Archive.CopyField", "Копировать: {field}", { field: label })
+  }));
+
+  return {
+    editable,
+    fields: [
+      richField("pride", t("Bio.Fields.Pride", "Гордость"), profile.pride, "pride", { prideRoll: true }),
+      richField("darkSecret", t("Bio.Fields.DarkSecret", "Тёмный секрет"), profile.darkSecret, "dark-secret"),
+      richField("background", t("Bio.Fields.Background", "Предыстория"), profile.background, "background"),
+      richField("family", t("Bio.Fields.Family", "Семья"), profile.family, "family"),
+      richField("motivation", t("Bio.Fields.Motivation", "Мотивация к приключениям"), profile.motivation, "motivation"),
+      richField("partyConnections", t("Bio.Fields.PartyConnections", "Связь с группой"), profile.partyConnections, "party-connections")
+    ],
+    languagesHeading: biographyHeadingData(actor, headingSpec, "languages", t("Bio.Languages.Title", "Языки"), {
+      addAction: "add-language",
+      addLabel: t("Bio.Languages.Add", "Добавить язык")
+    }),
+    languages: profile.languages.map(entry => ({
+      name: entry.name,
+      cost: entry.cost,
+      levels: Object.entries(LANGUAGE_LEVELS).map(([value, [key, fallback]]) => ({
+        value, label: t(key, fallback), selected: entry.level === value
+      }))
+    })),
+    questionsHeading: biographyHeadingData(actor, headingSpec, "questions", t("Bio.Questions.Title", "Ответы на вопросы")),
+    questions: QUESTION_FIELDS.map(([key, localizationKey, fallback]) =>
+      richField(`questions.${key}`, t(localizationKey, fallback), profile.questions[key], `question-${key}`, { subheading: true })
+    ),
+    rumorsHeading: biographyHeadingData(actor, headingSpec, "rumors", t("Bio.Rumors.Title", "Слухи"), {
+      addAction: "add-rumor",
+      addLabel: t("Bio.Rumors.Add", "Добавить слух")
+    }),
+    rumors: profile.rumors.map(entry => ({ text: plainTextFromHtml(entry.text) })),
+    legacyHeading: biographyHeadingData(actor, headingSpec, "", t("Bio.Archive.Title", "Архив старой вкладки BIO")),
+    legacy,
+    labels: {
+      archive: t("Bio.Archive.Button", "Архив BIO"),
+      pilgrim: t("Bio.Pilgrim.Button", "Карта пилигрима"),
+      edit: t("Bio.Edit", "Редактировать"),
+      language: t("Bio.Languages.Language", "Язык"),
+      languageName: t("Bio.Languages.NamePlaceholder", "Название"),
+      languageLevel: t("Bio.Languages.Level", "Уровень"),
+      languageCost: t("Bio.Languages.Cost", "Цена"),
+      removeLanguage: t("Bio.Languages.Remove", "Удалить язык"),
+      noLanguages: t("Bio.Languages.Empty", "Языки не записаны."),
+      rumor: t("Bio.Rumors.Text", "Слух"),
+      removeRumor: t("Bio.Rumors.Remove", "Удалить слух"),
+      noRumors: t("Bio.Rumors.Empty", "Слухи не записаны."),
+      copy: t("Bio.Archive.Copy", "Копировать")
     }
-  )).join("");
-  const legacyVisible = Object.values(profile.legacy).some((value) => richTextHasContent(value));
-  const addLanguage = editable ? iconButton({
-    action: "add-language",
-    icon: "fa-plus",
-    label: t("Bio.Languages.Add", "Добавить язык")
-  }) : "";
-  const addRumor = editable ? iconButton({
-    action: "add-rumor",
-    icon: "fa-plus",
-    label: t("Bio.Rumors.Add", "Добавить слух")
-  }) : "";
+  };
+}
 
-  const languagesCollapsed = isSectionCollapsed(actor, "languages");
-  const questionsCollapsed = isSectionCollapsed(actor, "questions");
-  const rumorsCollapsed = isSectionCollapsed(actor, "rumors");
-
-  return `
-    <div class="fblqa-bio-shell ${editable ? "" : "is-readonly"}">
-      <div class="fblqa-bio-actions" data-bio-floating-actions>
-        ${legacyVisible ? `<button type="button" class="fblqa-archive-trigger" data-bio-action="archive" aria-expanded="false"><i class="fa-solid fa-box-archive"></i><span>${escapeHtml(t("Bio.Archive.Button", "Архив BIO"))}</span></button>` : ""}
-        <button type="button" class="fblqa-pilgrim-trigger" data-bio-action="pilgrim"><i class="fa-solid fa-id-card"></i><span>${escapeHtml(t("Bio.Pilgrim.Button", "Карта пилигрима"))}</span></button>
-      </div>
-
-      <div class="fblqa-bio-stack">
-        ${fieldEditor(actor, "pride", t("Bio.Fields.Pride", "Гордость"), profile.pride, disabled, {
-          headingSpec,
-          sectionKey: "pride",
-          actionHtml: '<span class="fblqa-pride-roll-slot" data-bio-pride-roll-slot></span>',
-          actionBeforeTitle: true
-        })}
-        ${fieldEditor(actor, "darkSecret", t("Bio.Fields.DarkSecret", "Тёмный секрет"), profile.darkSecret, disabled, { headingSpec, sectionKey: "dark-secret" })}
-        ${fieldEditor(actor, "background", t("Bio.Fields.Background", "Предыстория"), profile.background, disabled, { headingSpec, sectionKey: "background" })}
-        ${fieldEditor(actor, "family", t("Bio.Fields.Family", "Семья"), profile.family, disabled, { headingSpec, sectionKey: "family" })}
-        ${fieldEditor(actor, "motivation", t("Bio.Fields.Motivation", "Мотивация к приключениям"), profile.motivation, disabled, { headingSpec, sectionKey: "motivation" })}
-        ${fieldEditor(actor, "partyConnections", t("Bio.Fields.PartyConnections", "Связь с группой"), profile.partyConnections, disabled, { headingSpec, sectionKey: "party-connections" })}
-
-        <section class="fblqa-bio-block fblqa-language-section" data-bio-section="languages">
-          ${headingHtml(t("Bio.Languages.Title", "Языки"), headingSpec, addLanguage, {
-            sectionKey: "languages",
-            collapsed: languagesCollapsed
-          })}
-          <div class="fblqa-bio-section-body" data-bio-section-body="languages"${languagesCollapsed ? " hidden" : ""}>
-            <div class="fblqa-bio-list fblqa-language-list">
-              ${profile.languages.length
-                ? profile.languages.map((entry, index) => languageRow(entry, index, editable)).join("")
-                : `<p class="fblqa-bio-empty">${escapeHtml(t("Bio.Languages.Empty", "Языки не записаны."))}</p>`}
-            </div>
-          </div>
-        </section>
-
-        <section class="fblqa-bio-block fblqa-questions-section" data-bio-section="questions">
-          ${headingHtml(t("Bio.Questions.Title", "Ответы на вопросы"), headingSpec, "", {
-            sectionKey: "questions",
-            collapsed: questionsCollapsed
-          })}
-          <div class="fblqa-bio-section-body fblqa-question-list" data-bio-section-body="questions"${questionsCollapsed ? " hidden" : ""}>
-            ${questionFields}
-          </div>
-        </section>
-
-        <section class="fblqa-bio-block fblqa-rumor-section" data-bio-section="rumors">
-          ${headingHtml(t("Bio.Rumors.Title", "Слухи"), headingSpec, addRumor, {
-            sectionKey: "rumors",
-            collapsed: rumorsCollapsed
-          })}
-          <div class="fblqa-bio-section-body" data-bio-section-body="rumors"${rumorsCollapsed ? " hidden" : ""}>
-            <div class="fblqa-bio-list fblqa-rumor-list">
-              ${profile.rumors.length
-                ? profile.rumors.map((entry, index) => rumorRow(entry, index, editable)).join("")
-                : `<p class="fblqa-bio-empty">${escapeHtml(t("Bio.Rumors.Empty", "Слухи не записаны."))}</p>`}
-            </div>
-          </div>
-        </section>
-      </div>
-
-      ${legacyVisible ? legacySection(profile.legacy, headingSpec, actor) : ""}
-    </div>`;
+function biographyHeadingData(actor, spec, key, label, { subheading = false, prideRoll = false, addAction, addLabel } = {}) {
+  const collapsed = Boolean(key) && isSectionCollapsed(actor, key);
+  return {
+    key, label, subheading, prideRoll, addAction, addLabel, collapsed,
+    expanded: String(!collapsed),
+    toggleLabel: collapsed ? t("Bio.Expand", "Развернуть") : t("Bio.Collapse", "Свернуть"),
+    tag: subheading ? "h3" : spec.tag,
+    nativeClasses: !subheading && spec.className ? `${spec.className} ` : ""
+  };
 }
 
 function bindBiographyInteractions({ actor, root, bioTab, state, editable, render }) {
@@ -427,7 +434,11 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   setupBiographyViewportTracking(bioTab, actor);
   setupLanguageLayout(bioTab);
 
-  bioTab.querySelector('[data-bio-action="pilgrim"]')?.addEventListener("click", () => openPilgrimCard(actor, root, state, editable));
+  bioTab.querySelector('[data-bio-action="pilgrim"]')?.addEventListener("click", () => {
+    void openPilgrimCard(actor, root, state, editable).catch(error => {
+      console.error(`${MODULE_ID} | pilgrim card render failed`, error);
+    });
+  });
   bioTab.querySelector('[data-bio-action="archive"]')?.addEventListener("click", (event) => {
     const button = event.currentTarget;
     const archive = bioTab.querySelector("[data-bio-archive]");
@@ -462,7 +473,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   bioTab.querySelector('[data-bio-action="add-language"]')?.addEventListener("click", () => {
     if (!editable) return warnCannotModifyActor();
     state.languages.push({ id: makeId("lang"), languageId: "", name: "", level: "basic", cost: 0, native: false });
-    render();
+    void render();
     queueProfileSave(actor, state, null, 0, "languages");
   });
   for (const button of bioTab.querySelectorAll('[data-bio-action="remove-language"]')) {
@@ -471,7 +482,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
       const index = Number(button.dataset.index);
       if (!Number.isInteger(index) || index < 0 || index >= state.languages.length) return;
       state.languages.splice(index, 1);
-      render();
+      void render();
       queueProfileSave(actor, state, null, 0, "languages");
     });
   }
@@ -479,7 +490,7 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
   bioTab.querySelector('[data-bio-action="add-rumor"]')?.addEventListener("click", () => {
     if (!editable) return warnCannotModifyActor();
     state.rumors.push({ id: makeId("rumor"), text: "", truth: "uncertain" });
-    render();
+    void render();
     queueProfileSave(actor, state, null, 0, "rumors");
   });
   for (const button of bioTab.querySelectorAll('[data-bio-action="remove-rumor"]')) {
@@ -488,17 +499,33 @@ function bindBiographyInteractions({ actor, root, bioTab, state, editable, rende
       const index = Number(button.dataset.index);
       if (!Number.isInteger(index) || index < 0 || index >= state.rumors.length) return;
       state.rumors.splice(index, 1);
-      render();
+      void render();
       queueProfileSave(actor, state, null, 0, "rumors");
     });
   }
 }
 
-function openPilgrimCard(actor, root, biographyState, editable) {
+async function openPilgrimCard(actor, root, biographyState, editable) {
   closeBiographyDrawer(actor);
+  const key = drawerKey(actor);
   const application = findApplicationRoot(root) ?? root;
+  const sourceTab = findBiographyTab(root);
   const stored = actor?.getFlag?.(MODULE_ID, FLAG_PILGRIM_CARD_PROFILE);
   const cardState = getPilgrimCardProfile(actor, biographyState);
+  const record = {};
+  DRAWERS.set(key, record);
+  let html;
+  try {
+    html = await renderModuleTemplate(PILGRIM_TEMPLATE, pilgrimTemplateData(actor, cardState, editable));
+  } catch (error) {
+    if (DRAWERS.get(key) === record) DRAWERS.delete(key);
+    throw error;
+  }
+  if (DRAWERS.get(key) !== record) return;
+  if (!root.isConnected || (sourceTab && !sourceTab.isConnected)) {
+    DRAWERS.delete(key);
+    return;
+  }
 
   // Persist the one-time migration snapshot immediately. The same mutable state
   // object is used by later edits, so a quick edit before this timer fires cannot
@@ -509,12 +536,12 @@ function openPilgrimCard(actor, root, biographyState, editable) {
   drawer.className = "fblqa-pilgrim-drawer";
   drawer.dataset.actorId = actor.id;
   drawer.dataset.attached = "true";
-  drawer.innerHTML = pilgrimCardHtml(actor, cardState, editable);
+  drawer.innerHTML = html;
   document.body.append(drawer);
   applyPilgrimCardFont(drawer, getPilgrimCardFontFamily());
 
-  const cleanup = setupPilgrimMovement(drawer, application);
-  DRAWERS.set(drawerKey(actor), { element: drawer, cleanup });
+  record.element = drawer;
+  record.cleanup = setupPilgrimMovement(drawer, application);
   positionPilgrimDrawer(drawer, application);
   updatePilgrimAttachmentUi(drawer);
   requestAnimationFrame(() => drawer.classList.add("is-open"));
@@ -529,48 +556,40 @@ function openPilgrimCard(actor, root, biographyState, editable) {
   bindPilgrimControls(drawer, actor, cardState, editable);
 }
 
-function pilgrimCardHtml(actor, profile, editable) {
-  const disabled = editable ? "" : " disabled";
-  const serial = `АО-${String(actor?.id ?? "000000").slice(-6).toUpperCase()}`;
-  const stamp = t("Bio.Pilgrim.Stamp", "ПОДТВЕРЖДЕНО");
-  return `
-    <div class="fblqa-pilgrim-pocket">
-      <div class="fblqa-pilgrim-windowbar" data-pilgrim-drag>
-        <span class="fblqa-pilgrim-window-title"><i class="fa-solid fa-id-card"></i>${escapeHtml(t("Bio.Pilgrim.Title", "Карта пилигрима"))}</span>
-        <span class="fblqa-pilgrim-window-actions">
-          <button type="button" data-bio-action="edit-birth-date" aria-expanded="false" aria-label="${escapeHtml(t("Bio.Pilgrim.EditBirthDate", "Настроить дату рождения"))}" title="${escapeHtml(t("Bio.Pilgrim.EditBirthDate", "Настроить дату рождения"))}"${editable ? "" : " disabled"}><i class="fa-solid fa-calendar-days"></i></button>
-          <button type="button" data-bio-action="toggle-pilgrim-attachment"><i class="fa-solid fa-link"></i></button>
-          <button type="button" data-bio-action="close-pilgrim" aria-label="${escapeHtml(t("Bio.Pilgrim.Close", "Закрыть"))}" title="${escapeHtml(t("Bio.Pilgrim.Close", "Закрыть"))}"><i class="fa-solid fa-xmark"></i></button>
-        </span>
-      </div>
-      <div class="fblqa-pilgrim-birth-editor" data-pilgrim-birth-editor hidden>
-        <label>
-          <span>${escapeHtml(t("Bio.Pilgrim.BirthDate", "Дата рождения"))}</span>
-          <input type="text" data-pilgrim-birth-input value="${escapeHtml(birthDateLabel(profile.identity.birthDate))}" placeholder="${escapeHtml(t("Bio.Pilgrim.BirthDatePlaceholder", "Например: 14 Зноероста 842"))}"${disabled}>
-        </label>
-      </div>
-      <div class="fblqa-pilgrim-card" data-stamp="${escapeHtml(stamp)}">
-        <div class="fblqa-pilgrim-serial">${escapeHtml(serial)}</div>
-        <div class="fblqa-pilgrim-identity">
-          ${fieldInput("identity.name", t("Bio.Pilgrim.Name", "Имя"), profile.identity.name, disabled)}
-          <div class="fblqa-pilgrim-pair">
-            ${fieldInput("identity.kin", t("Bio.Pilgrim.Kin", "Раса"), profile.identity.kin, disabled)}
-            ${fieldInput("identity.kinVariant", t("Bio.Pilgrim.KinVariant", "Подраса"), profile.identity.kinVariant, disabled)}
-          </div>
-          ${fieldInput("identity.issuingCountry", t("Bio.Pilgrim.IssuingCountry", "Страна выдачи"), profile.identity.issuingCountry, disabled)}
-        </div>
-        ${fieldTextarea("physical.appearance", t("Bio.Pilgrim.Appearance", "Общее описание внешности"), profile.physical.appearance, disabled, "fblqa-pilgrim-appearance")}
-        <div class="fblqa-pilgrim-details">
-          ${fieldInput("physical.height", t("Bio.Pilgrim.Height", "Рост"), profile.physical.height, disabled)}
-          ${fieldInput("physical.weight", t("Bio.Pilgrim.Weight", "Вес"), profile.physical.weight, disabled)}
-          ${fieldInput("physical.skin", t("Bio.Pilgrim.Skin", "Кожа"), profile.physical.skin, disabled)}
-          ${fieldInput("physical.eyes", t("Bio.Pilgrim.Eyes", "Глаза"), profile.physical.eyes, disabled)}
-          ${fieldInput("physical.hair", t("Bio.Pilgrim.Hair", "Волосы"), profile.physical.hair, disabled, "fblqa-pilgrim-hair")}
-        </div>
-        ${fieldTextarea("physical.distinguishingMarks", t("Bio.Pilgrim.DistinguishingMarks", "Особые приметы"), profile.physical.distinguishingMarks, disabled, "fblqa-pilgrim-marks")}
-        <footer><span data-pilgrim-birth-label>${escapeHtml(birthDateLabel(profile.identity.birthDate) || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана"))}</span><span>${escapeHtml(t("Bio.Pilgrim.Validity", "Действительна во всех портах"))}</span></footer>
-      </div>
-    </div>`;
+function pilgrimTemplateData(actor, profile, editable) {
+  const field = (path, value, key, fallback, extraClass = "") => ({
+    path, value, label: t(`Bio.Pilgrim.${key}`, fallback), extraClass
+  });
+  const { identity, physical } = profile;
+  const birthDate = birthDateLabel(identity.birthDate);
+  return {
+    editable,
+    serial: `АО-${String(actor?.id ?? "000000").slice(-6).toUpperCase()}`,
+    birthDate,
+    birthDateText: birthDate || t("Bio.Pilgrim.BirthDateMissing", "Дата рождения не указана"),
+    name: field("identity.name", identity.name, "Name", "Имя"),
+    kin: field("identity.kin", identity.kin, "Kin", "Раса"),
+    kinVariant: field("identity.kinVariant", identity.kinVariant, "KinVariant", "Подраса"),
+    issuingCountry: field("identity.issuingCountry", identity.issuingCountry, "IssuingCountry", "Страна выдачи"),
+    appearance: field("physical.appearance", plainTextFromHtml(physical.appearance), "Appearance", "Общее описание внешности", "fblqa-pilgrim-appearance"),
+    details: [
+      field("physical.height", physical.height, "Height", "Рост"),
+      field("physical.weight", physical.weight, "Weight", "Вес"),
+      field("physical.skin", physical.skin, "Skin", "Кожа"),
+      field("physical.eyes", physical.eyes, "Eyes", "Глаза"),
+      field("physical.hair", physical.hair, "Hair", "Волосы", "fblqa-pilgrim-hair")
+    ],
+    distinguishingMarks: field("physical.distinguishingMarks", plainTextFromHtml(physical.distinguishingMarks), "DistinguishingMarks", "Особые приметы", "fblqa-pilgrim-marks"),
+    labels: {
+      stamp: t("Bio.Pilgrim.Stamp", "ПОДТВЕРЖДЕНО"),
+      title: t("Bio.Pilgrim.Title", "Карта пилигрима"),
+      editBirthDate: t("Bio.Pilgrim.EditBirthDate", "Настроить дату рождения"),
+      close: t("Bio.Pilgrim.Close", "Закрыть"),
+      birthDate: t("Bio.Pilgrim.BirthDate", "Дата рождения"),
+      birthDatePlaceholder: t("Bio.Pilgrim.BirthDatePlaceholder", "Например: 14 Зноероста 842"),
+      validity: t("Bio.Pilgrim.Validity", "Действительна во всех портах")
+    }
+  };
 }
 
 
@@ -776,95 +795,6 @@ function clampDrawerToViewport(drawer) {
   drawer.style.maxHeight = `${Math.max(300, window.innerHeight - 12)}px`;
 }
 
-function languageRow(entry, index, editable) {
-  const disabled = editable ? "" : " disabled";
-  return `<div class="fblqa-language-row">
-    <label class="fblqa-row-field fblqa-language-name"><span>${escapeHtml(t("Bio.Languages.Language", "Язык"))}</span><input type="text" data-bio-path="languages.${index}.name" value="${escapeHtml(entry.name)}" placeholder="${escapeHtml(t("Bio.Languages.NamePlaceholder", "Название"))}"${disabled}></label>
-    <label class="fblqa-row-field fblqa-language-level"><span>${escapeHtml(t("Bio.Languages.Level", "Уровень"))}</span><select data-bio-path="languages.${index}.level"${disabled}>${Object.entries(LANGUAGE_LEVELS).map(([value, [key, fallback]]) => `<option value="${value}"${entry.level === value ? " selected" : ""}>${escapeHtml(t(key, fallback))}</option>`).join("")}</select></label>
-    <label class="fblqa-row-field fblqa-cost-field"><span>${escapeHtml(t("Bio.Languages.Cost", "Цена"))}</span><input type="number" min="0" step="1" data-bio-path="languages.${index}.cost" value="${escapeHtml(entry.cost)}"${disabled}></label>
-    ${editable ? `<button type="button" class="fblqa-row-remove" data-bio-action="remove-language" data-index="${index}" aria-label="${escapeHtml(t("Bio.Languages.Remove", "Удалить язык"))}" title="${escapeHtml(t("Bio.Languages.Remove", "Удалить язык"))}"><i class="fa-solid fa-xmark"></i></button>` : ""}
-  </div>`;
-}
-
-function rumorRow(entry, index, editable) {
-  const disabled = editable ? "" : " disabled";
-  return `<div class="fblqa-rumor-row${editable ? " is-editable" : " is-readonly"}">
-    <label class="fblqa-row-field fblqa-rumor-text"><span>${escapeHtml(t("Bio.Rumors.Text", "Слух"))}</span><input type="text" data-bio-path="rumors.${index}.text" value="${escapeHtml(plainTextFromHtml(entry.text))}" placeholder="${escapeHtml(t("Bio.Rumors.Text", "Слух"))}"${disabled}></label>
-    ${editable ? `<button type="button" class="fblqa-row-remove" data-bio-action="remove-rumor" data-index="${index}" aria-label="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}" title="${escapeHtml(t("Bio.Rumors.Remove", "Удалить слух"))}"><i class="fa-solid fa-xmark"></i></button>` : ""}
-  </div>`;
-}
-
-function legacySection(legacy, headingSpec, actor) {
-  const entries = [
-    ["face", t("Bio.Archive.Face", "Лицо"), legacy.face],
-    ["body", t("Bio.Archive.Body", "Телосложение"), legacy.body],
-    ["clothing", t("Bio.Archive.Clothing", "Одежда"), legacy.clothing]
-  ].filter(([, , value]) => richTextHasContent(value));
-  return `<section class="fblqa-legacy-section" data-bio-archive hidden>
-    ${headingHtml(t("Bio.Archive.Title", "Архив старой вкладки BIO"), headingSpec, "", { collapsible: false })}
-    <div class="fblqa-legacy-grid">${entries.map(([key, label, value]) => `<article>
-      <header><strong>${escapeHtml(label)}</strong><button type="button" data-bio-action="copy-legacy" data-legacy-key="${escapeHtml(key)}" title="${escapeHtml(t("Bio.Archive.Copy", "Копировать"))}" aria-label="${escapeHtml(t("Bio.Archive.CopyField", "Копировать: {field}", { field: label }))}"><i class="fa-regular fa-copy"></i></button></header>
-      <div class="fblqa-legacy-content" tabindex="0" data-bio-selectable>${biographyDisplayHtml(value, actor)}</div>
-    </article>`).join("")}</div>
-  </section>`;
-}
-
-function fieldEditor(actor, path, label, value, disabled, {
-  extraClass = "",
-  headingSpec = null,
-  actionHtml = "",
-  compact = false,
-  sectionKey = path,
-  subheading = false,
-  collapsible = true,
-  actionBeforeTitle = false
-} = {}) {
-  const html = biographyDisplayHtml(value, actor);
-  const displayHtml = richTextHasContent(html) ? html : "<p><br></p>";
-  const name = `flags.${MODULE_ID}.${FLAG_BIOGRAPHY_PROFILE}.${path}`;
-  const collapsed = collapsible && isSectionCollapsed(actor, sectionKey);
-  const editable = !disabled;
-  const editLabel = t("Bio.Edit", "Редактировать");
-  return `<section class="fblqa-bio-block fblqa-rich-field ${escapeHtml(extraClass)} ${compact ? "is-compact" : ""} ${subheading ? "is-subheading" : ""}" data-bio-section="${escapeHtml(sectionKey)}">
-    ${headingHtml(label, headingSpec, actionHtml, { sectionKey, collapsed, subheading, collapsible, actionBeforeTitle })}
-    <div class="fblqa-bio-section-body" data-bio-section-body="${escapeHtml(sectionKey)}"${collapsed ? " hidden" : ""}>
-      <div class="fblqa-rich-control" data-bio-rich-control data-bio-path="${escapeHtml(path)}" data-bio-name="${escapeHtml(name)}" data-bio-value="${escapeHtml(html)}">
-        <div class="fblqa-rich-preview" data-bio-action="edit-rich" tabindex="${editable ? "0" : "-1"}" role="${editable ? "button" : "document"}" aria-label="${editable ? escapeHtml(editLabel) : ""}">${displayHtml}</div>
-        ${editable ? `<button type="button" class="fblqa-rich-edit" data-bio-action="edit-rich" aria-label="${escapeHtml(editLabel)}" title="${escapeHtml(editLabel)}"><i class="fa-solid fa-pen"></i></button>` : ""}
-      </div>
-    </div>
-  </section>`;
-}
-
-function fieldInput(path, label, value, disabled, extraClass = "") {
-  return `<label class="fblqa-bio-field ${escapeHtml(extraClass)}"><span>${escapeHtml(label)}</span><input type="text" data-bio-path="${escapeHtml(path)}" value="${escapeHtml(value)}"${disabled}></label>`;
-}
-
-function fieldTextarea(path, label, value, disabled, extraClass = "") {
-  const plain = plainTextFromHtml(value);
-  return `<label class="fblqa-bio-field fblqa-growing-text-field ${escapeHtml(extraClass)}"><span>${escapeHtml(label)}</span><textarea rows="1" data-bio-autosize data-bio-path="${escapeHtml(path)}"${disabled}>${escapeHtml(plain)}</textarea></label>`;
-}
-
-function headingHtml(label, spec, actionHtml = "", {
-  sectionKey = "",
-  collapsed = false,
-  subheading = false,
-  collapsible = true,
-  actionBeforeTitle = false
-} = {}) {
-  const tag = subheading ? "h3" : (spec?.tag ?? "h2");
-  const nativeClasses = !subheading && spec?.className ? `${spec.className} ` : "";
-  const toggle = collapsible && sectionKey
-    ? `<button type="button" class="fblqa-bio-collapse" data-bio-action="toggle-section" data-bio-section-key="${escapeHtml(sectionKey)}" aria-expanded="${String(!collapsed)}" aria-label="${escapeHtml(t(collapsed ? "Bio.Expand" : "Bio.Collapse", collapsed ? "Развернуть" : "Свернуть"))}" title="${escapeHtml(t(collapsed ? "Bio.Expand" : "Bio.Collapse", collapsed ? "Развернуть" : "Свернуть"))}"><i class="fa-solid ${collapsed ? "fa-chevron-right" : "fa-chevron-down"}"></i></button>`
-    : "";
-  const before = actionBeforeTitle ? actionHtml : "";
-  const after = actionBeforeTitle ? "" : actionHtml;
-  return `<div class="fblqa-bio-heading-row ${subheading ? "is-subheading" : ""}">${toggle}${before}<${tag} class="${escapeHtml(nativeClasses)}fblqa-bio-title">${escapeHtml(label)}</${tag}>${after}</div>`;
-}
-
-function iconButton({ action, icon, label }) {
-  return `<button type="button" class="fblqa-bio-heading-action" data-bio-action="${escapeHtml(action)}" aria-label="${escapeHtml(label)}" title="${escapeHtml(label)}"><i class="fa-solid ${escapeHtml(icon)}"></i></button>`;
-}
 
 function captureNativePrideRoll(bioTab) {
   const selectors = [
