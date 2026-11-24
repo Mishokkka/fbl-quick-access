@@ -530,9 +530,10 @@ async function applyRest(app, actor, options) {
 
 async function applyRestInternal(actor, options, user) {
   if (!["short", "long"].includes(options.type)) throw new TypeError("Invalid Rest type");
-  const { effectsToDelete, ...result } = options.type === "short"
+  const { effectsToDelete, clearedConditions: plannedClears, ...result } = options.type === "short"
     ? calculateShortRestChanges(actor, options, { allowResetShortQuarter: canResetShortRestLimit(actor, user) })
     : calculateLongRestChanges(actor, options);
+  result.clearedConditions = [];
   if (result.errors.length) return result;
 
   const update = { ...result.updates };
@@ -571,6 +572,11 @@ async function applyRestInternal(actor, options, user) {
       if (!isUnknownWriteOutcome(error) && removed.length) steps.push(`${step} (${removed.join(", ")})`);
       return { ...result, ...restFailure(actor, steps, step, error, result.type) };
     }
+  }
+
+  if (result.type === "long") {
+    result.clearedConditions = plannedClears.filter(key => !isConditionActive(actor, REST_CONDITIONS[key]));
+    result.notification = buildLongRestNotification(result.recovered, result.clearedConditions);
   }
   return result;
 }

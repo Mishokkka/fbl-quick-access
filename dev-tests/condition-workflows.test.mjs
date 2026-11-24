@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
+import { applyDocumentUpdate } from "./helpers/document-update.mjs";
 import {
   getAddictionMorning, getAddictionDayKey, performAddictionMorning,
   processAddictionNewDay, processAddictionNewDayInternal, resolveAddictionMorning, relapseAddiction, handleAddictionOperation, correctAddictionState
@@ -46,7 +47,10 @@ function setup(totals = []) {
 function item(name, state = null) {
   const result = { id: `item${++id}`, type: "criticalInjury", name, flags: {}, system: { healingTime: "", rollModifiers: {} }, updates: [],
     getFlag(module, key) { return get(this.flags[module], key); },
-    async update(data) { this.updates.push(data); for (const [path, value] of Object.entries(data)) set(this, path, value); },
+    async update(data) {
+      this.updates.push(structuredClone(data));
+      applyDocumentUpdate(this, data);
+    },
     async delete() { this.parent.items.delete(this.id); } };
   if (state) set(result, `flags.${scope}.conditions.addictionState`, state);
   return result;
@@ -57,7 +61,7 @@ function actor(...items) {
     system: { attribute: Object.fromEntries(["strength", "agility", "wits", "empathy"].map(key => [key, { value: 6, max: 6 }])) },
     getFlag(module, key) { return get(this.flags[module], key); },
     async setFlag(module, key, value) { set(this, `flags.${module}.${key}`, value); },
-    async update(data) { for (const [path, value] of Object.entries(data)) set(this, path, value); },
+    async update(data) { applyDocumentUpdate(this, data); },
     async updateEmbeddedDocuments(_type, updates) { for (const data of updates) await this.items.get(data._id).update(data); } };
   result.testUserPermission = user => user.id === "owner";
   for (const entry of items) entry.parent = result;
@@ -882,22 +886,6 @@ test("the native dose dialog distinguishes dose, no-dose, cancel and closing the
 
 test("Foundry v13 in-place update object expansion does not break verifyConditionWrite in migrations or STAT", async () => {
   setup();
-  const expandInPlace = patch => {
-    for (const key of Object.keys(patch)) {
-      if (!key.includes(".")) continue;
-      const value = patch[key];
-      delete patch[key];
-      const parts = key.split(".");
-      let cursor = patch;
-      while (parts.length > 1) {
-        const part = parts.shift();
-        cursor[part] = cursor[part] && typeof cursor[part] === "object" ? cursor[part] : {};
-        cursor = cursor[part];
-      }
-      cursor[parts[0]] = value;
-    }
-  };
-
   const wound = item("Broken Leg", null);
   wound.system.healingTime = "3 days";
   const heat = item("Heat", null);
@@ -906,24 +894,6 @@ test("Foundry v13 in-place update object expansion does not break verifyConditio
   const owner = actor(wound, heat);
   set(owner, `flags.${LEGACY_MODULE_ID}.layoutColumns`, 2);
   set(owner, `flags.${scope}.conditions.list`, [{ id: "custom-1", name: "Cold" }]);
-
-  const applyAndExpand = (target, data) => {
-    for (const [path, value] of Object.entries(data)) set(target, path, value);
-    expandInPlace(data);
-  };
-  owner.update = async data => applyAndExpand(owner, data);
-  for (const entry of [wound, heat]) {
-    entry.update = async data => {
-      entry.updates.push(data);
-      applyAndExpand(entry, data);
-    };
-  }
-  owner.updateEmbeddedDocuments = async (_type, updates) => {
-    for (const data of updates) {
-      const live = owner.items.get(data._id);
-      await live.update(data);
-    }
-  };
 
   assert.equal(await migrateActorData(owner), true);
   assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);

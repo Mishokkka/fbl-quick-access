@@ -84,54 +84,71 @@ export async function executeAsActiveGM(operation, payload = {}, options = {}) {
     });
   }
 
-  if (!globalThis.game?.socket?.emit) {
+  const socket = globalThis.game?.socket;
+  if (!socket?.emit) {
     throw integrationError("socket-unavailable", "Foundry socket is unavailable");
   }
+  if (socket.connected === false) throw integrationError("socket-unavailable", "Foundry socket is disconnected");
 
   registerIntegrationSocket();
 
   const requestId = makeSocketRequestId();
   const addressed = addressedOperations.has(key);
-  const socket = game.socket;
-  if (addressed && socket.connected === false) throw integrationError("socket-unavailable", "Foundry socket is disconnected");
+  const requester = game.user;
   const timeoutMs = Math.max(1_000, Number(options?.timeoutMs) || DEFAULT_TIMEOUT_MS);
   const message = {
     type: REQUEST_TYPE,
     requestId,
     operation: key,
     payload: cloneForSocket(payload),
-    requesterId: game.user.id,
+    requesterId: requester.id,
     activeGMId: activeGM.id,
     createdAt: Date.now()
   };
 
-  if (!addressed) {
-    try {
-      await createSocketProof(REQUEST_PROOF_KIND, requestId, message, game.user);
-    } catch (error) {
-      throw integrationError(error?.code ?? "identity-proof-failed", `Could not authorize Quick Access GM operation: ${error?.message ?? error}`);
-    }
-  }
-
+  const rejectRequest = error => finishPendingRequest(requestId)?.reject(error);
+  const disconnected = () => integrationError("outcome-unknown", `Foundry disconnected during ${key}`);
   const response = new Promise((resolve, reject) => {
     const timeout = globalThis.setTimeout(() => {
-      finishPendingRequest(requestId)?.reject(integrationError("timeout", `Quick Access GM operation timed out: ${key}`));
+      rejectRequest(integrationError("timeout", `Quick Access GM operation timed out: ${key}`));
     }, timeoutMs);
-    const onDisconnect = addressed && typeof socket.on === "function" && typeof socket.off === "function"
-      ? () => finishPendingRequest(requestId)?.reject(integrationError("outcome-unknown", `Foundry disconnected during ${key}`))
+    const onDisconnect = typeof socket.on === "function" && typeof socket.off === "function"
+      ? () => rejectRequest(disconnected())
       : null;
     pendingRequests.set(requestId, {
-      resolve, reject, timeout, addressed, socket, onDisconnect,
-      operation: key, activeGMId: activeGM.id, requester: game.user
+      resolve, reject, timeout, addressed, socket, onDisconnect, proofWritten: false,
+      operation: key, activeGMId: activeGM.id, requester
     });
     if (onDisconnect) socket.on("disconnect", onDisconnect);
   });
 
-  try {
-    if (addressed) socket.emit(SOCKET_CHANNEL, message, { recipients: [activeGM.id] });
-    else socket.emit(SOCKET_CHANNEL, message);
-  } catch (error) {
-    finishPendingRequest(requestId)?.reject(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
+  const sendRequest = () => {
+    if (socket.connected === false) {
+      rejectRequest(disconnected());
+      return;
+    }
+    try {
+      if (addressed) socket.emit(SOCKET_CHANNEL, message, { recipients: [activeGM.id] });
+      else socket.emit(SOCKET_CHANNEL, message);
+    } catch (error) {
+      rejectRequest(integrationError("socket-emit-failed", `Could not send Quick Access GM operation: ${error?.message ?? error}`));
+    }
+  };
+
+  if (addressed) sendRequest();
+  else {
+    void createSocketProof(REQUEST_PROOF_KIND, requestId, message, requester).then(() => {
+      const pending = pendingRequests.get(requestId);
+      if (!pending) {
+        // The flag write can finish after the request has already been cancelled.
+        void clearSocketProof(requester, REQUEST_PROOF_KIND, requestId);
+        return;
+      }
+      pending.proofWritten = true;
+      sendRequest();
+    }, error => {
+      rejectRequest(integrationError(error?.code ?? "identity-proof-failed", `Could not authorize Quick Access GM operation: ${error?.message ?? error}`));
+    });
   }
 
   return response;
@@ -143,7 +160,7 @@ function finishPendingRequest(requestId) {
   pendingRequests.delete(requestId);
   globalThis.clearTimeout(pending.timeout);
   if (pending.onDisconnect) pending.socket.off("disconnect", pending.onDisconnect);
-  if (!pending.addressed) void clearSocketProof(pending.requester, REQUEST_PROOF_KIND, requestId);
+  if (pending.proofWritten) void clearSocketProof(pending.requester, REQUEST_PROOF_KIND, requestId);
   return pending;
 }
 

@@ -25,7 +25,8 @@ export function currencyError(code, message) {
 export async function writeCurrencyUpdate(actor, update) {
   const socket = globalThis.game?.socket;
   if (socket?.connected === false) throw currencyError("socket-unavailable", "Foundry socket is disconnected");
-  const expected = Object.entries(update).map(([path, value]) => ({ path, value, before: getProperty(actor, path) }));
+  const sourceBefore = actor._source ?? actor;
+  const expected = Object.entries(update).map(([path, value]) => ({ path, value, before: getProperty(sourceBefore, path) }));
   const unknownOutcome = () => currencyError("outcome-unknown", "Currency update outcome is unknown");
   let onDisconnect;
   const disconnected = new Promise((_resolve, reject) => { onDisconnect = () => reject(unknownOutcome()); });
@@ -43,7 +44,8 @@ export async function writeCurrencyUpdate(actor, update) {
     if (canWatch) socket.off("disconnect", onDisconnect);
   }
 
-  const actual = expected.map(entry => ({ ...entry, after: getProperty(actor, entry.path) }));
+  const sourceAfter = actor._source ?? actor;
+  const actual = expected.map(entry => ({ ...entry, after: getProperty(sourceAfter, entry.path) }));
   if (actual.some(({ value, after }) => after !== value)) {
     if (actual.some(({ before, after }) => after !== before)) throw unknownOutcome();
     throw currencyError("write-not-persisted", "Currency update was not persisted");
