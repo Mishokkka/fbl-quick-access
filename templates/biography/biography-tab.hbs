@@ -1,0 +1,92 @@
+{{#*inline "bioHeading"}}
+  <div class="fblqa-bio-heading-row {{#if subheading}}is-subheading{{/if}}">
+    {{#if key}}
+      <button type="button" class="fblqa-bio-collapse" data-bio-action="toggle-section" data-bio-section-key="{{key}}" aria-expanded="{{expanded}}" aria-label="{{toggleLabel}}" title="{{toggleLabel}}"><i class="fa-solid {{#if collapsed}}fa-chevron-right{{else}}fa-chevron-down{{/if}}"></i></button>
+    {{/if}}
+    {{#if prideRoll}}<span class="fblqa-pride-roll-slot" data-bio-pride-roll-slot></span>{{/if}}
+    <{{tag}} class="{{nativeClasses}}fblqa-bio-title">{{label}}</{{tag}}>
+    {{#if @root.editable}}
+      {{#if addAction}}<button type="button" class="fblqa-bio-heading-action" data-bio-action="{{addAction}}" aria-label="{{addLabel}}" title="{{addLabel}}"><i class="fa-solid fa-plus"></i></button>{{/if}}
+    {{/if}}
+  </div>
+{{/inline}}
+{{#*inline "bioRichField"}}
+  <section class="fblqa-bio-block fblqa-rich-field   {{#if heading.subheading}}is-subheading{{/if}}" data-bio-section="{{heading.key}}">
+    {{> bioHeading heading}}
+    <div class="fblqa-bio-section-body" data-bio-section-body="{{heading.key}}"{{#if heading.collapsed}} hidden{{/if}}>
+      <div class="fblqa-rich-control" data-bio-rich-control data-bio-path="{{path}}" data-bio-name="{{name}}" data-bio-value="{{html}}">
+        <div class="fblqa-rich-preview" data-bio-action="edit-rich" tabindex="{{#if @root.editable}}0{{else}}-1{{/if}}" role="{{#if @root.editable}}button{{else}}document{{/if}}" aria-label="{{#if @root.editable}}{{@root.labels.edit}}{{/if}}">{{#if hasContent}}{{{html}}}{{else}}<p><br></p>{{/if}}</div>
+        {{#if @root.editable}}<button type="button" class="fblqa-rich-edit" data-bio-action="edit-rich" aria-label="{{@root.labels.edit}}" title="{{@root.labels.edit}}"><i class="fa-solid fa-pen"></i></button>{{/if}}
+      </div>
+    </div>
+  </section>
+{{/inline}}
+<div class="fblqa-bio-shell {{#unless editable}}is-readonly{{/unless}}">
+  <div class="fblqa-bio-actions" data-bio-floating-actions>
+    {{#if legacy}}<button type="button" class="fblqa-archive-trigger" data-bio-action="archive" aria-expanded="false"><i class="fa-solid fa-box-archive"></i><span>{{labels.archive}}</span></button>{{/if}}
+    <button type="button" class="fblqa-pilgrim-trigger" data-bio-action="pilgrim"><i class="fa-solid fa-id-card"></i><span>{{labels.pilgrim}}</span></button>
+  </div>
+
+  <div class="fblqa-bio-stack">
+    {{#each fields}}
+      {{> bioRichField}}
+    {{/each}}
+
+    <section class="fblqa-bio-block fblqa-language-section" data-bio-section="languages">
+      {{> bioHeading languagesHeading}}
+      <div class="fblqa-bio-section-body" data-bio-section-body="languages"{{#if languagesHeading.collapsed}} hidden{{/if}}>
+        <div class="fblqa-bio-list fblqa-language-list">
+          {{#each languages}}
+            <div class="fblqa-language-row">
+              <label class="fblqa-row-field fblqa-language-name"><span>{{@root.labels.language}}</span><input type="text" data-bio-path="languages.{{@index}}.name" value="{{name}}" placeholder="{{@root.labels.languageName}}"{{#unless @root.editable}} disabled{{/unless}}></label>
+              <label class="fblqa-row-field fblqa-language-level"><span>{{@root.labels.languageLevel}}</span><select data-bio-path="languages.{{@index}}.level"{{#unless @root.editable}} disabled{{/unless}}>{{#each levels}}<option value="{{value}}"{{#if selected}} selected{{/if}}>{{label}}</option>{{/each}}</select></label>
+              <label class="fblqa-row-field fblqa-cost-field"><span>{{@root.labels.languageCost}}</span><input type="number" min="0" step="1" data-bio-path="languages.{{@index}}.cost" value="{{cost}}"{{#unless @root.editable}} disabled{{/unless}}></label>
+              {{#if @root.editable}}<button type="button" class="fblqa-row-remove" data-bio-action="remove-language" data-index="{{@index}}" aria-label="{{@root.labels.removeLanguage}}" title="{{@root.labels.removeLanguage}}"><i class="fa-solid fa-xmark"></i></button>{{/if}}
+            </div>
+          {{else}}
+            <p class="fblqa-bio-empty">{{labels.noLanguages}}</p>
+          {{/each}}
+        </div>
+      </div>
+    </section>
+
+    <section class="fblqa-bio-block fblqa-questions-section" data-bio-section="questions">
+      {{> bioHeading questionsHeading}}
+      <div class="fblqa-bio-section-body fblqa-question-list" data-bio-section-body="questions"{{#if questionsHeading.collapsed}} hidden{{/if}}>
+        {{#each questions}}
+          {{> bioRichField}}
+        {{/each}}
+      </div>
+    </section>
+
+    <section class="fblqa-bio-block fblqa-rumor-section" data-bio-section="rumors">
+      {{> bioHeading rumorsHeading}}
+      <div class="fblqa-bio-section-body" data-bio-section-body="rumors"{{#if rumorsHeading.collapsed}} hidden{{/if}}>
+        <div class="fblqa-bio-list fblqa-rumor-list">
+          {{#each rumors}}
+            <div class="fblqa-rumor-row {{#if @root.editable}}is-editable{{else}}is-readonly{{/if}}">
+              <label class="fblqa-row-field fblqa-rumor-text"><span>{{@root.labels.rumor}}</span><input type="text" data-bio-path="rumors.{{@index}}.text" value="{{text}}" placeholder="{{@root.labels.rumor}}"{{#unless @root.editable}} disabled{{/unless}}></label>
+              {{#if @root.editable}}<button type="button" class="fblqa-row-remove" data-bio-action="remove-rumor" data-index="{{@index}}" aria-label="{{@root.labels.removeRumor}}" title="{{@root.labels.removeRumor}}"><i class="fa-solid fa-xmark"></i></button>{{/if}}
+            </div>
+          {{else}}
+            <p class="fblqa-bio-empty">{{labels.noRumors}}</p>
+          {{/each}}
+        </div>
+      </div>
+    </section>
+  </div>
+
+  {{#if legacy}}
+    <section class="fblqa-legacy-section" data-bio-archive hidden>
+      {{> bioHeading legacyHeading}}
+      <div class="fblqa-legacy-grid">
+        {{#each legacy}}
+          <article>
+            <header><strong>{{label}}</strong><button type="button" data-bio-action="copy-legacy" data-legacy-key="{{key}}" title="{{@root.labels.copy}}" aria-label="{{copyLabel}}"><i class="fa-regular fa-copy"></i></button></header>
+            <div class="fblqa-legacy-content" tabindex="0" data-bio-selectable>{{{html}}}</div>
+          </article>
+        {{/each}}
+      </div>
+    </section>
+  {{/if}}
+</div>

@@ -88,6 +88,8 @@ test("Rest Apply reads DialogV2 button.form and opens New Day after a successful
     ChatMessage: globalThis.ChatMessage
   };
   let dialogConfig = null;
+  let markRestRendered;
+  const restRendered = new Promise(resolve => { markRestRendered = resolve; });
   const updates = [];
   const lifecycle = [];
 
@@ -125,7 +127,10 @@ test("Rest Apply reads DialogV2 button.form and opens New Day after a successful
       this.listeners = new Map();
     }
     addEventListener(type, listener) { this.listeners.set(type, listener); }
-    render() { return Promise.resolve(this); }
+    render() {
+      if (dialogConfig.classes.includes("fblqa-rest-dialog")) markRestRendered();
+      return Promise.resolve(this);
+    }
     close() { this.listeners.get("close")?.(); return Promise.resolve(this); }
   }
 
@@ -138,7 +143,15 @@ test("Rest Apply reads DialogV2 button.form and opens New Day after a successful
       time: { worldTime: 0 },
       modules: new Map()
     };
-    globalThis.foundry = { applications: { api: { DialogV2: FakeDialogV2 } } };
+    globalThis.foundry = { applications: {
+      api: { DialogV2: FakeDialogV2 },
+      handlebars: {
+        async renderTemplate(path) {
+          assert.equal(path, "modules/fbl-quick-access/templates/rest/rest-dialog.hbs");
+          return readFileSync(join(root, "templates", "rest", "rest-dialog.hbs"), "utf8");
+        }
+      }
+    } };
     globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
     delete globalThis.ChatMessage;
 
@@ -168,7 +181,9 @@ test("Rest Apply reads DialogV2 button.form and opens New Day after a successful
 
     const rest = await import(`../scripts/rest.js?dialog-apply=${Date.now()}`);
     const completion = rest.openRestDialog(null, actor, null);
-    assert.ok(dialogConfig, "Rest DialogV2 configuration must be created synchronously");
+    await Promise.race([restRendered, completion]);
+    assert.ok(dialogConfig, "Rest DialogV2 configuration must be created after loading the template");
+    assert.doesNotMatch(dialogConfig.content, /<\/?form\b/i);
     const apply = dialogConfig.buttons.find((button) => button.action === "apply");
     assert.ok(apply, "Rest Apply button must exist");
 

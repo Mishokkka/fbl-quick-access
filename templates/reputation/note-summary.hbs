@@ -1,0 +1,14 @@
+<header>
+  <h3>{{heading}}</h3>
+  <strong>{{total}}</strong>
+</header>
+<ul>
+  {{#each rows}}
+    <li>
+      <strong>{{amount}}</strong>
+      <span>{{description}}{{#if location}}<small>{{location}}</small>{{/if}}</span>
+    </li>
+  {{else}}
+    <li class="is-empty">{{empty}}</li>
+  {{/each}}
+</ul>

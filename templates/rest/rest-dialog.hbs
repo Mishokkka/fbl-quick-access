@@ -1,0 +1,66 @@
+<div class="fblqa-rest-header-template" hidden>{{#each conditionChips}}<span class="fblqa-rest-condition {{#if active}}is-active{{else}}is-inactive{{/if}}"><i class="fas {{#if active}}fa-circle-exclamation{{else}}fa-circle-check{{/if}}" aria-hidden="true"></i>{{label}}</span>{{/each}}</div>
+
+<fieldset class="fblqa-rest-type-switch">
+  <label><input type="radio" name="restType" value="long" checked> <span>{{labels.longTitle}}</span></label>
+  <label><input type="radio" name="restType" value="short"> <span>{{labels.shortTitle}}</span></label>
+</fieldset>
+
+<section class="fblqa-rest-pane" data-rest-pane="long">
+  <div class="fblqa-rest-pane-head">
+    <h2>{{labels.longHeading}}</h2>
+    <p>{{labels.longDescription}}</p>
+  </div>
+  <label class="fblqa-rest-check">
+    <input type="checkbox" name="hasHeatSource">
+    <span>{{labels.heatSource}}</span>
+  </label>
+  {{#if calendaria}}
+    <div class="fblqa-rest-progression-note"><i class="fas fa-calendar-day" aria-hidden="true"></i><span>{{labels.calendaria}}</span></div>
+  {{else}}
+    <label class="fblqa-rest-check fblqa-rest-new-day-check">
+      <input type="checkbox" name="startsNewDay">
+      <span>
+        <strong>{{labels.startsNewDay}}</strong>
+        <small>{{labels.startsNewDayHint}}</small>
+      </span>
+    </label>
+  {{/if}}
+  <div class="fblqa-rest-attribute-table">
+    {{#each longRows}}
+      <div class="fblqa-rest-attribute-row{{#if blocked}} is-blocked{{/if}}{{#if canRecover}} will-recover{{/if}}">
+        <strong>{{label}}</strong>
+        <span>{{value}}</span>
+        <em>{{status}}</em>
+      </div>
+    {{/each}}
+  </div>
+  <p class="fblqa-rest-note">{{labels.longConditionRemoval}}</p>
+</section>
+
+<section class="fblqa-rest-pane" data-rest-pane="short" hidden aria-hidden="true">
+  <div class="fblqa-rest-pane-head">
+    <h2>{{labels.shortHeading}}</h2>
+    <p>{{labels.shortDescription}}</p>
+  </div>
+  <div class="fblqa-rest-short-status{{#if shortUsed}} is-used{{/if}}" data-short-used="{{shortUsedValue}}">{{shortStatus}}</div>
+  <div class="fblqa-rest-time-source">{{labels.timeSource}}</div>
+  <label class="fblqa-rest-check">
+    <input type="checkbox" name="useShortRecovery"{{#if shortUsed}} disabled{{/if}}>
+    <span>{{labels.useShortRecovery}}</span>
+  </label>
+  <label class="fblqa-rest-field">
+    <span>{{labels.shortAttribute}}</span>
+    <select name="shortAttribute"{{#if shortUsed}} disabled{{/if}}>{{#each attributes}}<option value="{{key}}">{{label}}</option>{{/each}}</select>
+  </label>
+  <label class="fblqa-rest-field">
+    <span>{{labels.shortConsumable}}</span>
+    <input type="text" name="shortConsumable" value="{{defaultConsumable}}"{{#if shortUsed}} disabled{{/if}}>
+  </label>
+  {{#if canResetShortRest}}
+    <label class="fblqa-rest-check fblqa-rest-reset-quarter">
+      <input type="checkbox" name="resetShortQuarter">
+      <span>{{labels.resetShortQuarter}}</span>
+    </label>
+  {{/if}}
+  <p class="fblqa-rest-note">{{labels.shortManualConsumableNote}}</p>
+</section>

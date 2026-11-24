@@ -3,9 +3,40 @@ import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, normalizePilgrimCardProfile, queueProfileSave, resolveBiographyEditorValue, savePilgrimCardProfile } from "../scripts/biography.js";
+import { cleanupBiographyTab, flushBiographySaves, getBiographyProfile, getPilgrimCardProfile, normalizeBiographyProfile, normalizePilgrimCardProfile, queueProfileSave, resolveBiographyEditorValue, savePilgrimCardProfile, setupBiographyTab } from "../scripts/biography.js";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
+
+test("BIO coalesces pending mounts and drops them when the sheet is cleaned up", async () => {
+  const previous = { HTMLElement: globalThis.HTMLElement, foundry: globalThis.foundry };
+  const requests = [];
+  class Tab {
+    dataset = {};
+    isConnected = true;
+    querySelector() { return null; }
+    querySelectorAll() { return []; }
+  }
+  const tab = new Tab();
+  const sheet = { querySelector: () => tab };
+  const app = { rendered: true };
+  const actor = { id: "pending-bio", system: { bio: {} } };
+  globalThis.HTMLElement = Tab;
+  globalThis.foundry = { applications: { handlebars: {
+    renderTemplate: path => new Promise(resolve => { requests.push({ path, resolve }); })
+  } } };
+  try {
+    assert.equal(setupBiographyTab(app, actor, sheet), tab);
+    assert.equal(setupBiographyTab(app, actor, sheet), tab);
+    assert.deepEqual(requests.map(request => request.path), ["modules/fbl-quick-access/templates/biography/biography-tab.hbs"]);
+    assert.equal(cleanupBiographyTab(sheet), true);
+    requests[0].resolve("<div class=\"fblqa-bio-shell\"></div>");
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(tab.innerHTML, undefined);
+    assert.equal(tab.dataset.fblqaBiographyMounted, undefined);
+  } finally {
+    Object.assign(globalThis, previous);
+  }
+});
 
 function biographyActor(id, profile) {
   const flag = "biographyProfile";
@@ -237,11 +268,12 @@ test("targets BIO only and never falls back to NOTE", async () => {
 
 test("BIO localization and removed controls match the current data model", () => {
   const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const bioTemplate = readFileSync(join(root, "templates", "biography", "biography-tab.hbs"), "utf8");
   const ru = JSON.parse(readFileSync(join(root, "lang", "ru.json"), "utf8"));
   const en = JSON.parse(readFileSync(join(root, "lang", "en.json"), "utf8"));
 
-  assert.doesNotMatch(source, /data-bio-path="languages\.\$\{index\}\.native"/);
-  assert.doesNotMatch(source, /fblqa-rumor-truth/);
+  assert.doesNotMatch(bioTemplate, /data-bio-path="languages\.[^"\s]+\.native"/);
+  assert.doesNotMatch(bioTemplate, /fblqa-rumor-truth/);
   assert.doesNotMatch(source, /Bio\.Pilgrim\.AirIslands/);
   assert.equal("Native" in ru.FBLQA.Bio.Languages, false);
   assert.equal("Native" in en.FBLQA.Bio.Languages, false);
@@ -251,14 +283,15 @@ test("BIO localization and removed controls match the current data model", () =>
   assert.equal("Source" in en.FBLQA.Bio.Rumors, false);
   assert.equal("SourcePlaceholder" in ru.FBLQA.Bio.Rumors, false);
   assert.equal("SourcePlaceholder" in en.FBLQA.Bio.Rumors, false);
-  assert.doesNotMatch(source, /rumors\.\$\{index\}\.name/);
-  assert.doesNotMatch(source, /fblqa-rumor-source/);
+  assert.doesNotMatch(bioTemplate, /rumors\.[^"\s]+\.name/);
+  assert.doesNotMatch(bioTemplate, /fblqa-rumor-source/);
   assert.equal(ru.FBLQA.Bio.Fields.Pride, "Гордость");
   assert.equal(en.FBLQA.Bio.Fields.Pride, "Pride");
 });
 
 test("language level column is content-sized and rumor rows contain text only", () => {
   const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const bioTemplate = readFileSync(join(root, "templates", "biography", "biography-tab.hbs"), "utf8");
   const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
 
   assert.match(css, /grid-template-columns:\s*minmax\(0, 1fr\) var\(--fblqa-language-level-width, max-content\) 40px 18px/);
@@ -268,7 +301,7 @@ test("language level column is content-sized and rumor rows contain text only", 
   assert.match(css, /\.fblqa-language-level select\s*\{[\s\S]*?padding-right:\s*28px/);
   assert.match(css, /\.fblqa-rumor-row\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\);/);
   assert.match(css, /\.fblqa-rumor-row\.is-editable\s*\{[\s\S]*?grid-template-columns:\s*minmax\(0, 1fr\) 18px/);
-  assert.doesNotMatch(source, /data-bio-path="rumors\.\$\{index\}\.name"/);
+  assert.deepEqual([...bioTemplate.matchAll(/data-bio-path="rumors\.\S+?\.(\w+)"/g)].map(match => match[1]), ["text"]);
 });
 
 test("BIO editor preserves stored rich text until the user actually changes it", () => {
@@ -337,10 +370,11 @@ test("public integration API exposes the independent Pilgrim Card profile helper
 
 test("Pilgrim Card exposes birth-date editing in its header and uses a full-size stamp", () => {
   const source = readFileSync(join(root, "scripts", "biography.js"), "utf8");
+  const template = readFileSync(join(root, "templates", "biography", "pilgrim-card.hbs"), "utf8");
   const css = readFileSync(join(root, "styles", "13-biography.css"), "utf8");
 
-  assert.match(source, /data-bio-action="edit-birth-date"/);
-  assert.match(source, /data-pilgrim-birth-editor/);
+  assert.match(template, /data-bio-action="edit-birth-date"/);
+  assert.match(template, /data-pilgrim-birth-editor/);
   assert.match(source, /setupPilgrimBirthDateEditor\(drawer, actor, cardState, editable\)/);
   assert.match(css, /\.fblqa-pilgrim-card::after\s*\{[\s\S]*?width:\s*98px;[\s\S]*?height:\s*98px;[\s\S]*?border:\s*4px double/);
 });

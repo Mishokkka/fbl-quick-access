@@ -2,10 +2,14 @@ import { FLAG_REPUTATION_ENTRIES, MODULE_ID } from "./constants.js";
 import { qaLocalize } from "./i18n.js";
 import { canModifyActor, warnCannotModifyActor } from "./permissions.js";
 import { actorKey, escapeHtml, makeEntryId } from "./utils.js";
-import { createFoundryDialog, extractDialogElement, hasFoundryDialogApi } from "./dialogs.js";
+import { createFoundryDialog, extractDialogElement, findDialogForm, hasFoundryDialogApi } from "./dialogs.js";
 import { findNoteTab } from "./sheet-adapter/forbidden-lands-v1.js";
+import { renderModuleTemplate } from "./template-renderer.js";
 
 const REPUTATION_PATH = "system.bio.reputation.value";
+const REPUTATION_DIALOG_TEMPLATE = `modules/${MODULE_ID}/templates/reputation/reputation-dialog.hbs`;
+const REPUTATION_NOTE_TEMPLATE = `modules/${MODULE_ID}/templates/reputation/note-summary.hbs`;
+const NOTE_RENDERS = new WeakMap();
 const OPEN_DIALOGS = new Map();
 const SAVE_CHAINS = new Map();
 const REPUTATION_RESIZE_FRAMES = new WeakMap();
@@ -111,7 +115,7 @@ export async function saveReputationEntries(actor, entries, { render = false } =
 }
 
 export function setupReputationManager(app, actor, root) {
-  setupReputationNoteSummary(actor, root);
+  void setupReputationNoteSummary(actor, root);
 
   const input = root?.querySelector?.(`input[name="${REPUTATION_PATH}"]`);
   if (!(input instanceof HTMLElement)) return;
@@ -142,42 +146,40 @@ export function setupReputationManager(app, actor, root) {
   }
 }
 
-export function setupReputationNoteSummary(actor, root) {
+export async function setupReputationNoteSummary(actor, root) {
   const noteTab = findNoteTab(root);
   if (!(noteTab instanceof HTMLElement)) return null;
 
-  noteTab.querySelector?.('.fblqa-reputation-note-summary')?.remove();
+  const token = {};
+  NOTE_RENDERS.set(noteTab, token);
+  try {
+    const entries = getReputationEntries(actor);
+    const heading = qaLocalize("Reputation.NoteHeading", "Репутация");
+    const html = await renderModuleTemplate(REPUTATION_NOTE_TEMPLATE, {
+      heading,
+      total: getReputationTotal(entries),
+      rows: entries.map(entry => ({
+        amount: entry.amount,
+        description: entry.description || qaLocalize("Reputation.NoDescription", "Причина не указана"),
+        location: entry.location
+      })),
+      empty: qaLocalize("Reputation.NoteEmpty", "Репутация пока не записана.")
+    });
+    if (NOTE_RENDERS.get(noteTab) !== token || !noteTab.isConnected || findNoteTab(root) !== noteTab) return null;
 
-  const entries = getReputationEntries(actor);
-  const total = getReputationTotal(entries);
-  const section = document.createElement('section');
-  section.className = 'fblqa-reputation-note-summary';
-  section.setAttribute('aria-label', qaLocalize('Reputation.NoteHeading', 'Репутация'));
-
-  const rows = entries.length
-    ? entries.map((entry) => {
-        const description = entry.description || qaLocalize('Reputation.NoDescription', 'Причина не указана');
-        const location = entry.location
-          ? `<small>${escapeHtml(entry.location)}</small>`
-          : '';
-        return `
-          <li>
-            <strong>${escapeHtml(entry.amount)}</strong>
-            <span>${escapeHtml(description)}${location}</span>
-          </li>
-        `;
-      }).join('')
-    : `<li class="is-empty">${escapeHtml(qaLocalize('Reputation.NoteEmpty', 'Репутация пока не записана.'))}</li>`;
-
-  section.innerHTML = `
-    <header>
-      <h3>${escapeHtml(qaLocalize('Reputation.NoteHeading', 'Репутация'))}</h3>
-      <strong>${escapeHtml(total)}</strong>
-    </header>
-    <ul>${rows}</ul>
-  `;
-  noteTab.append(section);
-  return section;
+    const section = document.createElement("section");
+    section.className = "fblqa-reputation-note-summary";
+    section.setAttribute("aria-label", heading);
+    section.innerHTML = html;
+    noteTab.querySelector(".fblqa-reputation-note-summary")?.remove();
+    noteTab.append(section);
+    return section;
+  } catch (error) {
+    console.error(`${MODULE_ID} | reputation summary render failed`, error);
+    return null;
+  } finally {
+    if (NOTE_RENDERS.get(noteTab) === token) NOTE_RENDERS.delete(noteTab);
+  }
 }
 
 export function closeReputationDialog(actorOrId) {
@@ -205,7 +207,12 @@ export function openReputationDialog(app, actor) {
   }
 
   const editable = canModifyActor(actor);
-  const content = buildDialogContent(actor, editable);
+  const usesDialogV2 = Boolean(globalThis.foundry?.applications?.api?.DialogV2);
+  // The public opener returns the dialog immediately. Replace its marker once the template loads.
+  const placeholder = '<div data-fblqa-reputation-content></div>';
+  const content = usesDialogV2
+    ? placeholder
+    : `<form class="fblqa-reputation-form" autocomplete="off">${placeholder}</form>`;
   let saveTimeout = null;
   let dialogRoot = null;
   let revision = 0;
@@ -256,9 +263,25 @@ export function openReputationDialog(app, actor) {
     title: qaLocalize("Reputation.Title", "Репутация: {name}", { name: actor.name ?? "" }),
     content,
     buttons: {},
-    render: (html) => {
-      dialogRoot = extractDialogElement(html);
-      if (!dialogRoot) return;
+    render: async (html, renderedDialog) => {
+      const root = extractDialogElement(html);
+      const marker = root?.querySelector("[data-fblqa-reputation-content]");
+      if (!marker || OPEN_DIALOGS.get(key) !== dialog) return;
+      try {
+        const contentHtml = await renderModuleTemplate(REPUTATION_DIALOG_TEMPLATE, reputationTemplateData(actor));
+        if (!marker.isConnected || OPEN_DIALOGS.get(key) !== dialog) return;
+        const html = usesDialogV2 ? (globalThis.foundry?.utils?.cleanHTML?.(contentHtml) ?? contentHtml) : contentHtml;
+        marker.insertAdjacentHTML("beforebegin", html);
+        marker.remove();
+      } catch (error) {
+        console.error(`${MODULE_ID} | reputation dialog render failed`, error);
+        if (OPEN_DIALOGS.get(key) === dialog) closeReputationDialog(key);
+        return;
+      }
+      dialogRoot = root;
+      const form = findDialogForm(renderedDialog ?? html, "form");
+      form?.classList.add("fblqa-reputation-form");
+      form?.classList.toggle("is-readonly", !editable);
       dialogRoot.closest?.(".app, .application")?.classList.add("fblqa-reputation-dialog");
       const resize = () => scheduleReputationDialogAutoSize(dialog, dialogRoot);
       setupDialogInteractions({
@@ -332,61 +355,28 @@ function bindReputationTrigger(element, app, actor) {
   }, true);
 }
 
-function buildDialogContent(actor, editable) {
-  const entries = getReputationEntries(actor);
-  const total = getReputationTotal(entries);
-
-  return `
-    <form class="fblqa-reputation-form ${editable ? "" : "is-readonly"}" autocomplete="off">
-      <div class="fblqa-reputation-intro">
-        <div>
-          <strong>${escapeHtml(qaLocalize("Reputation.LedgerHeading", "Журнал репутации"))}</strong>
-          <span>${escapeHtml(qaLocalize("Reputation.LedgerHint", "Каждая единица репутации бросает один d6. Результат 6 означает, что эту репутацию узнали."))}</span>
-        </div>
-        <div class="fblqa-reputation-total-badge" title="${escapeHtml(qaLocalize("Reputation.Total", "Всего репутации"))}">
-          <i class="fas fa-star" aria-hidden="true"></i>
-          <span data-role="total">${total}</span>
-        </div>
-      </div>
-
-      <div class="fblqa-reputation-save-status is-error" data-role="limit-warning" role="alert" ${total > MAX_REPUTATION_POINTS ? "" : "hidden"}>
-        ${escapeHtml(qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS }))}
-      </div>
-
-      <div class="fblqa-reputation-table-head" aria-hidden="true">
-        <span>${escapeHtml(qaLocalize("Reputation.Use", "Бросать"))}</span>
-        <span>${escapeHtml(qaLocalize("Reputation.Amount", "Количество"))}</span>
-        <span>${escapeHtml(qaLocalize("Reputation.Description", "Почему получена"))}</span>
-        <span>${escapeHtml(qaLocalize("Reputation.Location", "Где получена"))}</span>
-        <span></span>
-      </div>
-
-      <div class="fblqa-reputation-rows"></div>
-
-      <div class="fblqa-reputation-footer">
-        <div class="fblqa-reputation-selection-summary">
-          <strong data-role="selected">${total}</strong>
-          <span>${escapeHtml(qaLocalize("Reputation.SelectedOf", "из {total} единиц выбрано для проверки", { total }))}</span>
-        </div>
-        <span class="fblqa-reputation-save-status" data-role="save-status" aria-live="polite"></span>
-      </div>
-
-      <div class="fblqa-reputation-actions">
-        <button type="button" data-action="roll-half" title="${escapeHtml(qaLocalize("Reputation.HalfHint", "Случайно выбрать половину всех единиц репутации и сразу проверить их."))}">
-          <i class="fas fa-adjust" aria-hidden="true"></i>
-          ${escapeHtml(qaLocalize("Reputation.Half", "Половина"))}
-        </button>
-        <button type="button" data-action="roll-third" title="${escapeHtml(qaLocalize("Reputation.ThirdHint", "Случайно выбрать треть всех единиц репутации и сразу проверить их."))}">
-          <i class="fas fa-chart-pie" aria-hidden="true"></i>
-          ${escapeHtml(qaLocalize("Reputation.Third", "Треть"))}
-        </button>
-        <button type="button" class="fblqa-reputation-roll-button" data-action="roll-selected">
-          <i class="fas fa-dice" aria-hidden="true"></i>
-          ${escapeHtml(qaLocalize("Reputation.Roll", "Бросок репутации"))}
-        </button>
-      </div>
-    </form>
-  `;
+function reputationTemplateData(actor) {
+  const total = getReputationTotal(getReputationEntries(actor));
+  return {
+    total,
+    overLimit: total > MAX_REPUTATION_POINTS,
+    labels: {
+      heading: qaLocalize("Reputation.LedgerHeading", "Журнал репутации"),
+      hint: qaLocalize("Reputation.LedgerHint", "Каждая единица репутации бросает один d6. Результат 6 означает, что эту репутацию узнали."),
+      total: qaLocalize("Reputation.Total", "Всего репутации"),
+      limit: qaLocalize("Reputation.OverLimitPreserved", "The reputation limit is {max}. Existing values are preserved; correct the amounts before saving or rolling.", { max: MAX_REPUTATION_POINTS }),
+      use: qaLocalize("Reputation.Use", "Бросать"),
+      amount: qaLocalize("Reputation.Amount", "Количество"),
+      description: qaLocalize("Reputation.Description", "Почему получена"),
+      location: qaLocalize("Reputation.Location", "Где получена"),
+      selected: qaLocalize("Reputation.SelectedOf", "из {total} единиц выбрано для проверки", { total }),
+      halfHint: qaLocalize("Reputation.HalfHint", "Случайно выбрать половину всех единиц репутации и сразу проверить их."),
+      half: qaLocalize("Reputation.Half", "Половина"),
+      thirdHint: qaLocalize("Reputation.ThirdHint", "Случайно выбрать треть всех единиц репутации и сразу проверить их."),
+      third: qaLocalize("Reputation.Third", "Треть"),
+      roll: qaLocalize("Reputation.Roll", "Бросок репутации")
+    }
+  };
 }
 
 function setupDialogInteractions({ app, actor, root, editable, scheduleSave, saveNow, resize }) {
@@ -727,7 +717,7 @@ function updateSheetReputationPresentation(app, actor, entries) {
   if (!root) return;
   const input = root.querySelector?.(`input[name="${REPUTATION_PATH}"]`);
   if (input) input.value = String(getReputationTotal(entries));
-  setupReputationNoteSummary(actor, root);
+  void setupReputationNoteSummary(actor, root);
 }
 
 function scheduleReputationDialogAutoSize(dialog, element) {
