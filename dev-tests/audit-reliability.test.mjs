@@ -15,6 +15,7 @@ import { enqueueActorMutation, enqueueCurrencyOperation } from "../scripts/opera
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
 import { getCurrentQuarterInfo } from "../scripts/rest.js";
+import { performEquipmentAction } from "../scripts/integration/equipment-api.js";
 
 const scope = "fbl-quick-access";
 // Several cases deliberately simulate failed writes/notifications. Keep their
@@ -100,7 +101,8 @@ async function expose(path, names) {
 }
 reset();
 const calendar = await expose("scripts/state-progression.js", [
-  "processActorAutomaticDays", "handleCalendariaApplyRequest", "sendPlayerResult", "handlePlayerResultMessage", "buildPlayerResultContent"
+  "processActorAutomaticDays", "handleCalendariaApplyRequest", "sendPlayerResult",
+  "handlePlayerResultMessage", "buildPlayerResultContent", "prepareGMSummary", "applyAutomaticDaysFromSummary"
 ]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["gmOffers", "processTransferDecision"]);
@@ -949,4 +951,177 @@ test("CodeRabbit: reputation dialog warns and disables rolls until the displayed
     : controls[selector.match(/data-action='([^']+)'/)?.[1]] ?? null };
   rep.refreshDialogSummary(root); assert.equal(warning.hidden, false); assert.ok(Object.values(controls).every(control => control.disabled));
   amount = "900"; rep.refreshDialogSummary(root); assert.equal(warning.hidden, true); assert.ok(Object.values(controls).every(control => !control.disabled));
+});
+
+test("handleApplyProviderAction allows GM and OWNER players on NPC actors and rejects non-owners", async () => {
+  reset();
+  const npc = actor();
+  npc.type = "npc";
+  const owner = user("npc-owner");
+  const outsider = user("npc-outsider");
+  npc.testUserPermission = (candidate, perm) => perm === "OWNER" && candidate.id === owner.id;
+  const providerModule = await expose("scripts/integration/new-day-providers.js", ["handleApplyProviderAction"]);
+  const action = { id: "npc-step", label: "NPC tick" };
+  let calls = 0;
+  const unregister = providerModule.registerNewDayProvider({
+    id: "audit.npc",
+    category: "audit",
+    buildActions: async () => [{ ...action }],
+    applyAction: async () => { calls += 1; return { changed: true, summary: "Ticked" }; },
+    describeAction: () => "",
+    icon: () => "fa-check"
+  });
+  try {
+    const gmResult = await providerModule.handleApplyProviderAction(
+      { actorUuid: npc.uuid, providerId: "audit.npc", action },
+      { requestUser: game.user, requesterId: game.user.id, activeGM: game.user, isRemote: false }
+    );
+    assert.equal(gmResult.changed, true);
+    const ownerResult = await providerModule.handleApplyProviderAction(
+      { actorUuid: npc.uuid, providerId: "audit.npc", action },
+      { requestUser: owner, requesterId: owner.id, activeGM: game.user, isRemote: true }
+    );
+    assert.equal(ownerResult.changed, true);
+    await assert.rejects(
+      providerModule.handleApplyProviderAction(
+        { actorUuid: npc.uuid, providerId: "audit.npc", action },
+        { requestUser: outsider, requesterId: outsider.id, activeGM: game.user, isRemote: true }
+      ),
+      { code: "no-actor-permission" }
+    );
+    assert.equal(calls, 2);
+  } finally {
+    unregister();
+  }
+});
+
+test("handleCalendariaApplyRequest rejects assigned players who lost OWNER permission before writing", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const date = { ...start, day: 2 };
+  const player = await assignForCalendar(a, date);
+  a.testUserPermission = () => false;
+  const plan = buildNewDayPlan(a, { dayKey: "calendar:audit:1:1:2" });
+  const selection = getNewDaySelection(plan, ["injury:w:healing"]);
+  await assert.rejects(
+    calendar.handleCalendariaApplyRequest({ ...selection, actorId: a.id, calendarId: "audit", targetDate: date }, { requestUser: player }),
+    { code: "no-actor-permission" }
+  );
+  assert.equal(wound.system.healingTime, "4 days");
+  assert.equal(a.updates.length, 0);
+});
+
+test("New Day rejects as stale-plan if the calendar returns to request.dayKey after building an earlier day plan", async () => {
+  reset();
+  const addiction = item("addiction-item", {}, "Addiction");
+  set(addiction.flags, `${scope}.conditions.kind`, "addiction");
+  set(addiction.flags, `${scope}.conditions.addictionState`, { phase: "down", die: 12, daysLeft: 0, severity: 5 });
+  const a = actor([addiction]);
+  let rolls = 0;
+  globalThis.Roll = class { constructor() { rolls += 1; } async evaluate() { this.total = 4; return this; } };
+  const requestedDate = { year: 1, month: 1, day: 5 };
+  const earlierDate = { year: 1, month: 1, day: 4 };
+  let flipDuringBuild = false;
+  const unregister = registerNewDayProvider({
+    id: "audit.date-flip",
+    category: "audit",
+    buildActions: async () => {
+      if (flipDuringBuild) CALENDARIA.api.getCurrentDateTime = () => requestedDate;
+      return [{ id: "noop", label: "Provider" }];
+    },
+    applyAction: async () => ({ changed: true }),
+    describeAction: () => "",
+    icon: () => "fa-check"
+  });
+  try {
+    CALENDARIA.api.getCurrentDateTime = () => requestedDate;
+    const plan = await buildNewDayPlanWithProviders(a);
+    flipDuringBuild = true;
+    CALENDARIA.api.getCurrentDateTime = () => earlierDate;
+    const result = await applyNewDayPlan(a, plan, [`addiction:${addiction.id}:day`, "provider:audit.date-flip:noop"], { postChat: false });
+    assert.equal(rolls, 0);
+    assert.equal(result.failed.length, 2);
+    assert.ok(result.failed.every(entry => entry.code === "stale-plan"));
+    assert.equal(addiction.updates.length, 0);
+  } finally {
+    unregister();
+  }
+});
+
+test("prepareGMSummary stops writing subsequent baselines after one actor baseline write fails", async () => {
+  reset();
+  const first = actor();
+  const second = actor();
+  const third = actor();
+  first.name = "Alpha";
+  second.name = "Beta";
+  third.name = "Gamma";
+  for (const candidate of [first, second, third]) {
+    const owner = user(`player-${candidate.id}`);
+    owner.character = candidate;
+    game.users.push(owner);
+  }
+  second.setFlag = async () => { throw new Error("baseline rejected"); };
+  let thirdWrites = 0;
+  const origThirdSetFlag = third.setFlag;
+  third.setFlag = async (...args) => { thirdWrites += 1; return origThirdSetFlag(...args); };
+
+  const summary = await calendar.prepareGMSummary(context, { reason: "day-change" });
+  assert.ok(first.getFlag(scope, "stateProgressionCalendaria"));
+  assert.equal(summary.statuses.get(second.id)?.state, "error");
+  assert.equal(third.getFlag(scope, "stateProgressionCalendaria"), undefined);
+  assert.equal(thirdWrites, 0);
+});
+
+test("applyAutomaticDaysFromSummary preserves error state and stops the batch when unassignment races a day failure", async () => {
+  reset();
+  const wound = item("w", { healingTime: "4 days" });
+  const a = actor([wound]);
+  const player = await assignForCalendar(a);
+  const origSetFlag = a.setFlag;
+  a.setFlag = async (module, key, value) => {
+    if (key === "stateProgressionCalendaria") {
+      player.character = null;
+      throw new Error("marker write failed");
+    }
+    return origSetFlag(module, key, value);
+  };
+  const entry = { actor: a, users: [player], primaryUser: player };
+  const state = { key: "audit:1.1.3", context, entries: new Map([[a.id, entry]]), statuses: new Map(), root: null, dialog: null };
+  const marker = a.getFlag(scope, "stateProgressionCalendaria");
+
+  const proceed = await calendar.applyAutomaticDaysFromSummary(state, entry, context, 1, { marker });
+  assert.equal(proceed, false);
+  assert.equal(state.statuses.get(a.id)?.state, "error");
+});
+
+test("equipment updates still verify changes when Foundry expands dotted paths in place", async () => {
+  reset();
+  const { CONFIG } = globalThis;
+  globalThis.CONFIG = { fbl: {} };
+  try {
+    const sword = item("sword", { weight: "normal" }, "Sword");
+    sword.type = "weapon";
+    const a = actor([sword]);
+    await a.setFlag(scope, "slots", ["sword"]);
+    const origUpdate = a.update;
+    a.update = async data => {
+      await origUpdate({ [`flags.${scope}.equipmentHands`]: { left: null, right: null } });
+      for (const key of Object.keys(data)) {
+        if (!key.includes(".")) continue;
+        const value = data[key];
+        delete data[key];
+        set(data, key, value);
+      }
+      return a;
+    };
+    await assert.rejects(
+      performEquipmentAction(a, { type: "hold", hand: "left", itemId: "sword" }),
+      /changed during the update/
+    );
+  } finally {
+    if (CONFIG === undefined) delete globalThis.CONFIG;
+    else globalThis.CONFIG = CONFIG;
+  }
 });

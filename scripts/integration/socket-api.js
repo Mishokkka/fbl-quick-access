@@ -178,7 +178,7 @@ export async function executeActorOperation(actor, operation, payload, apply) {
 }
 
 /** Authenticate and resolve the live document once the Actor's turn begins. */
-export function handleActorOperation(payload, context, apply) {
+export function handleActorOperation(payload, context, apply, { characterOnly = true } = {}) {
   const reference = payload?.actorUuid || payload?.actorId;
   if (typeof reference !== "string" || !reference) throw new TypeError("Missing Actor reference");
   return enqueueActorMutation(reference, async () => {
@@ -187,9 +187,12 @@ export function handleActorOperation(payload, context, apply) {
       ? game.actors.get(worldActorId)
       : await globalThis.fromUuid?.(reference);
     const user = context.requestUser;
-    if (!actor || actor.pack || actor.documentName !== "Actor" || actor.type !== "character" || !user
-      || user.active === false || (!user.isGM && !actor.testUserPermission?.(user, "OWNER"))) {
-      throw integrationError("no-actor-permission", "Actor changes require ownership of a character");
+    const ownsActor = typeof actor?.testUserPermission === "function"
+      ? actor.testUserPermission(user, "OWNER")
+      : Number(actor?.ownership?.[user?.id] ?? actor?.ownership?.default ?? 0) >= 3;
+    if (!actor || actor.pack || actor.documentName !== "Actor" || (characterOnly && actor.type !== "character")
+      || !user || user.active === false || (!user.isGM && !ownsActor)) {
+      throw integrationError("no-actor-permission", characterOnly ? "Actor changes require ownership of a character" : "Actor changes require ownership");
     }
     if (context.activeGM && getActiveGM()?.id !== game.user?.id) {
       throw integrationError("no-active-gm", "The active GM changed");

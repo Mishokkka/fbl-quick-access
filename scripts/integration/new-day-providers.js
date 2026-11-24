@@ -213,7 +213,9 @@ async function buildProviderActions(actor, provider, context) {
 
 function handleApplyProviderAction(payload, context) {
   const suppressChat = Boolean(payload?.suppressChat) && Boolean(context.requestUser?.isGM) && !context.isRemote;
-  return handleActorOperation(payload, context, actor => applyProviderAction(actor, payload, context, suppressChat));
+  return handleActorOperation(payload, context, actor => applyProviderAction(actor, payload, context, suppressChat), {
+    characterOnly: false
+  });
 }
 
 async function applyProviderAction(actor, payload, context, suppressChat) {

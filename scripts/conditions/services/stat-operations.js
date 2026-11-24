@@ -107,7 +107,7 @@ async function applyRowOrder(actor, rows) {
   }
   if (customChanged) await writeActor(actor, { [flagUpdatePath(FLAGS.LIST)]: custom.sort((a, b) => a.order - b.order) });
   if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, OPTIONS);
+    await actor.updateEmbeddedDocuments("Item", structuredClone(itemUpdates), OPTIONS);
     for (const { _id, ...update } of itemUpdates) verifyConditionWrite(getConditionItem(actor, _id), update);
   }
   return { changed: customChanged || itemUpdates.length > 0 };

@@ -223,7 +223,8 @@ async function renderInjury(item, editable, orderOverride = null) {
       morningDisabled: pending || processed || !dayKey,
       morningText: pending ? localize("Addiction.Pending", "Awaiting manual Endurance")
         : processed ? localize(`Addiction.Outcome.${morning.outcome}`, "Morning resolved")
-          : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
+          : !dayKey ? localize("Addiction.CalendarUnavailable", "Calendar date is unavailable. Restore calendar access to start the morning.")
+            : localize("Addiction.Ready", "Start the morning; craving 1–2 or withdrawal requires manual Endurance."),
       rollText: morning?.total != null ? localize("Addiction.LastCraving", "Craving: {total}", { total: morning.total }) : "",
       statusText: getAddictionStatusText(state),
       statusTitle: getAddictionStatusTitle(state),

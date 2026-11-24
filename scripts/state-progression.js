@@ -403,7 +403,8 @@ async function applyAutomaticDaysFromSummary(state, entry, context, days, { mark
     const result = await processActorAutomaticDays(actorId, context, days, {
       approvedMarker: marker, requireOnline, maxDays: days
     });
-    const live = resolveAssignedActorEntry(actorId);
+    const live = getAssignedPlayerActors().find(candidate => candidate.actor.id === actorId) ?? null;
+    const target = live ?? entry;
     const detail = result.detail || (result.pendingManual ? manualEnduranceDetail()
       : result.limitedDays > 0
         ? qaLocalize("StateProgression.AutomaticDaysLimited", "Processed {processed} calendar days. {remaining} days remain pending.", {
@@ -411,10 +412,10 @@ async function applyAutomaticDaysFromSummary(state, entry, context, days, { mark
         })
         : qaLocalize("StateProgression.ProcessedDays", "Processed {days} calendar days.", { days: result.processedDays }));
     updateGMSummaryStatus(state, actorId, {
-      ...summaryStatusForActor(live, context), days: result.limitedDays, result, detail,
+      ...summaryStatusForActor(target, context), days: result.limitedDays, result, detail,
       state: result.failedDays ? "error" : result.limitedDays > 0 || result.pendingManual ? "blocked" : "done"
     });
-    await sendPlayerResults(live, context, result);
+    if (live) await sendPlayerResults(live, context, result);
     return !result.failedDays;
   } catch (error) {
     showCalendarError(error);
@@ -624,6 +625,7 @@ async function handleCalendariaApplyRequest(payload, context) {
   return enqueueCalendarActor(payload?.actorId, target, async (entry, live) => {
     assertRequesterAssignedToActor(entry, context.requestUser);
     const { actor } = entry;
+    assertRequesterOwnsActor(actor, context.requestUser);
     assertCalendarReviewClear(actor, live);
     const marker = getActorCalendarMarker(actor);
     const status = calculateActorCalendarStatus(marker, live);
@@ -647,7 +649,9 @@ async function handleCalendariaApplyRequest(payload, context) {
     const authority = calendarAuthority(context);
     const plan = await buildCalendarPlan(actor, live, authority);
     requireLiveCalendarDay(live);
-    assertRequesterAssignedToActor(resolveAssignedActorEntry(actor.id), context.requestUser);
+    const liveEntry = resolveAssignedActorEntry(actor.id);
+    assertRequesterAssignedToActor(liveEntry, context.requestUser);
+    assertRequesterOwnsActor(liveEntry.actor, context.requestUser);
     if (getPendingAddictions(actor).length || !documentValuesEqual(getActorCalendarMarker(actor), marker)
       || getStaleNewDayActions(plan, selected, payload.selectedPreconditions).length) {
       throw progressionError("stale-plan", qaLocalize("NewDay.StalePlan", "The preview is out of date. Open a new preview."));
@@ -753,11 +757,13 @@ async function prepareGMSummary(context, { reason = "day-change", skipBaselineMu
   if (!isActiveQuickAccessGM()) return null;
   const entries = getAssignedPlayerActors();
   const summary = openOrRefreshGMSummary(context, entries, reason);
+  let baselineStopped = false;
   for (const entry of entries) {
     if (summary.statuses.get(entry.actor.id)?.state === "processing") continue;
-    if (!skipBaselineMutation && calculateActorCalendarStatus(getActorCalendarMarker(entry.actor), context).status === "baseline") {
+    if (!skipBaselineMutation && !baselineStopped && calculateActorCalendarStatus(getActorCalendarMarker(entry.actor), context).status === "baseline") {
       try { await baselineActor(entry.actor.id, context); }
       catch (error) {
+        baselineStopped = true;
         showCalendarError(error);
         updateGMSummaryStatus(summary, entry.actor.id, { state: "error", days: 0, detail: error.message });
         continue;
@@ -1643,6 +1649,15 @@ function assertRequesterAssignedToActor(entry, user) {
   if (user.isGM) return;
   if (entry.users.some((candidate) => candidate.id === user.id)) return;
   throw progressionError("actor-permission", "The requesting player is not assigned to this actor");
+}
+
+function assertRequesterOwnsActor(actor, user) {
+  if (!user || user.active === false) throw progressionError("missing-requester", "Requesting user was not found");
+  if (user.isGM) return;
+  const allowed = typeof actor?.testUserPermission === "function"
+    ? actor.testUserPermission(user, "OWNER")
+    : Number(actor?.ownership?.[user?.id] ?? actor?.ownership?.default ?? 0) >= 3;
+  if (!allowed) throw progressionError("no-actor-permission", "New Day requires Actor ownership");
 }
 
 function resolveUserCharacter(user, actors) {

@@ -426,6 +426,7 @@ test("Calendaria addiction refuses manual:1 fallback while keeping STAT row rend
   try {
     const row = await renderConditionItemRow(dependency, true);
     assert.equal(row.morningDisabled, true);
+    assert.match(row.morningText, /Calendar date is unavailable/);
   } finally {
     delete globalThis.renderTemplate;
     delete globalThis.TextEditor;
@@ -877,4 +878,70 @@ test("the native dose dialog distinguishes dose, no-dose, cancel and closing the
     else current.config.buttons.find(button => button.action === action).callback(null, null, { element: null });
     assert.equal(await answer, expected);
   }
+});
+
+test("Foundry v13 in-place update object expansion does not break verifyConditionWrite in migrations or STAT", async () => {
+  setup();
+  const expandInPlace = patch => {
+    for (const key of Object.keys(patch)) {
+      if (!key.includes(".")) continue;
+      const value = patch[key];
+      delete patch[key];
+      const parts = key.split(".");
+      let cursor = patch;
+      while (parts.length > 1) {
+        const part = parts.shift();
+        cursor[part] = cursor[part] && typeof cursor[part] === "object" ? cursor[part] : {};
+        cursor = cursor[part];
+      }
+      cursor[parts[0]] = value;
+    }
+  };
+
+  const wound = item("Broken Leg", null);
+  wound.system.healingTime = "3 days";
+  const heat = item("Heat", null);
+  heat.name = "Heat";
+  heat.system.healingTime = "2";
+  const owner = actor(wound, heat);
+  set(owner, `flags.${LEGACY_MODULE_ID}.layoutColumns`, 2);
+  set(owner, `flags.${scope}.conditions.list`, [{ id: "custom-1", name: "Cold" }]);
+
+  const applyAndExpand = (target, data) => {
+    for (const [path, value] of Object.entries(data)) set(target, path, value);
+    expandInPlace(data);
+  };
+  owner.update = async data => applyAndExpand(owner, data);
+  for (const entry of [wound, heat]) {
+    entry.update = async data => {
+      entry.updates.push(data);
+      applyAndExpand(entry, data);
+    };
+  }
+  owner.updateEmbeddedDocuments = async (_type, updates) => {
+    for (const data of updates) {
+      const live = owner.items.get(data._id);
+      await live.update(data);
+    }
+  };
+
+  assert.equal(await migrateActorData(owner), true);
+  assert.equal(owner.getFlag(scope, "conditions.layoutColumns"), 2);
+  assert.equal(owner.flags[LEGACY_MODULE_ID], undefined);
+  assert.equal(parseHeatValue(heat), 2);
+  assert.equal(heat.system.healingTime, "");
+  assert.equal(wound.getFlag(scope, "conditions.order"), 10);
+  assert.equal(heat.getFlag(scope, "conditions.order"), 20);
+
+  const reordered = await applyStatOperation(owner, {
+    kind: "order",
+    rows: [
+      { kind: "item", id: heat.id },
+      { kind: "custom", id: "custom-1" },
+      { kind: "item", id: wound.id }
+    ]
+  });
+  assert.equal(reordered.changed, true);
+  assert.equal(heat.getFlag(scope, "conditions.order"), 0);
+  assert.equal(wound.getFlag(scope, "conditions.order"), 20);
 });

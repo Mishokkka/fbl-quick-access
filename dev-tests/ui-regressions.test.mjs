@@ -211,7 +211,7 @@ test("STAT edits suppress full sheet renders and persist stable row order", () =
   assert.match(main, /renderConditionItemRow/);
   assert.match(main, /refreshItemRow/);
   assert.match(migrations, /ensureConditionItemOrders/);
-  assert.match(migrations, /updateEmbeddedDocuments\("Item", itemUpdates, \{ render: false \}\)/);
+  assert.match(migrations, /updateEmbeddedDocuments\("Item", structuredClone\(itemUpdates\), \{ render: false \}\)/);
 });
 
 test("Rest switch has no inherited label margins and new-day bulk controls live in the intro", () => {

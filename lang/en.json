@@ -685,6 +685,7 @@
       "TakeDose": "Take a dose",
       "Pending": "Awaiting manual Endurance. Apply abilities and record the final outcome below. The cycle and penalties are unchanged until then.",
       "Ready": "Start the morning: craving 1–2 or withdrawal requires manual Endurance.",
+      "CalendarUnavailable": "Calendar date is unavailable. Restore calendar access to start the morning.",
       "LastCraving": "Craving: {total}.",
       "DoseTitle": "Dose available?",
       "DoseQuestion": "Is a dose available to take? Taking it resets the cycle to decline d12. On failure without a dose the cycle still advances. Items are not spent automatically.",

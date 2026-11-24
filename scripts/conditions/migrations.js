@@ -76,7 +76,7 @@ async function migrateLegacyFlags(document, readLive, mapping) {
   const live = readLive();
   verifyConditionWrite(live, expected);
   const cleanup = removedKeys === Object.keys(legacy).length ? { [`flags.-=${LEGACY_MODULE_ID}`]: null } : removed;
-  await live.update(cleanup, options);
+  await live.update(structuredClone(cleanup), options);
   verifyConditionWrite(readLive(), cleanup);
   return true;
 }
@@ -109,7 +109,7 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
   }
 
   const list = foundry.utils.deepClone(Array.isArray(customConditions) ? customConditions : []);
-  const injuries = Array.from(actor.items ?? []).filter(item => item.type === "criticalInjury");
+  const injuries = Array.from(actor.items?.values?.() ?? actor.items ?? []).filter(item => item.type === "criticalInjury");
   const itemUpdates = [];
   let customChanged = false;
 
@@ -164,11 +164,11 @@ export async function ensureConditionItemOrders(actor, customConditions = []) {
 
   if (customChanged) {
     const update = { [flagUpdatePath(FLAGS.LIST)]: list };
-    await actor.update(update, { render: false });
+    await actor.update(structuredClone(update), { render: false });
     verifyConditionWrite(actor, update);
   }
   if (itemUpdates.length) {
-    await actor.updateEmbeddedDocuments("Item", itemUpdates, { render: false });
+    await actor.updateEmbeddedDocuments("Item", structuredClone(itemUpdates), { render: false });
     for (const { _id, ...update } of itemUpdates) verifyConditionWrite(getConditionItem(actor, _id), update);
   }
 
@@ -191,7 +191,7 @@ async function migrateActorDataInternal(actor) {
     const kindUpdate = conditionKindUpdate(live);
     if (kindUpdate) {
       const { _id, ...update } = kindUpdate;
-      await live.update(update, { render: false });
+      await live.update(structuredClone(update), { render: false });
       verifyConditionWrite(readLive(), update);
       changed = true;
     }
@@ -202,7 +202,7 @@ async function migrateActorDataInternal(actor) {
   const customConditions = customNormalization.list;
   if (customNormalization.changed) {
     const update = { [flagUpdatePath(FLAGS.LIST)]: customConditions };
-    await actor.update(update, { render: false });
+    await actor.update(structuredClone(update), { render: false });
     verifyConditionWrite(actor, update);
     changed = true;
   }
@@ -227,7 +227,7 @@ async function migrateActorDataInternal(actor) {
       return current[key]?.name !== modifier.name || String(current[key]?.value) !== modifier.value;
     });
     if (needsSync) {
-      await item.update(update, { render: false });
+      await item.update(structuredClone(update), { render: false });
       verifyConditionWrite(getConditionItem(actor, item.id), update);
       changed = true;
     }

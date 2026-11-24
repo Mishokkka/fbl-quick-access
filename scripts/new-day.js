@@ -332,7 +332,8 @@ async function applySubmittedNewDay(actor, request, authority) {
   const ownsActor = authority.isRemote ? actor.testUserPermission?.(user, "OWNER") : actor.isOwner;
   if (user?.active === false || (!user?.isGM && !ownsActor)) throw new Error("New Day requires Actor ownership");
   const result = newDayResult(ids.length);
-  const wholePlanStale = request.dayKey !== getAddictionDayKey(actor, { newDay: true })
+  const currentDayKey = getAddictionDayKey(actor, { newDay: true });
+  const wholePlanStale = request.dayKey !== currentDayKey || plan.dayKey !== currentDayKey
     || request.blockedByAddiction !== Boolean(getPendingAddictions(actor).length);
   const stale = wholePlanStale ? ids.map(id => plan.actions.find(action => action.id === id) ?? { id, itemName: id })
     : getStaleNewDayActions(plan, ids, request.selectedPreconditions);
