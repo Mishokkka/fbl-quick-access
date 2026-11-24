@@ -273,7 +273,7 @@ Contract:
 - `applyAction` context includes `suppressChat`. It is `true` for Calendaria-driven progression, so providers should avoid creating chat messages or other duplicate presentation and return structured `summary` data instead.
 - `summary` is included in the public New Day chat card.
 - `privateSummary` is normally whispered to GMs by the active GM. Only a local call on that active GM may suppress the whisper and receive the private summary directly. Remote callers, including a second GM, receive public-safe results. Their private summary goes to the GM whisper.
-- A provider build failure leaves a Calendaria day pending. A failed selected action stops that day's remaining writes. Report write failures by throwing from `applyAction` after verifying any changes the provider made.
+- A provider build failure leaves a Calendaria day pending. A failed selected action stops that day's remaining writes. Report write failures by throwing from `applyAction` after verifying any changes the provider made; if any write already persisted before the failure, set `error.partiallyApplied = true` (or `error.code = "outcome-unknown"` when the write outcome could not be confirmed) so Quick Access classifies the day as partial/unknown rather than a clean failure.
 - The registration call returns an unregister function.
 
 The complete provider-aware plan is available through:

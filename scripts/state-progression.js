@@ -415,7 +415,7 @@ async function applyAutomaticDaysFromSummary(state, entry, context, days, { mark
       state: result.failedDays ? "error" : result.limitedDays > 0 || result.pendingManual ? "blocked" : "done"
     });
     await sendPlayerResults(live, context, result);
-    return true;
+    return !result.failedDays;
   } catch (error) {
     showCalendarError(error);
     updateGMSummaryStatus(state, actorId, {
@@ -497,6 +497,7 @@ async function processActorAutomaticDays(actorId, context, requestedDays, option
         if (error.code === "stale-calendar-day" && !result.processedDays) throw error;
         result.failedDays = 1;
         result.failedActions = error.failedActions ?? 1;
+        if (isUnknownWriteOutcome(error)) result.outcomeUnknown = true;
         result.detail = error.message;
         if (needsCalendarReview(actor, day)) result.detail = calendarReviewDetail();
         if (error.code === "provider-build-failed") showCalendarError(error);
@@ -671,6 +672,7 @@ async function handleCalendariaApplyRequest(payload, context) {
       } catch (error) {
         calendarResult.failedDays = 1;
         calendarResult.failedActions = 1;
+        if (isUnknownWriteOutcome(error)) calendarResult.outcomeUnknown = true;
         detail = needsCalendarReview(actor, live) ? calendarReviewDetail() : error.message;
       }
     }
@@ -1601,6 +1603,7 @@ function buildPlayerResultContent(result) {
       </div>
       ${rows || `<p>${escapeHtml(qaLocalize("StateProgression.NoStateChanges", "No selected state changes were needed."))}</p>`}
       ${result.detail ? `<p class="fblqa-rest-note">${escapeHtml(result.detail)}</p>` : ""}
+      ${result?.outcomeUnknown || days.some((day) => day?.result?.outcomeUnknown) ? `<p class="fblqa-rest-note">${escapeHtml(qaLocalize("Writes.Unknown", "The outcome is unknown. Check the sheet before trying again."))}</p>` : ""}
       ${result.pendingManual ? `<p class="fblqa-rest-note">${escapeHtml(manualEnduranceDetail())}</p>` : ""}
     </div>`;
 }

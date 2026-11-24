@@ -14,6 +14,7 @@ import { registerNewDayProvider, initializeNewDayProviderBridge } from "../scrip
 import { enqueueActorMutation, enqueueCurrencyOperation } from "../scripts/operation-queue.js";
 import { scheduleStatSync, cleanupStatSync } from "../scripts/conditions/stat-sync.js";
 import { refreshConditionsRows } from "../scripts/conditions/render/refresh-rows.js";
+import { getCurrentQuarterInfo } from "../scripts/rest.js";
 
 const scope = "fbl-quick-access";
 // Several cases deliberately simulate failed writes/notifications. Keep their
@@ -99,7 +100,7 @@ async function expose(path, names) {
 }
 reset();
 const calendar = await expose("scripts/state-progression.js", [
-  "processActorAutomaticDays", "handleCalendariaApplyRequest", "sendPlayerResult", "handlePlayerResultMessage"
+  "processActorAutomaticDays", "handleCalendariaApplyRequest", "sendPlayerResult", "handlePlayerResultMessage", "buildPlayerResultContent"
 ]);
 const rest = await expose("scripts/rest.js", ["applyRest"]);
 const money = await expose("scripts/money-transfer.js", ["gmOffers", "processTransferDecision"]);
@@ -289,6 +290,22 @@ test("Short Rest honors a saved Calendaria quarter key from before calendar IDs 
   const result = await rest.applyRest(null, a, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
   assert.equal(result.errors.length, 1);
   assert.deepEqual(a.updates, []);
+});
+
+test("Short Rest stops on an active Calendaria error without falling back to world time", async () => {
+  reset();
+  const a = actor();
+  await a.setFlag(scope, "shortRestRecovery", { quarterKey: "calendaria:audit:1:1:3:q0" });
+  CALENDARIA.api.getActiveCalendar = () => { throw new Error("calendar broken"); };
+  const result = await rest.applyRest(null, a, { type: "short", useShortRecovery: true, shortAttribute: "strength" });
+  assert.equal(result.failed, true);
+  assert.equal(result.changed, false);
+  assert.match(result.error, /Calendaria could not determine the current quarter day/i);
+  assert.deepEqual(a.updates, []);
+
+  delete globalThis.CALENDARIA;
+  game.modules.set("calendaria", { active: false });
+  assert.equal(getCurrentQuarterInfo().source, "foundry");
 });
 
 test("Long Rest reads active effects, ignores disabled ones and removes active conditions in one batch", async () => {
@@ -676,6 +693,40 @@ for (const deleting of [false, true]) test(`New Day verifies the ${deleting ? "d
   assert.ok(a.getFlag(scope, "shortRestRecovery"), "the next stage must not write");
   assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
   assert.match(messages[0].content, /First wound.*Omitted wound/);
+});
+
+test("New Day reports a batch-level failure without duplicating already confirmed items", async () => {
+  reset();
+  const wounds = [item("first", { healingTime: "3 days" }, "First wound"), item("second", { healingTime: "4 days" }, "Second wound")];
+  const a = actor([...wounds]);
+  const messages = [];
+  ChatMessage.create = async message => messages.push(message);
+  const update = a.updateEmbeddedDocuments;
+  a.updateEmbeddedDocuments = async (type, batch) => {
+    await update(type, batch);
+    throw new Error("hook failed");
+  };
+  const plan = buildNewDayPlan(a);
+  const result = await applyNewDayPlan(a, plan, plan.actions.map(action => action.id), { postChat: false });
+  assert.equal(result.partiallyApplied, true);
+  assert.deepEqual(result.succeeded.map(entry => entry.action.itemId), ["first", "second"]);
+  assert.deepEqual(result.failed.map(entry => entry.action.id), ["item-update-batch"]);
+  assert.deepEqual(messages.map(message => message.whisper), [[game.user.id]]);
+  assert.match(messages[0].content, /Confirmed actions: First wound, Second wound.*Failed: Item update batch \(item-update-batch\): hook failed/);
+});
+
+test("player progression dialog distinguishes an unknown write outcome from a confirmed partial failure", () => {
+  reset();
+  const unknownHtml = calendar.buildPlayerResultContent({
+    detail: "Some detail",
+    days: [{ date: context.date, result: { outcomeUnknown: true, entries: [] } }]
+  });
+  const confirmedHtml = calendar.buildPlayerResultContent({
+    detail: "Some detail",
+    days: [{ date: context.date, result: { outcomeUnknown: false, partiallyApplied: true, entries: [] } }]
+  });
+  assert.match(unknownHtml, /outcome is unknown\. Check the sheet before trying again\./i);
+  assert.doesNotMatch(confirmedHtml, /outcome is unknown/i);
 });
 
 test("an interactive Calendaria request must include fresh preview data for each selected action", async () => {

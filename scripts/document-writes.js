@@ -26,6 +26,7 @@ export async function runDocumentWrite(write) {
       if (socket.connected === false) throw unknown();
       return write();
     });
+    writing.catch(() => {});
     return await Promise.race([writing, disconnected]);
   } finally {
     socket.off("disconnect", onDisconnect);

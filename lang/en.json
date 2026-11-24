@@ -262,7 +262,8 @@
       "StepActorUpdate": "attributes, condition flags and Short Rest limit",
       "StepEffectRemoval": "condition ActiveEffect removal",
       "OutcomeUnknown": "{type} for {actor}: the outcome of {step} is unknown. Confirmed steps: {completed}. Check the sheet before trying again.",
-      "PartialFailure": "{type} was partially applied to {actor}. Saved: {completed}. Failed step: {step}. Check the sheet before trying again."
+      "PartialFailure": "{type} was partially applied to {actor}. Saved: {completed}. Failed step: {step}. Check the sheet before trying again.",
+      "CalendariaQuarterError": "Calendaria could not determine the current quarter day. Rest was stopped."
     },
     "Dialog": {
       "ConfirmTitle": "Confirm",
@@ -359,7 +360,9 @@
       "WriteNotPersisted": "The requested Item change did not persist.",
       "PartialFailure": "New Day was partially applied. Check the sheet before trying again.",
       "WriteOutcomeUnknown": "{actor}: New Day stopped with an unknown outcome. Confirmed actions: {done}. Unconfirmed: {failures}. Check the sheet before trying again.",
-      "WriteStopped": "{actor}: New Day stopped. Confirmed actions: {done}. Failed: {failures}. Check the sheet before trying again."
+      "WriteStopped": "{actor}: New Day stopped. Confirmed actions: {done}. Failed: {failures}. Check the sheet before trying again.",
+      "ItemUpdateBatch": "Item update batch",
+      "ItemDeleteBatch": "Item deletion batch"
     },
     "Reputation": {
       "OpenTitle": "Open reputation ledger",

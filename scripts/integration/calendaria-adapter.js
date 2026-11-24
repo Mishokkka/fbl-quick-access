@@ -66,11 +66,21 @@ export function getCalendariaContext(dateOverride = null) {
 
 export function getCalendariaQuarterInfo() {
   const api = getCalendariaApi();
+  if (!api) return null;
+  let dateTime;
+  let calendar;
   try {
-    const dateTime = api?.getCurrentDateTime?.();
-    const date = normalizeCalendariaDate(dateTime);
-    if (!date) return null;
-    const calendar = api.getActiveCalendar?.();
+    dateTime = api.getCurrentDateTime?.();
+    if (dateTime == null) return null;
+    calendar = api.getActiveCalendar?.();
+  } catch (cause) {
+    throw Object.assign(new Error("Calendaria quarter calculation failed.", { cause }), { code: "calendaria-quarter-error" });
+  }
+  const date = normalizeCalendariaDate(dateTime);
+  if (!date) {
+    throw Object.assign(new Error("Calendaria returned an invalid date."), { code: "calendaria-quarter-error" });
+  }
+  try {
     const calendarId = getCalendarId(calendar);
     const hours = positiveClockUnit(calendar?.days?.hoursPerDay, 24);
     const minutes = positiveClockUnit(calendar?.days?.minutesPerHour, 60);
@@ -82,8 +92,8 @@ export function getCalendariaQuarterInfo() {
     const legacyKey = `calendaria:${suffix}`;
     return { key: calendarId ? `calendaria:${calendarId}:${suffix}` : legacyKey, legacyKey, quarterIndex, dateTime,
       dateLabel: `${date.year}-${String(date.month).padStart(2, "0")}-${String(date.day).padStart(2, "0")}` };
-  } catch (_error) {
-    return null;
+  } catch (cause) {
+    throw Object.assign(new Error("Calendaria quarter calculation failed.", { cause }), { code: "calendaria-quarter-error" });
   }
 }
 

@@ -462,8 +462,14 @@ async function applyItemBatch(actor, actions, deleting, documentOptions, succeed
     const missing = batch.filter(action => !saved.includes(action));
     if (!cause && !missing.length) return;
     const error = new Error(cause?.message ?? qaLocalize("NewDay.WriteNotPersisted", "The requested Item change did not persist."), { cause });
+    const failedActions = missing.length ? missing : [{
+      id: deleting ? "item-delete-batch" : "item-update-batch",
+      itemName: deleting
+        ? qaLocalize("NewDay.ItemDeleteBatch", "Item deletion batch")
+        : qaLocalize("NewDay.ItemUpdateBatch", "Item update batch")
+    }];
     throw Object.assign(error, {
-      code: unknown ? "outcome-unknown" : "write-not-persisted", actions: missing.length ? missing : batch,
+      code: unknown ? "outcome-unknown" : "write-not-persisted", actions: failedActions,
       partiallyApplied: !unknown && batch.some(hasChanged)
     });
   };

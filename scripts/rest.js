@@ -147,7 +147,17 @@ export async function openRestDialog(app, actor, root = null) {
     warnCannotModifyActor();
     return null;
   }
-  const snapshot = buildRestSnapshot(actor, { root });
+  let snapshot;
+  try {
+    snapshot = buildRestSnapshot(actor, { root });
+  } catch (error) {
+    console.error(`${MODULE_ID} | could not prepare rest dialog`, error);
+    const message = error?.code === "calendaria-quarter-error"
+      ? qaLocalize("Rest.CalendariaQuarterError", "Calendaria could not determine the current quarter day. Rest was stopped.")
+      : qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых.");
+    ui.notifications?.error?.(escapeHtml(message));
+    return null;
+  }
   const content = buildRestDialogContent(actor, snapshot, {
     canResetShortRest: canResetShortRestLimit(actor)
   });
@@ -491,7 +501,7 @@ async function applyRest(app, actor, options) {
   try {
     result = await executeActorOperation(actor, REST_OPERATION, options, applyRestInternal);
   } catch (error) {
-    result = restFailure(actor, [], qaLocalize("Rest.StepRequest", "Rest request"), error);
+    result = restFailure(actor, [], qaLocalize("Rest.StepRequest", "Rest request"), error, options?.type);
   }
   if (result.failed) {
     const notify = result.outcomeUnknown ? ui.notifications?.warn : ui.notifications?.error;
@@ -574,7 +584,9 @@ function restFailure(actor, steps, failedStep, cause, type) {
     ? qaLocalize("Rest.OutcomeUnknown", "{type} for {actor}: the outcome of {step} is unknown. Confirmed steps: {completed}. Check the sheet before trying again.", details)
     : partiallyApplied
       ? qaLocalize("Rest.PartialFailure", "{type} was partially applied to {actor}. Saved: {completed}. Failed step: {step}. Check the sheet before trying again.", details)
-      : qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых.");
+      : cause?.code === "calendaria-quarter-error"
+        ? qaLocalize("Rest.CalendariaQuarterError", "Calendaria could not determine the current quarter day. Rest was stopped.")
+        : qaLocalize("Rest.UpdateFailed", "Не удалось применить отдых.");
   console.error(`${MODULE_ID} | rest update failed`, actor.name, failedStep, cause);
   if (outcomeUnknown || partiallyApplied) whisperToGM(error);
   return { failed: true, outcomeUnknown, partiallyApplied, error, changed: partiallyApplied };

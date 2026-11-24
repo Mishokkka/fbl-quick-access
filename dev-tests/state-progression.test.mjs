@@ -369,3 +369,30 @@ test("a time skip shows the approved backlog, preserves deferred days and exclud
   assert.equal(actor.marker.date.day, 6);
   assert.equal(offline.marker.date.day, 1);
 });
+
+test("a confirmed time skip stops the remaining actors after one actor fails a day write", async t => {
+  const date = { year: 1, month: 1, day: 6 };
+  const first = setupActor("skip-fail-first", { calendarId: "skip-fail", date: { ...date, day: 4 } });
+  const second = setupActor("skip-fail-second", { calendarId: "skip-fail", date: { ...date, day: 4 } });
+  let secondWrites = 0;
+  first.setFlag = async () => { throw new Error("marker write rejected"); };
+  const origSecondSetFlag = second.setFlag.bind(second);
+  second.setFlag = async (...args) => { secondWrites += 1; return origSecondSetFlag(...args); };
+
+  const api = { daysBetween: (from, to) => to.day - from.day, addDays: (day, amount) => ({ ...day, day: day.day + amount }) };
+  setupWorld([first, second], { calendarId: "skip-fail", date, api });
+  const { dialogs } = captureDialogs(t);
+  t.after(() => dialogs.forEach(dialog => dialog.close()));
+  t.mock.method(console, "error", () => {});
+
+  const running = hooks.get("calendaria.dayChange")({
+    previous: { year: 1, month: 0, dayOfMonth: 3 }, current: { year: 1, month: 0, dayOfMonth: 5 }
+  });
+  await settle();
+  await dialogs.at(-1).submit("yes");
+  await running;
+
+  assert.equal(first.marker.date.day, 4);
+  assert.equal(second.marker.date.day, 4);
+  assert.equal(secondWrites, 0);
+});

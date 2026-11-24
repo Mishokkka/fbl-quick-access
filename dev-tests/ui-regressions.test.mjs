@@ -174,12 +174,20 @@ test("Rest Apply reads DialogV2 button.form and opens New Day after a successful
 
     const fakeButton = { form: new FakeForm() };
     fakeButton.form.controls.startsNewDay.checked = true;
-    const restSubmission = apply.callback({}, fakeButton, { element: new FakeElement(), close: async () => { lifecycle.push("close-rest"); } });
+    let finishClose;
+    const closePromise = new Promise(resolve => { finishClose = resolve; });
+    const restSubmission = apply.callback({}, fakeButton, {
+      element: new FakeElement(),
+      close: async () => { lifecycle.push("close-rest"); await closePromise; }
+    });
     const result = await completion;
     await new Promise(resolve => setImmediate(resolve));
 
     assert.equal(result?.type, "long");
     assert.deepEqual(updates, [{ "system.attribute.strength.value": 3 }]);
+    assert.deepEqual(lifecycle, ["open-rest", "close-rest"]);
+    finishClose();
+    await new Promise(resolve => setImmediate(resolve));
     assert.deepEqual(lifecycle, ["open-rest", "close-rest", "open-new-day"]);
     const cancel = dialogConfig.buttons.find(button => button.action === "cancel");
     await cancel.callback({}, {}, { element: new FakeElement(), close: async () => {} });
@@ -494,4 +502,275 @@ test("STAT duration controls stay content-sized and pin to the right edge", () =
   assert.match(css, /\.fblec-stat-tab \.healing-time-input\s*\{[\s\S]*?flex:\s*0 0 70px;[\s\S]*?width:\s*70px;[\s\S]*?max-width:\s*70px;/);
   assert.match(css, /\.fblec-stat-tab \.heal-btn\s*\{[\s\S]*?flex:\s*0 0 22px;[\s\S]*?width:\s*22px;[\s\S]*?max-width:\s*22px;/);
   assert.match(css, /\.fblec-stat-tab\.fblec-columns-2 \.condition-time-inline,[\s\S]*?\.fblec-stat-tab\.fblec-columns-2 \.injury-healing-inline[\s\S]*?\{[\s\S]*?width:\s*auto;[\s\S]*?min-width:\s*0;/);
+});
+
+test("Willpower controls attach to the Willpower label instead of Experience in the shared header row", async () => {
+  const previous = {
+    document: globalThis.document,
+    NodeFilter: globalThis.NodeFilter,
+    game: globalThis.game,
+    ui: globalThis.ui
+  };
+
+  class FakeText {
+    constructor(text) {
+      this.nodeType = 3;
+      this.textContent = String(text ?? "");
+      this.parentNode = null;
+    }
+    get parentElement() { return this.parentNode?.nodeType === 1 ? this.parentNode : null; }
+    replaceWith(...nodes) { this.parentNode?.replaceChildNodes?.(this, nodes); }
+    remove() { this.parentNode?.removeChildNode?.(this); }
+  }
+
+  class FakeFragment {
+    constructor() {
+      this.nodeType = 11;
+      this.childNodes = [];
+    }
+    append(...nodes) {
+      for (const node of nodes) {
+        if (node?.nodeType === 11) this.childNodes.push(...node.childNodes);
+        else if (node) this.childNodes.push(node);
+      }
+    }
+  }
+
+  function matchSingleSelector(element, selector) {
+    let remaining = selector.trim();
+    if (!remaining) return false;
+    const tagMatch = remaining.match(/^[a-z0-9-]+/i);
+    if (tagMatch) {
+      if (element.tagName !== tagMatch[0].toLowerCase()) return false;
+      remaining = remaining.slice(tagMatch[0].length);
+    }
+    while (remaining.length) {
+      if (remaining[0] === ".") {
+        const match = remaining.slice(1).match(/^[a-z0-9_-]+/i);
+        if (!match || !element.classList.contains(match[0])) return false;
+        remaining = remaining.slice(match[0].length + 1);
+      } else if (remaining[0] === "[") {
+        const end = remaining.indexOf("]");
+        if (end < 0) return false;
+        const expr = remaining.slice(1, end);
+        const eqIndex = expr.indexOf("=");
+        if (eqIndex < 0) {
+          if (element.getAttribute(expr.trim()) === null) return false;
+        } else {
+          const attr = expr.slice(0, eqIndex).trim();
+          const expected = expr.slice(eqIndex + 1).trim().replace(/^["']|["']$/g, "");
+          if (element.getAttribute(attr) !== expected) return false;
+        }
+        remaining = remaining.slice(end + 1);
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  class FakeElement {
+    constructor(tagName) {
+      this.nodeType = 1;
+      this.tagName = tagName.toLowerCase();
+      this.childNodes = [];
+      this.parentNode = null;
+      this.attributes = new Map();
+      this.classes = new Set();
+      this.classList = {
+        add: (...names) => names.forEach((name) => this.classes.add(name)),
+        contains: (name) => this.classes.has(name)
+      };
+      this.listeners = new Map();
+      this.disabled = false;
+      this.title = "";
+      this.type = "";
+      this.innerHTML = "";
+    }
+    get textContent() { return this.childNodes.map((child) => child.textContent).join(""); }
+    set textContent(value) {
+      this.childNodes = [];
+      if (value !== undefined && value !== null && String(value) !== "") this.append(new FakeText(value));
+    }
+    setAttribute(name, value) { this.attributes.set(name, String(value)); }
+    getAttribute(name) { return this.attributes.has(name) ? this.attributes.get(name) : null; }
+    get id() { return this.getAttribute("id") ?? ""; }
+    set id(value) { this.setAttribute("id", value); }
+    append(...nodes) {
+      for (const entry of nodes) {
+        const expanded = entry?.nodeType === 11 ? [...entry.childNodes] : [entry];
+        for (const node of expanded) {
+          if (!node) continue;
+          node.parentNode?.removeChildNode?.(node);
+          node.parentNode = this;
+          this.childNodes.push(node);
+        }
+      }
+    }
+    removeChildNode(target) {
+      const index = this.childNodes.indexOf(target);
+      if (index >= 0) {
+        this.childNodes.splice(index, 1);
+        target.parentNode = null;
+      }
+    }
+    replaceChildNodes(target, nodes) {
+      const index = this.childNodes.indexOf(target);
+      if (index < 0) return;
+      const inserted = [];
+      for (const entry of nodes) {
+        const expanded = entry?.nodeType === 11 ? [...entry.childNodes] : [entry];
+        for (const node of expanded) {
+          if (!node) continue;
+          node.parentNode?.removeChildNode?.(node);
+          node.parentNode = this;
+          inserted.push(node);
+        }
+      }
+      target.parentNode = null;
+      this.childNodes.splice(index, 1, ...inserted);
+    }
+    replaceWith(...nodes) { this.parentNode?.replaceChildNodes?.(this, nodes); }
+    remove() { this.parentNode?.removeChildNode?.(this); }
+    insertAdjacentElement(position, element) {
+      if (position !== "afterend" || !this.parentNode || !element) return null;
+      element.parentNode?.removeChildNode?.(element);
+      const index = this.parentNode.childNodes.indexOf(this);
+      element.parentNode = this.parentNode;
+      this.parentNode.childNodes.splice(index + 1, 0, element);
+      return element;
+    }
+    normalize() {
+      const merged = [];
+      for (const child of this.childNodes) {
+        if (child.nodeType === 3) {
+          if (!child.textContent) continue;
+          const prev = merged[merged.length - 1];
+          if (prev?.nodeType === 3) {
+            prev.textContent += child.textContent;
+            continue;
+          }
+        }
+        merged.push(child);
+      }
+      this.childNodes = merged;
+    }
+    get previousElementSibling() {
+      const siblings = this.parentNode?.childNodes;
+      if (!siblings) return null;
+      for (let i = siblings.indexOf(this) - 1; i >= 0; i -= 1) {
+        if (siblings[i].nodeType === 1) return siblings[i];
+      }
+      return null;
+    }
+    matches(selector) {
+      return String(selector).split(",").some((part) => matchSingleSelector(this, part));
+    }
+    closest(selector) {
+      let current = this;
+      while (current?.nodeType === 1) {
+        if (current.matches(selector)) return current;
+        current = current.parentNode;
+      }
+      return null;
+    }
+    querySelectorAll(selector) {
+      const results = [];
+      const visit = (node) => {
+        for (const child of node.childNodes) {
+          if (child.nodeType !== 1) continue;
+          if (child.matches(selector)) results.push(child);
+          visit(child);
+        }
+      };
+      visit(this);
+      return results;
+    }
+    querySelector(selector) { return this.querySelectorAll(selector)[0] ?? null; }
+    addEventListener(type, listener) { this.listeners.set(type, listener); }
+  }
+
+  function createHeaderRow(willpowerLabelText) {
+    const form = new FakeElement("form");
+    const table = new FakeElement("table");
+    const tr = new FakeElement("tr");
+
+    const expLabelTd = new FakeElement("td");
+    const expLabel = new FakeElement("label");
+    expLabel.append(new FakeText("Experience:"));
+    expLabelTd.append(expLabel);
+
+    const expInputTd = new FakeElement("td");
+    const expInput = new FakeElement("input");
+    expInput.setAttribute("name", "system.bio.experience.value");
+    expInputTd.append(expInput);
+
+    const wpLabelTd = new FakeElement("td");
+    const wpLabel = new FakeElement("label");
+    wpLabel.append(new FakeText(willpowerLabelText));
+    wpLabelTd.append(wpLabel);
+
+    const wpInputTd = new FakeElement("td");
+    const wpInput = new FakeElement("input");
+    wpInput.setAttribute("name", "system.bio.willpower.value");
+    wpInputTd.append(wpInput);
+
+    tr.append(expLabelTd, expInputTd, wpLabelTd, wpInputTd);
+    table.append(tr);
+    form.append(table);
+    return { form, expLabel, wpLabel };
+  }
+
+  try {
+    globalThis.NodeFilter = { SHOW_TEXT: 4, FILTER_ACCEPT: 1, FILTER_REJECT: 2 };
+    globalThis.document = {
+      createElement: (tag) => new FakeElement(tag),
+      createTextNode: (text) => new FakeText(text),
+      createDocumentFragment: () => new FakeFragment(),
+      createTreeWalker(container, _whatToShow, filter) {
+        const nodes = [];
+        const walk = (node) => {
+          for (const child of node.childNodes) {
+            if (child.nodeType === 3) {
+              if (!filter || filter.acceptNode(child) === 1) nodes.push(child);
+            } else if (child.nodeType === 1) {
+              walk(child);
+            }
+          }
+        };
+        walk(container);
+        let index = 0;
+        return { nextNode: () => nodes[index++] ?? null };
+      }
+    };
+    globalThis.game = { i18n: { has: () => false, localize: (key) => key } };
+    globalThis.ui = { notifications: { info() {}, warn() {}, error() {} } };
+
+    const { setupStartWillpowerButton } = await import(`../scripts/willpower.js?row-anchor=${Date.now()}`);
+    const actor = { id: "wp-row-actor", isOwner: true };
+
+    for (const [fullText, expectedWord] of [["Willpower:", "Willpower"], ["Viljekraft:", "Viljekraft"]]) {
+      const { form, expLabel, wpLabel } = createHeaderRow(fullText);
+      setupStartWillpowerButton(null, actor, form);
+      setupStartWillpowerButton(null, actor, form);
+
+      assert.equal(expLabel.querySelector(".fblqa-wp-label-anchor"), null);
+      assert.equal(expLabel.querySelector(".fblqa-start-wp-button"), null);
+      assert.equal(expLabel.textContent, "Experience:");
+
+      const anchors = wpLabel.querySelectorAll(".fblqa-wp-label-anchor");
+      const buttons = wpLabel.querySelectorAll(".fblqa-start-wp-button");
+      assert.equal(anchors.length, 1);
+      assert.equal(buttons.length, 1);
+      assert.equal(anchors[0].textContent, expectedWord);
+      assert.equal(wpLabel.childNodes[0], anchors[0]);
+      assert.equal(wpLabel.childNodes[1], buttons[0]);
+      assert.equal(wpLabel.childNodes[2]?.textContent, ":");
+    }
+  } finally {
+    globalThis.document = previous.document;
+    globalThis.NodeFilter = previous.NodeFilter;
+    globalThis.game = previous.game;
+    globalThis.ui = previous.ui;
+  }
 });
